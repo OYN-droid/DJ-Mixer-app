@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DeckForge DJ Mixer</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="rail" aria-label="Mixer navigation">
+        <div class="brand">
+          <span class="brand-mark">DF</span>
+          <span>
+            <strong>DeckForge</strong>
+            <small>DJ Mixer</small>
+          </span>
+        </div>
+        <nav class="rail-tabs" aria-label="Sections">
+          <button class="tab-button is-active" data-target="decks" title="Decks">Decks</button>
+          <button class="tab-button" data-target="sampler" title="Sampler">Pads</button>
+          <button class="tab-button" data-target="drums" title="Drums">Drums</button>
+          <button class="tab-button" data-target="keys" title="Keys">Keys</button>
+          <button class="tab-button" data-target="stems" title="Stems">Stems</button>
+          <button class="tab-button" data-target="editor" title="Editor">Editor</button>
+          <button class="tab-button" data-target="ai" title="AI">AI</button>
+          <button class="tab-button" data-target="sources" title="Sources">Crate</button>
+        </nav>
+        <div class="master-meter" aria-label="Master output meter">
+          <span></span>
+          <span></span>
+        </div>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div>
+            <h1>DeckForge</h1>
+            <p>Mashup workstation for decks, cuts, pads, drums, loops, and live recording.</p>
+          </div>
+          <div class="transport">
+            <button id="audioEnable" class="primary-button">Start Audio</button>
+            <button id="recordMix" class="icon-button" title="Record mix" aria-label="Record mix">●</button>
+            <button id="downloadMix" class="icon-button" title="Download recording" aria-label="Download recording" disabled>↓</button>
+            <div class="tempo-box">
+              <label for="globalBpm">BPM</label>
+              <input id="globalBpm" type="number" min="60" max="180" value="124">
+            </div>
+          </div>
+        </header>
+
+        <section id="decks" class="view is-active" aria-labelledby="decksTitle">
+          <div class="decks-header">
+            <h2 id="decksTitle">Turntables</h2>
+            <div class="deck-smart-controls">
+              <label for="smartMixMode">Smart Mix</label>
+              <select id="smartMixMode">
+                <option value="aiDj">AI DJ Flow</option>
+                <option value="club">Club Mix</option>
+                <option value="festival">Festival Set</option>
+                <option value="open">Open Format</option>
+                <option value="hiphop">Hip-Hop Blend</option>
+                <option value="rnb">R&amp;B Slow Jam</option>
+                <option value="house">House Mix</option>
+                <option value="edm">EDM Continuous Mix</option>
+                <option value="radio">Radio Mix</option>
+                <option value="lounge">Lounge</option>
+                <option value="chill">Chill</option>
+                <option value="party">Party Mode</option>
+              </select>
+              <label for="smartMixSource">Source</label>
+              <select id="smartMixSource">
+                <option value="both">Decks + Crate</option>
+                <option value="decks">Decks Only</option>
+                <option value="crate">Crate Only</option>
+              </select>
+              <button id="smartMixToggle" class="primary-button">Smart Mix</button>
+              <button id="smartMixStop" class="secondary-button" disabled>Stop</button>
+              <div class="crossfader">
+                <span>A</span>
+                <input id="crossfader" type="range" min="0" max="1" step="0.01" value="0.5">
+                <span>B</span>
+              </div>
+            </div>
+          </div>
+          <p id="smartMixStatus" class="smart-mix-status">Smart Mix is ready. Choose decks, crate, or both; transitions may briefly align BPM, then return the incoming song to its original speed.</p>
+
+          <div class="deck-grid">
+            <article class="deck" data-deck="a">
+              <div class="deck-top">
+                <div>
+                  <p class="eyebrow">Deck A</p>
+                  <h3 id="title-a">Empty deck</h3>
+                </div>
+                <label class="file-button">
+                  Load
+                  <input id="file-a" type="file" accept="audio/*">
+                </label>
+                <button class="icon-button" data-action="clear-deck" data-deck="a" title="Clear deck A" aria-label="Clear deck A">×</button>
+              </div>
+
+              <div class="platter-wrap">
+                <p class="drop-hint">Drop audio here to load Deck A</p>
+                <button class="platter" data-action="scratch" data-deck="a" aria-label="Scratch deck A">
+                  <span class="vinyl-ring"></span>
+                  <span class="vinyl-label">A</span>
+                </button>
+                <canvas id="wave-a" class="waveform" width="640" height="100"></canvas>
+              </div>
+
+              <div class="deck-controls">
+                <button class="transport-button" data-action="rewind" data-deck="a">-15s</button>
+                <button class="transport-button" data-action="cue" data-deck="a">Cue</button>
+                <button class="transport-button" data-action="play" data-deck="a">Play</button>
+                <button class="transport-button" data-action="stop" data-deck="a">Stop</button>
+                <button class="transport-button" data-action="loop" data-deck="a">Loop</button>
+                <button class="transport-button" data-action="forward" data-deck="a">+15s</button>
+              </div>
+
+              <div class="seek-strip">
+                <span id="time-a">0:00</span>
+                <input id="seek-a" data-seek-deck="a" type="range" min="0" max="1000" value="0">
+                <span id="duration-a">0:00</span>
+              </div>
+
+              <div class="edit-strip">
+                <button class="transport-button" data-action="mark-in" data-deck="a">In</button>
+                <button class="transport-button" data-action="mark-out" data-deck="a">Out</button>
+                <button class="transport-button" data-action="preview-selection" data-deck="a">Preview</button>
+                <button class="transport-button" data-action="split-to-pads" data-deck="a">Split</button>
+                <button class="transport-button sample-button" data-action="sample-to-pad" data-deck="a">Sample</button>
+                <button class="transport-button" data-action="selection-to-pad" data-deck="a">Pad</button>
+                <button class="transport-button crate-clip-button" data-action="selection-to-crate" data-deck="a">Crate</button>
+                <button class="transport-button" data-action="selection-to-deck" data-deck="a">Trim Deck</button>
+                <p id="selection-a">Selection: none</p>
+              </div>
+
+              <div class="mixer-strip">
+                <label>Pitch <input id="pitch-a" type="range" min="0.5" max="1.5" step="0.01" value="1"></label>
+                <label>Filter <input id="filter-a" type="range" min="200" max="16000" step="10" value="16000"></label>
+                <label>Gain <input id="gain-a" type="range" min="0" max="1.2" step="0.01" value="0.85"></label>
+              </div>
+            </article>
+
+            <section class="dj-mixer" aria-label="DJ mixer">
+            <div class="mixer-channel mixer-channel-a">
+              <div class="mixer-channel-head">
+                <span class="eyebrow">Channel A</span>
+                <button class="cue-button" data-action="cue-monitor" data-deck="a" aria-pressed="false">Cue</button>
+              </div>
+              <div class="mixer-meter" aria-hidden="true">
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <label class="mixer-mini-control">Trim <input id="mixer-trim-a" data-sync-gain="a" type="range" min="0" max="1.2" step="0.01" value="0.85"></label>
+              <label class="mixer-mini-control">Filter <input id="mixer-filter-a" data-sync-filter="a" type="range" min="200" max="16000" step="10" value="16000"></label>
+              <label class="channel-fader">
+                <span>Level</span>
+                <input id="channel-a" data-channel-fader="a" class="vertical-fader" type="range" min="0" max="1.2" step="0.01" value="1">
+              </label>
+            </div>
+
+            <div class="mixer-center">
+              <p class="eyebrow">DJ Mixer</p>
+              <div class="crossfader mixer-crossfader">
+                <span>A</span>
+                <input id="mixerCrossfader" type="range" min="0" max="1" step="0.01" value="0.5" aria-label="Mixer crossfader">
+                <span>B</span>
+              </div>
+              <div class="mixer-bus-labels" aria-hidden="true">
+                <span>Cut A</span>
+                <span>Blend</span>
+                <span>Cut B</span>
+              </div>
+            </div>
+
+            <div class="mixer-channel mixer-channel-b">
+              <div class="mixer-channel-head">
+                <span class="eyebrow">Channel B</span>
+                <button class="cue-button" data-action="cue-monitor" data-deck="b" aria-pressed="false">Cue</button>
+              </div>
+              <div class="mixer-meter" aria-hidden="true">
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <label class="mixer-mini-control">Trim <input id="mixer-trim-b" data-sync-gain="b" type="range" min="0" max="1.2" step="0.01" value="0.85"></label>
+              <label class="mixer-mini-control">Filter <input id="mixer-filter-b" data-sync-filter="b" type="range" min="200" max="16000" step="10" value="16000"></label>
+              <label class="channel-fader">
+                <span>Level</span>
+                <input id="channel-b" data-channel-fader="b" class="vertical-fader" type="range" min="0" max="1.2" step="0.01" value="1">
+              </label>
+            </div>
+          </section>
+
+            <article class="deck" data-deck="b">
+              <div class="deck-top">
+                <div>
+                  <p class="eyebrow">Deck B</p>
+                  <h3 id="title-b">Empty deck</h3>
+                </div>
+                <label class="file-button">
+                  Load
+                  <input id="file-b" type="file" accept="audio/*">
+                </label>
+                <button class="icon-button" data-action="clear-deck" data-deck="b" title="Clear deck B" aria-label="Clear deck B">×</button>
+              </div>
+
+              <div class="platter-wrap">
+                <p class="drop-hint">Drop audio here to load Deck B</p>
+                <button class="platter" data-action="scratch" data-deck="b" aria-label="Scratch deck B">
+                  <span class="vinyl-ring"></span>
+                  <span class="vinyl-label">B</span>
+                </button>
+                <canvas id="wave-b" class="waveform" width="640" height="100"></canvas>
+              </div>
+
+              <div class="deck-controls">
+                <button class="transport-button" data-action="rewind" data-deck="b">-15s</button>
+                <button class="transport-button" data-action="cue" data-deck="b">Cue</button>
+                <button class="transport-button" data-action="play" data-deck="b">Play</button>
+                <button class="transport-button" data-action="stop" data-deck="b">Stop</button>
+                <button class="transport-button" data-action="loop" data-deck="b">Loop</button>
+                <button class="transport-button" data-action="forward" data-deck="b">+15s</button>
+              </div>
+
+              <div class="seek-strip">
+                <span id="time-b">0:00</span>
+                <input id="seek-b" data-seek-deck="b" type="range" min="0" max="1000" value="0">
+                <span id="duration-b">0:00</span>
+              </div>
+
+              <div class="edit-strip">
+                <button class="transport-button" data-action="mark-in" data-deck="b">In</button>
+                <button class="transport-button" data-action="mark-out" data-deck="b">Out</button>
+                <button class="transport-button" data-action="preview-selection" data-deck="b">Preview</button>
+                <button class="transport-button" data-action="split-to-pads" data-deck="b">Split</button>
+                <button class="transport-button sample-button" data-action="sample-to-pad" data-deck="b">Sample</button>
+                <button class="transport-button" data-action="selection-to-pad" data-deck="b">Pad</button>
+                <button class="transport-button crate-clip-button" data-action="selection-to-crate" data-deck="b">Crate</button>
+                <button class="transport-button" data-action="selection-to-deck" data-deck="b">Trim Deck</button>
+                <p id="selection-b">Selection: none</p>
+              </div>
+
+              <div class="mixer-strip">
+                <label>Pitch <input id="pitch-b" type="range" min="0.5" max="1.5" step="0.01" value="1"></label>
+                <label>Filter <input id="filter-b" type="range" min="200" max="16000" step="10" value="16000"></label>
+                <label>Gain <input id="gain-b" type="range" min="0" max="1.2" step="0.01" value="0.85"></label>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="sampler" class="view" aria-labelledby="samplerTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="samplerTitle">Sampler Pads</h2>
+              <p>Load one-shots, grab mic samples, chop loops, and trigger them quantized or free.</p>
+            </div>
+            <div class="sampler-actions">
+              <label class="file-button">
+                Add Sample
+                <input id="sampleFile" type="file" accept="audio/*">
+              </label>
+              <button id="micSample" class="secondary-button">Mic Sample</button>
+              <button id="tabSample" class="secondary-button">Tab Audio</button>
+              <button id="stopPads" class="secondary-button">Stop Pads</button>
+            </div>
+          </div>
+          <div class="pad-editor" aria-label="Pad sample editor">
+            <div class="pad-editor-header">
+              <div>
+                <p class="eyebrow">Selected Pad</p>
+                <h3 id="padEditorTitle">Pad 1</h3>
+                <p id="padEditorMeta">Load a sample, loop, acapella, scratch, transition, or clip.</p>
+              </div>
+              <div class="pad-editor-actions">
+                <button id="previewPadRegion" class="secondary-button">Preview</button>
+                <button id="slicePadToPads" class="primary-button">Slice To Pads</button>
+                <button id="padClipToCrate" class="secondary-button">Save Clip</button>
+              </div>
+            </div>
+            <canvas id="padWaveform" class="pad-waveform" width="900" height="130"></canvas>
+            <div class="pad-edit-controls">
+              <label>Start <input id="padStart" type="range" min="0" max="1000" value="0"></label>
+              <label>End <input id="padEnd" type="range" min="0" max="1000" value="1000"></label>
+              <label>Mode
+                <select id="padMode">
+                  <option value="trigger">Trigger</option>
+                  <option value="loop">Loop</option>
+                </select>
+              </label>
+              <label>Quantize
+                <select id="padQuantize">
+                  <option value="off">Off</option>
+                  <option value="beat">Next Beat</option>
+                  <option value="bar">Next Bar</option>
+                </select>
+              </label>
+              <label>Slices <input id="padSliceCount" type="number" min="2" max="16" value="8"></label>
+            </div>
+            <p id="padEditorStatus" class="fine-print">Click a pad to select it. Use Start/End to trim, Loop for long beds, and Slice To Pads for chops.</p>
+          </div>
+          <div id="pads" class="pad-grid" aria-label="Sample pads"></div>
+        </section>
+
+        <section id="drums" class="view" aria-labelledby="drumsTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="drumsTitle">Drum Machine</h2>
+              <p>Step-sequence synthesized kicks, snares, hats, claps, and sub hits into the mix.</p>
+            </div>
+            <div class="transport">
+              <button id="drumPlay" class="primary-button">Start Drums</button>
+              <button id="drumClear" class="secondary-button">Clear</button>
+            </div>
+          </div>
+          <div class="preset-panel">
+            <div>
+              <label for="drumMachine">Machine model</label>
+              <select id="drumMachine"></select>
+            </div>
+            <div>
+              <label for="drumPreset">Producer-era preset</label>
+              <select id="drumPreset"></select>
+            </div>
+            <button id="applyPreset" class="primary-button">Load Preset</button>
+            <p id="presetNotes"></p>
+          </div>
+          <div id="sequencer" class="sequencer" aria-label="Drum sequencer"></div>
+        </section>
+
+        <section id="keys" class="view" aria-labelledby="keysTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="keysTitle">Keys & Bass</h2>
+              <p>Play chords, synth stabs, electric keys, organs, funk bass, post-punk bass, and sub lines into the mix.</p>
+            </div>
+          </div>
+          <div class="preset-panel">
+            <div>
+              <label for="synthMachine">Synth model</label>
+              <select id="synthMachine"></select>
+            </div>
+            <div>
+              <label for="instrumentPreset">Sound preset</label>
+              <select id="instrumentPreset"></select>
+            </div>
+            <button id="bassMode" class="secondary-button" aria-pressed="false">Bass Mode</button>
+            <p id="instrumentNotes"></p>
+          </div>
+          <div class="instrument-layout">
+            <div class="chord-bank" aria-label="Chord bank">
+              <button data-chord="minor7">Minor 7</button>
+              <button data-chord="major7">Major 7</button>
+              <button data-chord="ninth">9th</button>
+              <button data-chord="sus">Sus</button>
+              <button data-chord="stab">Stab</button>
+              <button data-chord="octave">Octave</button>
+            </div>
+            <div id="keyboard" class="keyboard" aria-label="Playable keyboard"></div>
+            <div id="bassKeys" class="bass-keys" aria-label="Bass keys"></div>
+            <p class="fine-print">Computer keys A-K play the keyboard. Hold Bass Mode for lower notes, or use the bass row for quick low-end lines.</p>
+          </div>
+        </section>
+
+        <section id="stems" class="view" aria-labelledby="stemsTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="stemsTitle">Stem Lab</h2>
+              <p>Drop a song, split it into isolated vocals, drums, bass, guitar, and synth stems, then load stems into decks or pads.</p>
+            </div>
+            <label class="file-button">
+              Add Track
+              <input id="stemFile" type="file" accept="audio/*">
+            </label>
+          </div>
+          <div id="stemDrop" class="drop-zone">
+            <strong>Drop audio for stem splitting</strong>
+            <span>Uses AI separation when the local stem server is running; falls back to quick browser stems.</span>
+          </div>
+          <div class="stem-toolbar">
+            <button id="splitStems" class="primary-button" disabled>Split Stems</button>
+            <button id="stopStemPreview" class="secondary-button" disabled>Stop Preview</button>
+            <p id="stemStatus">No track loaded.</p>
+          </div>
+          <div id="stemResults" class="stem-grid"></div>
+          <p class="fine-print">For true isolation, run the local AI stem server. Browser fallback stems are only rough previews.</p>
+        </section>
+
+        <section id="editor" class="view" aria-labelledby="editorTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="editorTitle">Mixtape Editor</h2>
+              <p>Arrange songs, stems, pads, drums, keys, drops, and transitions on a visual timeline.</p>
+            </div>
+            <div class="editor-transport">
+            <button id="editorPlay" class="primary-button">Play</button>
+            <button id="editorStop" class="secondary-button">Stop</button>
+            <button id="editorRecordPerformance" class="secondary-button">Record Perf</button>
+            <button id="editorOverdubPerformance" class="secondary-button">Overdub</button>
+            <button id="editorAddTrack" class="secondary-button">Add Track</button>
+          </div>
+          </div>
+
+          <div class="editor-toolbar">
+            <label>Snap
+              <select id="editorSnap">
+                <option value="bar">Bar</option>
+                <option value="beat">Beat</option>
+                <option value="phrase">Phrase</option>
+                <option value="free">Free</option>
+              </select>
+            </label>
+            <label>Zoom
+              <input id="editorZoom" type="range" min="4" max="18" value="8">
+            </label>
+            <label>Playhead
+              <input id="editorPlayhead" type="range" min="0" max="480" value="0">
+            </label>
+            <label>Event Grid
+              <select id="editorEventQuantize">
+                <option value="snap">Use Snap</option>
+                <option value="bar">Bar</option>
+                <option value="beat">Beat</option>
+                <option value="sixteenth">1/16</option>
+                <option value="free">Free</option>
+              </select>
+            </label>
+            <button id="editorSplit" class="secondary-button">Split</button>
+            <button id="editorDuplicate" class="secondary-button">Duplicate</button>
+            <button id="editorLoop" class="secondary-button">Loop</button>
+            <button id="editorQuantize" class="secondary-button">Quantize</button>
+            <button id="editorDelete" class="secondary-button">Delete</button>
+          </div>
+
+          <div class="editor-workspace">
+            <aside class="editor-bin">
+              <div>
+                <h3>Source Bin</h3>
+                <p class="fine-print">Drag crate tracks, decks, stems, pads, drums, keys, drops, or files onto the timeline.</p>
+              </div>
+              <div id="editorSourceBin" class="editor-source-bin"></div>
+            </aside>
+
+            <div class="editor-arranger">
+              <div id="editorRuler" class="editor-ruler"></div>
+              <div id="editorTimeline" class="editor-timeline" aria-label="Mixtape arrangement timeline"></div>
+              <p id="editorStatus" class="fine-print">Drop clips onto the timeline. Use snap, trim, split, duplicate, fades, and AI suggestions to build an arrangement.</p>
+            </div>
+
+            <aside class="editor-inspector">
+              <h3>Clip Inspector</h3>
+              <div id="editorInspector" class="editor-inspector-body">Select a clip to edit timing, fades, volume, filter, EQ, and effects.</div>
+              <button id="editorAiSuggest" class="primary-button">AI Suggest</button>
+              <div id="editorAiOutput" class="editor-ai-output">No editor suggestions yet.</div>
+            </aside>
+          </div>
+        </section>
+
+        <section id="ai" class="view" aria-labelledby="aiTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="aiTitle">AI Beat Director</h2>
+              <p>Describe the beat, remix, transition, or song direction you want from the loaded decks, stems, pads, and instruments.</p>
+            </div>
+            <button id="applyAiPlan" class="primary-button" disabled>Apply Plan</button>
+          </div>
+          <div class="ai-workspace">
+            <div class="ai-prompt-panel">
+              <label for="aiPrompt">Prompt</label>
+              <textarea id="aiPrompt" rows="7" placeholder="Example: Make a dark jungle remix with chopped vocals, big sub bass, dusty breakbeats, and atmospheric pads. Use the vocal stem as short pad chops and keep the drums frantic but clean."></textarea>
+            <div class="ai-actions">
+                <button id="generateAiPlan" class="primary-button">Generate Plan</button>
+                <button id="analyzeSelectedCrate" class="secondary-button">Analyze Selected</button>
+                <button id="startAiMix" class="secondary-button" disabled>Start Mix</button>
+                <button id="stopAiMix" class="secondary-button" disabled>Stop Mix</button>
+                <button id="clearAiPrompt" class="secondary-button">Clear</button>
+              </div>
+              <div class="ai-search-panel">
+                <label for="aiSectionSearch">Search & Clip</label>
+                <textarea id="aiSectionSearch" rows="4" placeholder="Try: 1:14-1:26, from 0:42 to 0:58, or a lyric/quote saved in crate cue text."></textarea>
+                <div class="ai-actions">
+                  <button id="searchAudioSections" class="primary-button">Find Sections</button>
+                  <button id="clearAudioSearch" class="secondary-button">Clear Search</button>
+                </div>
+                <div id="aiSearchResults" class="ai-search-results">No section search yet.</div>
+              </div>
+              <div class="mixtape-inspiration-panel">
+                <label for="mixtapeInspirationNotes">Mixtape Inspiration</label>
+                <div id="mixtapeReferenceDrop" class="mixtape-reference-drop">
+                  <strong>Load Mixtape for AI Inspiration</strong>
+                  <span>Drop a full mixtape folder, multiple track files, skits/interludes, and optional cover art. These files are analyzed as one reference project, not loaded to the decks.</span>
+                  <label class="file-button">
+                    Choose Files
+                    <input id="mixtapeReferenceFile" type="file" accept="audio/*,image/*" multiple>
+                  </label>
+                </div>
+                <p id="mixtapeReferenceStatus" class="fine-print">No inspiration mixtape project loaded. You can upload a folder, multiple audio files, and cover art, or select a local crate mixtape and click Analyze Mixtape.</p>
+                <textarea id="mixtapeInspirationNotes" rows="4" placeholder="Optional: describe the reference mixtape theme, DJ tags, recurring movie quotes, radio drops, era, region, or atmosphere."></textarea>
+                <div class="ai-actions">
+                  <button id="analyzeMixtapeInspiration" class="primary-button">Analyze Mixtape</button>
+                  <button id="applyMixtapeBlueprint" class="secondary-button" disabled>Use As Plan</button>
+                </div>
+                <div id="mixtapeAnalysisOutput" class="mixtape-analysis-output">No mixtape inspiration analysis yet.</div>
+              </div>
+            </div>
+            <div class="ai-context-panel">
+              <h3>Loaded Material</h3>
+              <div id="aiContext" class="ai-context-list"></div>
+            </div>
+            <div class="ai-plan-panel">
+              <h3>Generated Plan</h3>
+              <div id="aiPlanOutput" class="ai-plan-output">No plan generated yet.</div>
+            </div>
+          </div>
+        </section>
+
+        <section id="sources" class="view" aria-labelledby="sourcesTitle">
+          <div class="section-heading">
+            <div>
+              <h2 id="sourcesTitle">Source Crate</h2>
+              <p>Save track links from YouTube, SoundCloud, Bandcamp, Apple Music, Spotify, or anywhere else.</p>
+            </div>
+          </div>
+          <form id="sourceForm" class="source-form">
+            <input id="sourceUrl" type="url" placeholder="Paste track or playlist URL" required>
+            <input id="sourceName" type="text" placeholder="Track name">
+            <button class="primary-button" type="submit">Add</button>
+          </form>
+          <div id="sourceDrop" class="drop-zone">
+            <strong>Drop audio or folders into the crate</strong>
+            <span>Import full albums, sample packs, and DJ folders. Local files stay available during this session and can be loaded to either deck or a pad.</span>
+          </div>
+          <p id="sourceStatus" class="fine-print">Drop audio files, folders, or add a direct audio URL.</p>
+          <div id="sourceList" class="source-list"></div>
+          <p class="fine-print">Streaming services may block direct extraction in browsers. Use purchased/downloaded files, mic/line-in, tab audio capture, or platform-approved exports for remix work.</p>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

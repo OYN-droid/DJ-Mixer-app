@@ -1,0 +1,6 @@
+.venv/
+.venv-stems/
+__pycache__/
+*.pyc
+generated_stems/
+.DS_Store
