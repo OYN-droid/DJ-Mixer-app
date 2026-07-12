@@ -1,3 +1,19 @@
+const DECKFORGE_VERSION = "2.0.0-recovery";
+const DECKFORGE_DEVELOPMENT = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+const DECKFORGE_LOG_PREFIX = "[DeckForge]";
+
+window.addEventListener("error", (event) => {
+  console.error(DECKFORGE_LOG_PREFIX, "Unhandled application error", event.error || event.message);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  console.error(DECKFORGE_LOG_PREFIX, "Unhandled promise rejection", event.reason);
+});
+
+if (DECKFORGE_DEVELOPMENT) {
+  console.info(DECKFORGE_LOG_PREFIX, `Development build ${DECKFORGE_VERSION}`);
+}
+
 const AudioEngine = {
   context: null,
   destination: null,
