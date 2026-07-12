@@ -9,7 +9,7 @@
 | Sampler | `sampler` arrays | Pad classes and editor inputs | None |
 | Drums | `drums` | Sequencer button classes, BPM input, preset selects | None |
 | Keys | `instrument` | Selects, bass button and generated key classes | None |
-| Crate | `sourceFiles`, `crateSelection` | Dynamic cards, checkboxes and notes | URL entries under `deckforge-sources`; local files memory-only |
+| DITC | `sourceFiles`, `crateSelection`, `ditcState` | Compact rows, filters, inspector and selection | URL entries under `deckforge-sources`; local metadata under `deckforge-ditc-metadata`; local files memory-only |
 | Stems | `stemState` | Status and result cards | Generated WAV files on server only |
 | Editor | `editorState` | Timeline and inspector | None |
 | Smart Mix | `autoMixState` | deck nodes, faders, filters, status and buttons | None |

@@ -30,6 +30,7 @@ The application uses JavaScript listeners rather than inline handlers. Dynamic c
 | Section search | textarea, find, clear, result actions | search functions | Matches times/notes and loads results | Implemented, not semantic recognition |
 | Crate URL form | `#sourceForm` inputs/button | `addSource` | Stores URL metadata | Implemented, URLs may not be playable |
 | Crate drop and cards | `#sourceDrop`, dynamic source actions, checkboxes and notes | crate functions | Load, select, analyze, notes, delete | Partially implemented, local files are not persistent |
+| DITC library controls | DITC search, sort, collections, mode, view and inspector controls | DITC state and rendering functions | Filters local tracks, exposes working destinations and persists metadata | Implemented paths, file and audio behavior requires manual QA |
 
 ## Flagged controls
 

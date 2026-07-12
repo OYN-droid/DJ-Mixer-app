@@ -6,7 +6,7 @@ DeckForge is fun first and powerful over time. AI features are optional assistan
 
 ## Current status
 
-The repository contains substantial prototype implementations for two decks, mixer controls, pads, drums, keys, stems, a crate, Smart Mix, local prompt planning, mixtape analysis and arrangement. Browser audio behavior still requires manual QA. Connected provider names and several recognition integrations are placeholders or external configuration points, not bundled streaming or AI services.
+The repository contains substantial prototype implementations for two decks, mixer controls, pads, drums, keys, stems, the DITC local music library, Smart Mix, local prompt planning, mixtape analysis and arrangement. Browser audio behavior still requires manual QA. Connected provider names and several recognition integrations are placeholders or external configuration points, not bundled streaming or AI services.
 
 ## Architecture
 

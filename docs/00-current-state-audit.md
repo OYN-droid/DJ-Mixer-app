@@ -35,6 +35,7 @@ Browser APIs include `AudioContext`, `OfflineAudioContext`, Canvas 2D, `requestA
 ## Storage and integrations
 
 - `deckforge-sources` stores URL crate entries, names, notes and analysis. Local `File` objects and decoded buffers are memory-only.
+- `deckforge-ditc-metadata` stores local-track favorites, tags, notes, edited text metadata and analysis, keyed by file identity. Audio files remain memory-only.
 - `deckforge-id-acrcloud`, `deckforge-id-audd`, `deckforge-id-acoustid` and `deckforge-id-custom-fingerprint` may hold provider endpoint configuration. The code can read `apiKey` and send it as a bearer token. This is insecure for shared browser profiles and should be replaced by server-side secret handling.
 - `/api/stems` accepts multipart field `audio`. Success returns `{ stems: [{ id, name, fileName, url }] }`.
 - `/generated_stems/<job>/<file>` is served statically by the Python server.

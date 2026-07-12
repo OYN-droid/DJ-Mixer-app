@@ -24,7 +24,7 @@
           <button class="tab-button" data-target="stems" title="Stems">Stems</button>
           <button class="tab-button" data-target="editor" title="Editor">Editor</button>
           <button class="tab-button" data-target="ai" title="AI">AI</button>
-          <button class="tab-button" data-target="sources" title="Sources">Crate</button>
+          <button class="tab-button" data-target="sources" title="Diggin’ in the Crates">DITC</button>
         </nav>
         <div class="master-meter" aria-label="Master output meter">
           <span></span>
@@ -555,24 +555,67 @@
         </section>
 
         <section id="sources" class="view" aria-labelledby="sourcesTitle">
-          <div class="section-heading">
+          <div class="ditc-header">
             <div>
-              <h2 id="sourcesTitle">Source Crate</h2>
-              <p>Save track links from YouTube, SoundCloud, Bandcamp, Apple Music, Spotify, or anywhere else.</p>
+              <p class="eyebrow">Music Library</p>
+              <h2 id="sourcesTitle">DITC</h2>
+              <p>Diggin’ in the Crates</p>
+            </div>
+            <div class="ditc-counts" aria-live="polite">
+              <strong id="ditcTrackCount">0 tracks</strong>
+              <span id="ditcPlayableCount">0 playable</span>
+              <span>Current project: DeckForge Session</span>
+            </div>
+            <div class="ditc-header-actions">
+              <label class="file-button primary-button">Import Files<input id="ditcFileInput" type="file" accept="audio/*" multiple></label>
+              <label class="file-button secondary-button">Import Folder<input id="ditcFolderInput" type="file" accept="audio/*" webkitdirectory multiple></label>
+              <button id="ditcModeToggle" class="secondary-button" aria-pressed="false">Advanced</button>
             </div>
           </div>
-          <form id="sourceForm" class="source-form">
-            <input id="sourceUrl" type="url" placeholder="Paste track or playlist URL" required>
-            <input id="sourceName" type="text" placeholder="Track name">
-            <button class="primary-button" type="submit">Add</button>
-          </form>
-          <div id="sourceDrop" class="drop-zone">
-            <strong>Drop audio or folders into the crate</strong>
-            <span>Import full albums, sample packs, and DJ folders. Local files stay available during this session and can be loaded to either deck or a pad.</span>
+          <div class="ditc-toolbar">
+            <label class="ditc-search"><span class="sr-only">Search DITC</span><input id="ditcSearch" type="search" placeholder="Search title, folder, genre, notes, or tags"></label>
+            <button id="ditcClearSearch" class="secondary-button">Clear</button>
+            <label>Sort <select id="ditcSort"><option value="recent">Recently Added</option><option value="title">Title</option><option value="artist">Artist</option><option value="album">Album</option><option value="bpm">BPM</option><option value="key">Key</option><option value="duration">Duration</option><option value="energy">Energy</option><option value="transition">Transition Match</option></select></label>
+            <button id="ditcViewToggle" class="secondary-button" aria-pressed="false">Comfortable View</button>
+            <span id="ditcResultCount">0 results</span>
           </div>
-          <p id="sourceStatus" class="fine-print">Drop audio files, folders, or add a direct audio URL.</p>
-          <div id="sourceList" class="source-list"></div>
-          <p class="fine-print">Streaming services may block direct extraction in browsers. Use purchased/downloaded files, mic/line-in, tab audio capture, or platform-approved exports for remix work.</p>
+          <div id="sourceDrop" class="drop-zone ditc-drop-zone">
+            <strong>Drop music or a folder here</strong>
+            <span>Then preview it, or load it onto Deck A or Deck B. Supported: MP3, WAV, AIFF, FLAC, M4A, AAC and ALAC.</span>
+          </div>
+          <p id="sourceStatus" class="fine-print" role="status">DITC is ready for local music.</p>
+          <div class="ditc-layout">
+            <aside class="ditc-collections" aria-label="DITC collections">
+              <h3>Collections</h3>
+              <div id="ditcCollectionList"></div>
+              <div class="ditc-advanced-only">
+                <h3>Batch actions</h3>
+                <label>Add tag <input id="ditcBatchTag" type="text" placeholder="Example: House"></label>
+                <button id="ditcApplyBatchTag" class="secondary-button">Tag Selected</button>
+                <button id="ditcAnalyzeSelected" class="secondary-button">Analyze Selected</button>
+                <button id="ditcExportList" class="secondary-button">Export Track List</button>
+                <button id="ditcDeleteSelected" class="secondary-button">Delete Selected</button>
+              </div>
+            </aside>
+            <section class="ditc-library" aria-label="Track library">
+              <div id="sourceList" class="source-list ditc-track-list"></div>
+            </section>
+            <aside id="ditcInspector" class="ditc-inspector" aria-label="Selected track inspector">
+              <p class="fine-print">Select a track to inspect its metadata and destinations.</p>
+            </aside>
+          </div>
+          <details class="ditc-reference-form ditc-advanced-only">
+            <summary>Add a project or provider reference</summary>
+            <form id="sourceForm" class="source-form">
+              <input id="sourceUrl" type="url" placeholder="Paste a reference URL" required>
+              <input id="sourceName" type="text" placeholder="Reference name">
+              <button class="primary-button" type="submit">Add Reference</button>
+            </form>
+            <p class="fine-print">References are metadata only unless the URL points directly to CORS-enabled audio.</p>
+          </details>
+          <details id="ditcDiagnostics" class="ditc-diagnostics ditc-advanced-only">
+            <summary>Development diagnostics</summary><pre id="ditcDiagnosticsOutput"></pre>
+          </details>
         </section>
       </main>
     </div>

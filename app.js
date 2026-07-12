@@ -78,6 +78,20 @@ const sourceFiles = [];
 const droppedFilePaths = new WeakMap();
 const supportedAudioExtensions = [".mp3", ".wav", ".wave", ".aif", ".aiff", ".flac", ".m4a", ".aac", ".alac"];
 const supportedImageExtensions = [".jpg", ".jpeg", ".png", ".webp"];
+const DITC_METADATA_KEY = "deckforge-ditc-metadata";
+const ditcState = {
+  search: "",
+  filter: "all",
+  sort: "recent",
+  selectedTrackId: null,
+  previewTrackId: null,
+  smartMixIds: new Set(),
+  advanced: false,
+  comfortable: false,
+  lastImportResult: "No import yet",
+  lastError: "None",
+  dragTarget: "None"
+};
 
 const editorState = {
   tracks: [
@@ -4695,6 +4709,8 @@ function panicStopAllAudio() {
   stopDrums();
   stopAllInstrumentVoices();
   stopStemPreview();
+  ditcState.previewTrackId = null;
+  renderSources();
   stopEditorArrangement();
   if (editorState.recording) stopEditorPerformanceRecording();
 }
@@ -5040,9 +5056,10 @@ function deleteStem(stemId) {
   renderAiContext();
 }
 
-function playBufferPreview(buffer) {
+function playBufferPreview(buffer, options = {}) {
   if (!AudioEngine.context) return;
   stopStemPreview();
+  if (!options.ditcTrackId) ditcState.previewTrackId = null;
   const source = AudioEngine.context.createBufferSource();
   const gain = AudioEngine.context.createGain();
   source.buffer = buffer;
@@ -5056,8 +5073,15 @@ function playBufferPreview(buffer) {
     stemState.previewSource = null;
     stemState.previewGain = null;
     document.querySelector("#stopStemPreview").disabled = true;
+    if (options.onended) options.onended();
   };
   source.start();
+}
+
+function stopDitcPreview() {
+  stopStemPreview();
+  ditcState.previewTrackId = null;
+  renderSources();
 }
 
 function stopStemPreview() {
@@ -5346,6 +5370,8 @@ function toggleMixRecording() {
 }
 
 function switchView(target) {
+  const leavingDitc = document.querySelector("#sources")?.classList.contains("is-active") && target !== "sources";
+  if (leavingDitc && ditcState.previewTrackId) stopDitcPreview();
   document.querySelectorAll(".tab-button, .view").forEach((el) => el.classList.remove("is-active"));
   const button = document.querySelector(`.tab-button[data-target="${target}"]`);
   const view = document.querySelector(`#${target}`);
@@ -5443,17 +5469,35 @@ function setupDropZone(element, onFileDrop) {
   element.addEventListener("dragover", (event) => {
     event.preventDefault();
     element.classList.add("is-drop-target");
+    if (element.id === "sourceDrop") ditcState.dragTarget = "DITC import";
   });
   element.addEventListener("dragleave", () => {
     element.classList.remove("is-drop-target");
+    if (element.id === "sourceDrop") ditcState.dragTarget = "None";
   });
   element.addEventListener("drop", async (event) => {
     event.preventDefault();
     element.classList.remove("is-drop-target");
-    const files = await collectSupportedDropFiles(event.dataTransfer);
+    const ditcTrackId = event.dataTransfer.getData("application/x-deckforge-ditc-track");
+    if (ditcTrackId) {
+      if (element.matches(".deck[data-deck]")) await handleSourceFileAction(`deck-${element.dataset.deck}`, ditcTrackId);
+      else if (element.id === "stemDrop") await handleSourceFileAction("stems", ditcTrackId);
+      else setSourceStatus("That DITC track cannot be dropped here. Use a supported DeckForge destination.");
+      ditcState.dragTarget = "None";
+      return;
+    }
+    let files = [];
+    try {
+      files = await collectSupportedDropFiles(event.dataTransfer);
+    } catch {
+      ditcState.lastError = "The dropped folder could not be read. Check browser folder permissions and try again.";
+      setSourceStatus(ditcState.lastError);
+      return;
+    }
     if (element.id === "sourceDrop" && files.length) {
-      files.forEach((file) => addLocalSourceFile(file, { folderPath: fileFolderPath(file), silent: true }));
-      setSourceStatus(`Added ${files.length} audio file${files.length === 1 ? "" : "s"} from dropped folder/files to the crate.`);
+      const imported = files.filter((file) => addLocalSourceFile(file, { folderPath: fileFolderPath(file), silent: true })).length;
+      ditcState.lastImportResult = `Imported ${imported} of ${files.length} dropped audio files`;
+      setSourceStatus(imported ? `Added ${imported} audio file${imported === 1 ? "" : "s"} to DITC.` : "No new playable files were added. Duplicates were skipped.");
       renderSources();
       renderEditorSourceBin();
       renderAiContext();
@@ -5945,6 +5989,32 @@ function setupEvents() {
     }
     handleSavedSourceAction(button.dataset.sourceAction, button.dataset.sourceIndex);
   });
+  document.querySelector("#sourceList").addEventListener("dragstart", (event) => {
+    const row = event.target.closest("[data-track-id]");
+    if (!row) return;
+    const source = editorSources().find((candidate) => candidate.sourceKind === "crate" && candidate.id === row.dataset.trackId);
+    event.dataTransfer.setData("application/x-deckforge-ditc-track", row.dataset.trackId);
+    if (source) event.dataTransfer.setData("application/x-deckforge-editor-source", JSON.stringify(source));
+    event.dataTransfer.effectAllowed = "copy";
+    ditcState.dragTarget = "Dragging DITC track";
+  });
+  document.querySelector("#sourceList").addEventListener("dragend", () => {
+    ditcState.dragTarget = "None";
+  });
+  document.querySelector("#ditcInspector").addEventListener("click", (event) => {
+    const action = event.target.closest("[data-source-action]");
+    if (action) {
+      handleSourceFileAction(action.dataset.sourceAction, action.dataset.sourceId);
+      return;
+    }
+    const addTag = event.target.closest("[data-ditc-add-tag]");
+    if (addTag) {
+      addDitcTag(addTag.dataset.ditcAddTag, document.querySelector("#ditcInspectorTag").value);
+      return;
+    }
+    const removeTag = event.target.closest("[data-ditc-remove-tag]");
+    if (removeTag) removeDitcTag(removeTag.dataset.sourceId, removeTag.dataset.ditcRemoveTag);
+  });
   document.querySelector("#sourceList").addEventListener("change", (event) => {
     const checkbox = event.target.closest("[data-crate-kind]");
     if (!checkbox) return;
@@ -5955,12 +6025,101 @@ function setupEvents() {
       set.delete(checkbox.dataset.crateId);
     }
     renderAiContext();
+    renderSources();
   });
   document.querySelector("#sourceList").addEventListener("input", (event) => {
     const notes = event.target.closest("[data-crate-note-kind]");
     if (!notes) return;
     saveCrateNotes(notes.dataset.crateNoteKind, notes.dataset.crateNoteId, notes.value);
   });
+  document.querySelector("#ditcInspector").addEventListener("input", (event) => {
+    const notes = event.target.closest("[data-crate-note-kind]");
+    if (notes) saveCrateNotes(notes.dataset.crateNoteKind, notes.dataset.crateNoteId, notes.value);
+  });
+  document.querySelector("#ditcSearch").addEventListener("input", (event) => {
+    ditcState.search = event.target.value.trim();
+    renderSources();
+  });
+  document.querySelector("#ditcClearSearch").addEventListener("click", () => {
+    document.querySelector("#ditcSearch").value = "";
+    ditcState.search = "";
+    renderSources();
+  });
+  document.querySelector("#ditcSort").addEventListener("change", (event) => {
+    ditcState.sort = event.target.value;
+    renderSources();
+  });
+  document.querySelector("#ditcCollectionList").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-ditc-filter]");
+    if (!button) return;
+    ditcState.filter = button.dataset.ditcFilter;
+    renderSources();
+  });
+  document.querySelector("#ditcModeToggle").addEventListener("click", (event) => {
+    ditcState.advanced = !ditcState.advanced;
+    document.querySelector("#sources").classList.toggle("is-advanced", ditcState.advanced);
+    event.currentTarget.setAttribute("aria-pressed", ditcState.advanced ? "true" : "false");
+    event.currentTarget.textContent = ditcState.advanced ? "Simple" : "Advanced";
+  });
+  document.querySelector("#ditcViewToggle").addEventListener("click", (event) => {
+    ditcState.comfortable = !ditcState.comfortable;
+    document.querySelector("#sources").classList.toggle("is-comfortable", ditcState.comfortable);
+    event.currentTarget.setAttribute("aria-pressed", ditcState.comfortable ? "true" : "false");
+    event.currentTarget.textContent = ditcState.comfortable ? "Compact View" : "Comfortable View";
+  });
+  const importDitcFiles = (files) => {
+    const accepted = [...files].filter((file) => addLocalSourceFile(file, { folderPath: fileFolderPath(file), silent: true })).length;
+    ditcState.lastImportResult = `Imported ${accepted} of ${files.length} selected files`;
+    setSourceStatus(accepted ? `Added ${accepted} track${accepted === 1 ? "" : "s"} to DITC.` : "No new playable files were added.");
+    renderSources();
+    renderEditorSourceBin();
+    renderAiContext();
+  };
+  document.querySelector("#ditcFileInput").addEventListener("change", (event) => importDitcFiles(event.target.files));
+  document.querySelector("#ditcFolderInput").addEventListener("change", (event) => importDitcFiles(event.target.files));
+  document.querySelector("#ditcApplyBatchTag").addEventListener("click", () => {
+    const tag = document.querySelector("#ditcBatchTag").value.trim();
+    if (!tag || !crateSelection.local.size) {
+      setSourceStatus(!tag ? "Enter a tag first." : "Select at least one local track first.");
+      return;
+    }
+    crateSelection.local.forEach((id) => addDitcTag(id, tag, { silent: true }));
+    document.querySelector("#ditcBatchTag").value = "";
+    setSourceStatus(`Added “${tag}” to ${crateSelection.local.size} selected track${crateSelection.local.size === 1 ? "" : "s"}.`);
+    renderSources();
+  });
+  document.querySelector("#ditcAnalyzeSelected").addEventListener("click", analyzeSelectedCrateTracks);
+  document.querySelector("#ditcExportList").addEventListener("click", exportDitcTrackList);
+  document.querySelector("#ditcDeleteSelected").addEventListener("click", () => {
+    const ids = [...crateSelection.local];
+    if (!ids.length) {
+      setSourceStatus("Select at least one local track first.");
+      return;
+    }
+    if (!window.confirm(`Remove ${ids.length} selected track${ids.length === 1 ? "" : "s"} from this DITC session?`)) return;
+    ids.forEach((id) => deleteLocalSourceFile(id));
+    setSourceStatus(`Removed ${ids.length} selected track${ids.length === 1 ? "" : "s"} from this session.`);
+  });
+  const setupDitcDropAction = (selector, action) => {
+    const target = document.querySelector(selector);
+    target.addEventListener("dragover", (event) => {
+      if (![...event.dataTransfer.types].includes("application/x-deckforge-ditc-track")) return;
+      event.preventDefault();
+      target.classList.add("is-drop-target");
+      ditcState.dragTarget = selector;
+    });
+    target.addEventListener("dragleave", () => target.classList.remove("is-drop-target"));
+    target.addEventListener("drop", (event) => {
+      const id = event.dataTransfer.getData("application/x-deckforge-ditc-track");
+      if (!id) return;
+      event.preventDefault();
+      target.classList.remove("is-drop-target");
+      handleSourceFileAction(action, id);
+      ditcState.dragTarget = "None";
+    });
+  };
+  setupDitcDropAction("#sampler", "pad");
+  setupDitcDropAction("#smartMixPanel", "smartmix");
   setupDropZone(document.querySelector("#sourceDrop"), async (file) => {
     addLocalSourceFile(file);
   });
@@ -6052,23 +6211,91 @@ function addSource(event) {
   renderSources();
 }
 
+function ditcTrackStorageId(file, folderPath = "") {
+  return [file.name, file.size || 0, file.lastModified || 0, folderPath].join("::");
+}
+
+function readDitcMetadata() {
+  try {
+    return JSON.parse(localStorage.getItem(DITC_METADATA_KEY) || "{}");
+  } catch {
+    ditcState.lastError = "DITC metadata could not be read. Defaults are being used.";
+    return {};
+  }
+}
+
+function persistDitcTrack(track) {
+  try {
+    const metadata = readDitcMetadata();
+    metadata[track.storageId] = {
+      favorite: Boolean(track.favorite),
+      tags: track.tags || [],
+      notes: track.notes || "",
+      title: track.title || "",
+      artist: track.artist || "",
+      album: track.album || "",
+      year: track.year || "",
+      analysis: track.analysis || null
+    };
+    localStorage.setItem(DITC_METADATA_KEY, JSON.stringify(metadata));
+  } catch {
+    ditcState.lastError = "DITC metadata could not be saved. Browser storage may be full.";
+    setSourceStatus(ditcState.lastError);
+  }
+}
+
+function inferDitcMetadata(fileName) {
+  const base = fileName.replace(/\.[^/.]+$/, "");
+  const parts = base.split(/\s+-\s+/);
+  return {
+    title: parts.length > 1 ? parts.slice(1).join(" - ").trim() : base,
+    artist: parts.length > 1 ? parts[0].trim() : "Unknown artist",
+    album: "Unknown album"
+  };
+}
+
 function addLocalSourceFile(file, options = {}) {
-  if (!isSupportedAudioFile(file)) return;
+  if (!isSupportedAudioFile(file)) {
+    ditcState.lastError = `${file?.name || "File"} is not a supported audio format.`;
+    if (!options.silent) setSourceStatus(ditcState.lastError);
+    return false;
+  }
+  const folderPath = options.folderPath || fileFolderPath(file);
+  const storageId = ditcTrackStorageId(file, folderPath);
+  if (sourceFiles.some((source) => source.storageId === storageId)) {
+    ditcState.lastError = `${file.name} is already in DITC.`;
+    if (!options.silent) setSourceStatus(ditcState.lastError);
+    return false;
+  }
+  const inferred = inferDitcMetadata(file.name);
+  const saved = readDitcMetadata()[storageId] || {};
   sourceFiles.unshift({
     id: createId(),
+    storageId,
     name: file.name,
-    folderPath: options.folderPath || fileFolderPath(file),
+    title: saved.title || inferred.title,
+    artist: saved.artist || inferred.artist,
+    album: saved.album || inferred.album,
+    year: saved.year || "",
+    folderPath,
     file,
     buffer: options.buffer || null,
-    analysis: options.analysis || null,
-    notes: options.notes || ""
+    analysis: options.analysis || saved.analysis || null,
+    notes: options.notes || saved.notes || "",
+    tags: Array.isArray(saved.tags) ? saved.tags : [],
+    favorite: Boolean(saved.favorite),
+    addedAt: Date.now(),
+    padReady: false,
+    stemReady: false
   });
+  ditcState.lastImportResult = `Imported ${file.name}`;
   if (!options.silent) {
-    setSourceStatus(`Added ${file.name} to the crate.`);
+    setSourceStatus(`Added ${file.name} to DITC.`);
     renderSources();
     renderEditorSourceBin();
     renderAiContext();
   }
+  return true;
 }
 
 function addBufferToCrate(buffer, label, notes = "") {
@@ -6122,7 +6349,10 @@ async function analyzeSelectedCrateTracks() {
       const analysis = analyzeAudioBuffer(buffer, item.name);
       if (item.kind === "local") {
         const source = sourceFiles.find((sourceItem) => sourceItem.id === item.id);
-        if (source) source.analysis = analysis;
+        if (source) {
+          source.analysis = analysis;
+          persistDitcTrack(source);
+        }
       } else {
         saveSourceAnalysis(item.index, analysis);
       }
@@ -6224,13 +6454,70 @@ function saveSourceAnalysis(index, analysis) {
 async function handleSourceFileAction(action, id) {
   const item = sourceFiles.find((source) => source.id === id);
   if (!item) return;
+  if (action === "select") {
+    ditcState.selectedTrackId = id;
+    renderSources();
+    return;
+  }
+  if (action === "favorite") {
+    item.favorite = !item.favorite;
+    persistDitcTrack(item);
+    renderSources();
+    return;
+  }
+  if (action === "stop-preview") {
+    stopDitcPreview();
+    return;
+  }
   if (action === "delete") {
-    deleteLocalSourceFile(id);
+    if (window.confirm(`Remove ${item.name} from this DITC session?`)) deleteLocalSourceFile(id);
     return;
   }
   setSourceStatus(`Loading ${item.name}...`);
-  const buffer = await getSourceFileBuffer(id);
+  let buffer;
+  try {
+    buffer = await getSourceFileBuffer(id);
+  } catch (error) {
+    ditcState.lastError = `${item.name} could not be decoded. Try a different audio file.`;
+    setSourceStatus(ditcState.lastError);
+    return;
+  }
   if (!buffer) return;
+  if (action === "preview") {
+    ditcState.previewTrackId = id;
+    playBufferPreview(buffer, {
+      ditcTrackId: id,
+      onended: () => {
+        if (ditcState.previewTrackId === id) {
+          ditcState.previewTrackId = null;
+          renderSources();
+        }
+      }
+    });
+    renderSources();
+    setSourceStatus(`Previewing ${item.name}.`);
+    return;
+  }
+  if (action === "analyze") {
+    item.analysis = analyzeAudioBuffer(buffer, item.name);
+    persistDitcTrack(item);
+    setSourceStatus(`Analyzed ${item.name}.`);
+    renderSources();
+    return;
+  }
+  if (action === "smartmix") {
+    ditcState.smartMixIds.add(id);
+    crateSelection.local.add(id);
+    setSourceStatus(`${item.name} added to the Smart Mix selection.`);
+    renderSources();
+    return;
+  }
+  if (action === "arrangement") {
+    const source = editorSources().find((candidate) => candidate.sourceKind === "crate" && candidate.id === id);
+    if (source) await addEditorClipFromSource(source, 0, editorState.playhead);
+    switchView("editor");
+    return;
+  }
   if (action === "deck-a") {
     loadBufferToDeck(buffer, item.name, "a");
     switchView("decks");
@@ -6239,12 +6526,16 @@ async function handleSourceFileAction(action, id) {
     loadBufferToDeck(buffer, item.name, "b");
     switchView("decks");
   }
-  if (action === "pad") addBufferToPad(buffer, item.name);
+  if (action === "pad") {
+    addBufferToPad(buffer, item.name);
+    item.padReady = true;
+  }
   if (action === "stems") {
     stemState.file = item.file;
     stemState.sourceBuffer = buffer;
     stemState.sourceName = item.name.replace(/\.[^/.]+$/, "");
     stemState.stems = [];
+    item.stemReady = true;
     document.querySelector("#splitStems").disabled = false;
     document.querySelector("#stemStatus").textContent = `Loaded ${item.name}. Ready to split.`;
     renderStemResults();
@@ -6258,7 +6549,7 @@ async function handleSavedSourceAction(action, index) {
   const item = sources[Number(index)];
   if (!item) return;
   if (action === "delete") {
-    deleteSavedSource(index);
+    if (window.confirm(`Delete the ${item.name} reference from DITC?`)) deleteSavedSource(index);
     return;
   }
   setSourceStatus(`Trying to load ${item.name}...`);
@@ -6306,7 +6597,11 @@ function deleteLocalSourceFile(id) {
   const index = sourceFiles.findIndex((source) => source.id === id);
   if (index === -1) return;
   const [removed] = sourceFiles.splice(index, 1);
-  setSourceStatus(`Deleted ${removed.name} from the crate.`);
+  if (ditcState.previewTrackId === id) stopDitcPreview();
+  if (ditcState.selectedTrackId === id) ditcState.selectedTrackId = null;
+  crateSelection.local.delete(id);
+  ditcState.smartMixIds.delete(id);
+  setSourceStatus(`Removed ${removed.name} from this DITC session.`);
   renderSources();
   renderAiContext();
 }
@@ -6325,7 +6620,7 @@ function selectedCrateItems() {
   return [
     ...sourceFiles
       .filter((source) => crateSelection.local.has(source.id))
-      .map((source) => ({ kind: "local", id: source.id, name: source.name, file: source.file, analysis: source.analysis, notes: source.notes || "" })),
+      .map((source) => ({ kind: "local", id: source.id, name: source.name, file: source.file, analysis: source.analysis, notes: source.notes || "", tags: source.tags || [], favorite: source.favorite })),
     ...savedSources
       .map((source, index) => ({ ...source, kind: "saved", index, id: String(index) }))
       .filter((source) => crateSelection.saved.has(String(source.index)))
@@ -6341,7 +6636,10 @@ function analysisSummary(analysis) {
 function saveCrateNotes(kind, id, value) {
   if (kind === "local") {
     const source = sourceFiles.find((item) => item.id === id);
-    if (source) source.notes = value;
+    if (source) {
+      source.notes = value;
+      persistDitcTrack(source);
+    }
   } else {
     const sources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
     if (sources[Number(id)]) {
@@ -6350,6 +6648,29 @@ function saveCrateNotes(kind, id, value) {
     }
   }
   renderAiContext();
+}
+
+function addDitcTag(id, value, options = {}) {
+  const track = sourceFiles.find((item) => item.id === id);
+  const tag = String(value || "").trim().replace(/\s+/g, " ");
+  if (!track || !tag) return false;
+  if (!(track.tags || []).some((existing) => existing.toLowerCase() === tag.toLowerCase())) {
+    track.tags = [...(track.tags || []), tag].slice(0, 30);
+    persistDitcTrack(track);
+  }
+  if (!options.silent) {
+    setSourceStatus(`Added “${tag}” to ${track.title}.`);
+    renderSources();
+  }
+  return true;
+}
+
+function removeDitcTag(id, value) {
+  const track = sourceFiles.find((item) => item.id === id);
+  if (!track) return;
+  track.tags = (track.tags || []).filter((tag) => tag !== value);
+  persistDitcTrack(track);
+  renderSources();
 }
 
 async function searchAudioSections() {
@@ -6493,55 +6814,197 @@ function handleAiSearchAction(action, id) {
 function renderSources() {
   const list = document.querySelector("#sourceList");
   const sources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
-  list.innerHTML = sources.length || sourceFiles.length ? "" : "<p class=\"fine-print\">No saved sources yet.</p>";
-  sourceFiles.forEach((source) => {
-    const item = document.createElement("div");
-    item.className = "source-item";
-    const folderDetail = source.folderPath && source.folderPath !== source.name
-      ? `<br><span class="fine-print">Folder: ${escapeHtml(source.folderPath)}</span>`
-      : "";
-    item.innerHTML = `
-      <div>
-        <label class="crate-select"><input type="checkbox" data-crate-kind="local" data-crate-id="${source.id}" ${crateSelection.local.has(source.id) ? "checked" : ""}> Select</label>
-        <strong>${escapeHtml(source.name)}</strong><br>
-        <span class="fine-print">Local audio file</span>
-        ${folderDetail}
-        <br><span class="fine-print">${analysisSummary(source.analysis)}</span>
-        <textarea class="crate-notes" data-crate-note-kind="local" data-crate-note-id="${source.id}" rows="2" placeholder="Cue text, transcript lines, quotes, timestamps...">${escapeHtml(source.notes || "")}</textarea>
-      </div>
-      <div class="source-actions">
-        <button data-source-action="deck-a" data-source-id="${source.id}">Deck A</button>
-        <button data-source-action="deck-b" data-source-id="${source.id}">Deck B</button>
-        <button data-source-action="pad" data-source-id="${source.id}">Pad</button>
-        <button data-source-action="stems" data-source-id="${source.id}">Stems</button>
-        <button data-source-action="delete" data-source-id="${source.id}">Delete</button>
-      </div>
-    `;
-    list.appendChild(item);
-  });
-  sources.forEach((source, index) => {
-    const item = document.createElement("div");
-    item.className = "source-item";
-    item.innerHTML = `
-      <div>
-        <label class="crate-select"><input type="checkbox" data-crate-kind="saved" data-crate-id="${index}" ${crateSelection.saved.has(String(index)) ? "checked" : ""}> Select</label>
-        <strong>${source.name}</strong><br>
-        <a href="${source.url}" target="_blank" rel="noreferrer">${source.url}</a>
-        <br><span class="fine-print">${detectPlatform(source.url)}</span>
-        <br><span class="fine-print">${analysisSummary(source.analysis)}</span>
-        <textarea class="crate-notes" data-crate-note-kind="saved" data-crate-note-id="${index}" rows="2" placeholder="Cue text, transcript lines, quotes, timestamps...">${source.notes || ""}</textarea>
-      </div>
-      <div class="source-actions">
-        <button data-source-action="deck-a" data-source-index="${index}">Deck A</button>
-        <button data-source-action="deck-b" data-source-index="${index}">Deck B</button>
-        <button data-source-action="pad" data-source-index="${index}">Pad</button>
-        <button data-source-action="stems" data-source-index="${index}">Stems</button>
-        <button data-source-action="delete" data-source-index="${index}">Delete</button>
-      </div>
-    `;
-    list.appendChild(item);
-  });
+  const visible = sortedDitcTracks(sourceFiles.filter(matchesDitcFilter));
+  list.innerHTML = "";
+  if (!sourceFiles.length && !sources.length) {
+    list.innerHTML = `<div class="ditc-empty"><strong>Drop music here, then load a song onto Deck A or Deck B.</strong><p>Import files or a folder to start digging.</p></div>`;
+  } else if (!visible.length && sourceFiles.length) {
+    list.innerHTML = `<div class="ditc-empty"><strong>No tracks match this view.</strong><p>Clear search or choose All Tracks.</p></div>`;
+  }
+  visible.forEach((source) => list.appendChild(renderDitcTrackRow(source)));
+  if (!ditcState.search && ditcState.filter === "all") {
+    sources.forEach((source, index) => list.appendChild(renderDitcReferenceRow(source, index)));
+  }
+  document.querySelector("#ditcTrackCount").textContent = `${sourceFiles.length + sources.length} track${sourceFiles.length + sources.length === 1 ? "" : "s"}`;
+  document.querySelector("#ditcPlayableCount").textContent = `${sourceFiles.length} playable`;
+  document.querySelector("#ditcResultCount").textContent = `${visible.length} result${visible.length === 1 ? "" : "s"}`;
+  renderDitcCollections();
+  renderDitcInspector();
+  renderDitcDiagnostics();
   updateSmartMixSourceOptions();
+}
+
+function ditcSearchText(track) {
+  return [track.title, track.artist, track.album, track.name, track.analysis?.genre, track.notes, track.folderPath, ...(track.tags || [])].join(" ").toLowerCase();
+}
+
+function matchesDitcFilter(track) {
+  if (ditcState.search && !ditcSearchText(track).includes(ditcState.search.toLowerCase())) return false;
+  const filter = ditcState.filter;
+  if (filter === "favorites") return track.favorite;
+  if (filter === "recent") return Date.now() - track.addedAt < 24 * 60 * 60 * 1000;
+  if (filter === "analyzed") return Boolean(track.analysis);
+  if (filter === "unanalyzed") return !track.analysis;
+  if (filter === "stems") return track.stemReady;
+  if (filter === "pads") return track.padReady;
+  if (filter === "smartmix") return ditcState.smartMixIds.has(track.id) || crateSelection.local.has(track.id);
+  if (filter === "folders") return Boolean(track.folderPath && track.folderPath !== track.name);
+  if (filter === "intro") return (track.tags || []).some((tag) => tag.toLowerCase() === "intro") || Boolean(track.analysis?.intro);
+  if (filter === "outro") return (track.tags || []).some((tag) => tag.toLowerCase() === "outro") || Boolean(track.analysis?.outro);
+  if (filter === "transition") return (track.tags || []).some((tag) => tag.toLowerCase() === "transition") || Boolean(ditcTransitionMatch(track));
+  return true;
+}
+
+function sortedDitcTracks(tracks) {
+  const value = (track, key) => {
+    if (key === "title") return track.title || track.name || "";
+    if (key === "artist") return track.artist || "";
+    if (key === "album") return track.album || "";
+    if (key === "bpm") return track.analysis?.bpm ?? Number.MAX_SAFE_INTEGER;
+    if (key === "key") return track.analysis?.key || "~";
+    if (key === "duration") return track.analysis?.duration ?? track.buffer?.duration ?? Number.MAX_SAFE_INTEGER;
+    if (key === "energy") return ({ Low: 1, Medium: 2, High: 3 })[track.analysis?.energy] || 0;
+    if (key === "transition") return ditcTransitionMatch(track)?.rank || 0;
+    return track.addedAt || 0;
+  };
+  return [...tracks].sort((a, b) => {
+    const left = value(a, ditcState.sort);
+    const right = value(b, ditcState.sort);
+    if (typeof left === "number" && typeof right === "number") return ditcState.sort === "recent" ? right - left : left - right;
+    return String(left).localeCompare(String(right));
+  });
+}
+
+function ditcCamelot(key) {
+  const map = { "C major": "8B", "G major": "9B", "F major": "7B", "A minor": "8A", "E minor": "9A", "D minor": "7A", "G minor": "6A", "C minor": "5A", "F minor": "4A", "Bb minor": "3A" };
+  return map[key] || "N/A";
+}
+
+function ditcTransitionMatch(track) {
+  const activeId = detectActiveDeck();
+  const active = activeId ? deckState[activeId] : null;
+  if (!active?.analysis || !track.analysis) return null;
+  const bpmDistance = Math.abs(normalizeBpmForMix(active.analysis.bpm, track.analysis.bpm) - track.analysis.bpm);
+  const harmonic = areKeysCompatible(active.analysis.key, track.analysis.key);
+  const rank = harmonic && bpmDistance <= 6 ? 3 : bpmDistance <= 12 ? 2 : 1;
+  return { rank, label: `${rank === 3 ? "Strong" : rank === 2 ? "Possible" : "Wide"} Basic Match` };
+}
+
+function renderDitcTrackRow(source) {
+  const row = document.createElement("article");
+  row.className = `ditc-track-row${ditcState.selectedTrackId === source.id ? " is-selected" : ""}${ditcState.previewTrackId === source.id ? " is-previewing" : ""}`;
+  row.dataset.trackId = source.id;
+  row.draggable = true;
+  const duration = source.analysis?.duration || source.buffer?.duration;
+  const transition = ditcTransitionMatch(source);
+  row.innerHTML = `
+    <label><span class="sr-only">Select ${escapeHtml(source.title)}</span><input type="checkbox" data-crate-kind="local" data-crate-id="${source.id}" ${crateSelection.local.has(source.id) ? "checked" : ""}></label>
+    <span class="ditc-artwork" aria-hidden="true">${escapeHtml((source.title || source.name).slice(0, 2).toUpperCase())}</span>
+    <button class="ditc-track-title" data-source-action="select" data-source-id="${source.id}" title="Inspect ${escapeHtml(source.title)}">${escapeHtml(source.title)}<span class="ditc-track-subtitle">${escapeHtml(source.artist)} · ${escapeHtml(source.album)}</span></button>
+    <span class="ditc-cell ditc-optional">${escapeHtml(source.analysis?.genre || "Unknown genre")}</span>
+    <span class="ditc-cell">${source.analysis?.bpm || "N/A"} BPM</span>
+    <span class="ditc-cell">${escapeHtml(source.analysis?.key || "N/A")}<br>${ditcCamelot(source.analysis?.key)}</span>
+    <span class="ditc-cell ditc-optional">${duration ? formatTime(duration) : "N/A"}<br>${transition?.label || "Not Scored"}</span>
+    <div class="ditc-row-actions">
+      <button data-source-action="${ditcState.previewTrackId === source.id ? "stop-preview" : "preview"}" data-source-id="${source.id}" title="${ditcState.previewTrackId === source.id ? "Stop Preview" : "Preview"}">${ditcState.previewTrackId === source.id ? "■" : "▶"}</button>
+      <button data-source-action="deck-a" data-source-id="${source.id}" title="Load Deck A">A</button>
+      <button data-source-action="deck-b" data-source-id="${source.id}" title="Load Deck B">B</button>
+      <button class="${source.favorite ? "is-active" : ""}" data-source-action="favorite" data-source-id="${source.id}" title="Favorite">★</button>
+      <details><summary title="More actions">•••</summary><div class="ditc-more-menu">
+        <button data-source-action="smartmix" data-source-id="${source.id}">Add to Smart Mix</button>
+        <button data-source-action="pad" data-source-id="${source.id}">Send to Pads</button>
+        <button data-source-action="stems" data-source-id="${source.id}">Send to Stem Lab</button>
+        <button data-source-action="arrangement" data-source-id="${source.id}">Send to Arrangement</button>
+        <button data-source-action="analyze" data-source-id="${source.id}">Analyze</button>
+        <button data-source-action="delete" data-source-id="${source.id}">Delete</button>
+      </div></details>
+    </div>`;
+  return row;
+}
+
+function renderDitcReferenceRow(source, index) {
+  const row = document.createElement("article");
+  row.className = "ditc-track-row";
+  row.innerHTML = `<label><input type="checkbox" data-crate-kind="saved" data-crate-id="${index}" ${crateSelection.saved.has(String(index)) ? "checked" : ""}></label><span class="ditc-artwork">↗</span><div><strong>${escapeHtml(source.name)}</strong><span class="ditc-track-subtitle">${escapeHtml(detectPlatform(source.url))} reference</span></div><span class="ditc-cell ditc-optional">Metadata reference</span><span class="ditc-cell">N/A BPM</span><span class="ditc-cell">N/A</span><span class="ditc-cell ditc-optional">Not Scored</span><div class="ditc-row-actions"><button data-source-action="deck-a" data-source-index="${index}" title="Try Deck A">A</button><button data-source-action="deck-b" data-source-index="${index}" title="Try Deck B">B</button><button data-source-action="delete" data-source-index="${index}" title="Delete">×</button></div>`;
+  return row;
+}
+
+function renderDitcCollections() {
+  const container = document.querySelector("#ditcCollectionList");
+  const definitions = [
+    ["all", "All Tracks"], ["recent", "Recently Added"], ["favorites", "Favorites"], ["smartmix", "Smart Mix Candidates"],
+    ["intro", "Intro Ideas"], ["outro", "Outro Ideas"], ["transition", "Transition Songs"], ["analyzed", "Analyzed"],
+    ["unanalyzed", "Unanalyzed"], ["stems", "Stem Ready"], ["pads", "Pad Ready"], ["folders", "Imported Folders"]
+  ];
+  container.innerHTML = definitions.map(([id, label]) => {
+    const count = sourceFiles.filter((track) => {
+      const previous = ditcState.filter;
+      ditcState.filter = id;
+      const matches = matchesDitcFilter(track);
+      ditcState.filter = previous;
+      return matches;
+    }).length;
+    return `<button class="ditc-collection-button${ditcState.filter === id ? " is-active" : ""}" data-ditc-filter="${id}"><span>${label}</span><span>${count}</span></button>`;
+  }).join("");
+}
+
+function renderDitcInspector() {
+  const inspector = document.querySelector("#ditcInspector");
+  const track = sourceFiles.find((source) => source.id === ditcState.selectedTrackId);
+  if (!track) {
+    inspector.innerHTML = `<p class="fine-print">Select a track to inspect its metadata and destinations.</p>`;
+    return;
+  }
+  const duration = track.analysis?.duration || track.buffer?.duration;
+  const transition = ditcTransitionMatch(track);
+  inspector.innerHTML = `
+    <div class="ditc-inspector-artwork">${escapeHtml(track.title.slice(0, 2).toUpperCase())}</div>
+    <h3>${escapeHtml(track.title)}</h3><p class="fine-print">${escapeHtml(track.artist)} · ${escapeHtml(track.album)}</p>
+    <div class="ditc-inspector-actions"><button data-source-action="${ditcState.previewTrackId === track.id ? "stop-preview" : "preview"}" data-source-id="${track.id}">${ditcState.previewTrackId === track.id ? "Stop Preview" : "Preview"}</button><button data-source-action="deck-a" data-source-id="${track.id}">Deck A</button><button data-source-action="deck-b" data-source-id="${track.id}">Deck B</button><button data-source-action="pad" data-source-id="${track.id}">Pads</button><button data-source-action="stems" data-source-id="${track.id}">Stems</button><button data-source-action="arrangement" data-source-id="${track.id}">Arrangement</button></div>
+    <dl><dt>Duration</dt><dd>${duration ? formatTime(duration) : "Unknown"}</dd><dt>File</dt><dd>${escapeHtml(track.file.type || track.name.split(".").pop().toUpperCase())}, ${formatFileSize(track.file.size)}</dd><dt>BPM</dt><dd>${track.analysis?.bpm || "Unknown"}</dd><dt>Key</dt><dd>${escapeHtml(track.analysis?.key || "Unknown")} · ${ditcCamelot(track.analysis?.key)}</dd><dt>Genre</dt><dd>${escapeHtml(track.analysis?.genre || "Unknown")}</dd><dt>Mood</dt><dd>${escapeHtml(track.analysis?.mood || "Unknown")}</dd><dt>Energy</dt><dd>${escapeHtml(track.analysis?.energy || "Unknown")}</dd><dt>Source</dt><dd>Local file</dd><dt>Folder</dt><dd>${escapeHtml(track.folderPath || "Local import")}</dd><dt>Analysis</dt><dd>${track.analysis ? "Analyzed" : "Not analyzed"}</dd><dt>Stem state</dt><dd>${track.stemReady ? "Prepared" : "Not prepared"}</dd><dt>Pad state</dt><dd>${track.padReady ? "Prepared" : "Not prepared"}</dd><dt>Project match</dt><dd>Not Scored</dd><dt>Transition</dt><dd>${transition?.label || "Not Scored"}</dd></dl>
+    <div class="ditc-tag-list">${(track.tags || []).map((tag) => `<button class="ditc-tag" data-ditc-remove-tag="${escapeHtml(tag)}" data-source-id="${track.id}" title="Remove tag">${escapeHtml(tag)} ×</button>`).join("") || "<span class=\"fine-print\">No tags</span>"}</div>
+    <label>Add tag <input id="ditcInspectorTag" type="text" placeholder="Intro, House, NYC"></label><button data-ditc-add-tag="${track.id}" class="secondary-button">Add Tag</button>
+    <label>Cue notes<textarea data-crate-note-kind="local" data-crate-note-id="${track.id}" rows="4">${escapeHtml(track.notes || "")}</textarea></label>
+    <div class="ditc-inspector-actions"><button data-source-action="analyze" data-source-id="${track.id}">Analyze</button><button data-source-action="smartmix" data-source-id="${track.id}">Add to Smart Mix</button><button data-source-action="favorite" data-source-id="${track.id}">${track.favorite ? "Unfavorite" : "Favorite"}</button><button data-source-action="delete" data-source-id="${track.id}">Delete</button></div>`;
+}
+
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes)) return "Unknown size";
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function exportDitcTrackList() {
+  const rows = sourceFiles.map((track) => ({
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    fileName: track.name,
+    folder: track.folderPath,
+    duration: track.analysis?.duration || track.buffer?.duration || null,
+    bpm: track.analysis?.bpm || null,
+    key: track.analysis?.key || null,
+    genre: track.analysis?.genre || null,
+    energy: track.analysis?.energy || null,
+    favorite: track.favorite,
+    tags: track.tags || [],
+    notes: track.notes || ""
+  }));
+  const blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "deckforge-ditc-track-list.json";
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setSourceStatus(`Exported ${rows.length} DITC track${rows.length === 1 ? "" : "s"}.`);
+}
+
+function renderDitcDiagnostics() {
+  const details = document.querySelector("#ditcDiagnostics");
+  if (details) details.hidden = !DECKFORGE_DEVELOPMENT;
+  const output = document.querySelector("#ditcDiagnosticsOutput");
+  if (output && DECKFORGE_DEVELOPMENT) output.textContent = JSON.stringify({ totalTrackCount: sourceFiles.length + JSON.parse(localStorage.getItem("deckforge-sources") || "[]").length, playableTrackCount: sourceFiles.length, selectedTrack: ditcState.selectedTrackId, activePreview: ditcState.previewTrackId, objectUrlCount: 0, currentFilter: ditcState.filter, currentSort: ditcState.sort, currentSearch: ditcState.search, dragTarget: ditcState.dragTarget, lastImportResult: ditcState.lastImportResult, lastError: ditcState.lastError }, null, 2);
 }
 
 function updateSmartMixSourceOptions() {
