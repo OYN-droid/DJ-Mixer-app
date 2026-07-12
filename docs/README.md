@@ -14,6 +14,8 @@ This directory is the DeckForge v2 recovery and design baseline. It records obse
 8. [Roadmap](07-roadmap.md)
 9. [Manual QA checklist](08-manual-qa-checklist.md)
 10. [Modularization plan](09-modularization-plan.md)
+11. [Working Auto Mix baseline](10-working-auto-mix-baseline.md)
+12. [Decks regression checklist](11-decks-regression-checklist.md)
 
 ## Recovery snapshot
 

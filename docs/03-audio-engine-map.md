@@ -2,7 +2,7 @@
 
 ## Core graph
 
-`AudioEngine.init` lazily creates one `AudioContext`, a `MediaStreamDestination` for recording and a master analyser. The analyser connects to speakers and the recorder destination. Audio resumes only after Start Audio or another function explicitly calls initialization.
+`AudioEngine.init` lazily creates one `AudioContext`, a `MediaStreamDestination` for recording, a master analyser and a master gain. The analyser feeds the master gain, which connects to speakers and the recorder destination. Audio resumes only after Start Audio or another function explicitly calls initialization.
 
 ```mermaid
 flowchart LR
@@ -21,8 +21,9 @@ flowchart LR
   Stems --> Master
   Editor --> Master
   DeckFX --> Master
-  Master --> Speakers[AudioContext destination]
-  Master --> Recorder[MediaStreamDestination]
+  Master --> MasterGain[Master gain]
+  MasterGain --> Speakers[AudioContext destination]
+  MasterGain --> Recorder[MediaStreamDestination]
 ```
 
 ## Owners and scheduling
@@ -39,7 +40,7 @@ flowchart LR
 
 ## Master volume and crossfader
 
-There is no dedicated master-volume control or master gain node. Each deck gain is trim multiplied by channel fader. Crossfader uses per-deck cross gains with an equal-power curve. Non-deck systems connect to the master analyser and bypass the crossfader.
+The Master control updates a dedicated master gain node after the analyser. Each deck gain is trim multiplied by channel fader. Crossfader uses per-deck cross gains with an equal-power curve. Non-deck systems connect to the master analyser and bypass the crossfader.
 
 ## Global stop
 

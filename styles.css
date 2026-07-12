@@ -231,14 +231,102 @@ h3 {
   padding: 0 10px;
 }
 
-.smart-mix-status {
+.smart-mix-panel {
   margin: -8px 0 18px;
+  padding: 14px;
+  border: 1px solid rgba(168, 113, 255, 0.35);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(168, 113, 255, 0.1), rgba(38, 214, 199, 0.04));
+}
+
+.smart-mix-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.smart-mix-panel-head div {
+  display: grid;
+  gap: 4px;
+}
+
+#smartMixState {
+  color: #c7a8ff;
+}
+
+#smartMixCountdown {
+  color: var(--aqua);
+  font-weight: 800;
+}
+
+.smart-mix-status {
+  margin: 10px 0 0;
   padding: 10px 12px;
   border: 1px solid rgba(38, 214, 199, 0.2);
   border-radius: 8px;
   background: rgba(38, 214, 199, 0.06);
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.smart-mix-details {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.smart-mix-details div {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.smart-mix-details dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.smart-mix-details dd {
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.smart-mix-diagnostics {
+  margin-top: 10px;
+  color: var(--muted);
+}
+
+.smart-mix-diagnostics pre {
+  overflow: auto;
+  padding: 10px;
+  border-radius: 6px;
+  background: #07090d;
+  color: var(--aqua);
+  font-size: 0.75rem;
+}
+
+.deck-status,
+.deck-meta {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.deck-status[data-state="playing"] { color: var(--green); }
+.deck-status[data-state="error"] { color: var(--hot); }
+.deck-status[data-state^="transitioning"] { color: #c7a8ff; }
+
+#decks:not(.is-advanced) .advanced-only {
+  display: none;
 }
 
 .tempo-box input,
@@ -318,6 +406,10 @@ h3 {
   grid-template-columns: minmax(260px, 1fr) minmax(220px, 300px) minmax(260px, 1fr);
   gap: 18px;
   align-items: start;
+}
+
+#decks:not(.is-advanced) .deck-grid {
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
 }
 
 .deck,
@@ -1619,12 +1711,16 @@ input[type="range"] {
 }
 
 @media (max-width: 1080px) {
-  .deck-grid {
+  .deck-grid,
+  #decks:not(.is-advanced) .deck-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 980px) {
+  .smart-mix-details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .app-shell {
     grid-template-columns: 1fr;
   }

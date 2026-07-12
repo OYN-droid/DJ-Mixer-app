@@ -52,7 +52,7 @@ Never commit `.env` files, API keys, tokens, credentials or private keys. Curren
 - Apple Music, Spotify and other platform detection does not provide SDK playback.
 - AI planning is local heuristic logic. It is not a hosted generation model.
 - Cue monitor buttons do not route headphone audio.
-- There is no dedicated master volume, undo system or saved arrangement format.
+- There is no undo system or saved arrangement format.
 
 ## Documentation
 

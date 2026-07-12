@@ -21,6 +21,7 @@ const AudioEngine = {
   chunks: [],
   mixUrl: null,
   masterAnalyser: null,
+  masterGain: null,
 
   async init() {
     if (!this.context) {
@@ -28,8 +29,11 @@ const AudioEngine = {
       this.destination = this.context.createMediaStreamDestination();
       this.masterAnalyser = this.context.createAnalyser();
       this.masterAnalyser.fftSize = 256;
-      this.masterAnalyser.connect(this.context.destination);
-      this.masterAnalyser.connect(this.destination);
+      this.masterGain = this.context.createGain();
+      this.masterGain.gain.value = Number(document.querySelector("#masterVolume")?.value || 0.9);
+      this.masterAnalyser.connect(this.masterGain);
+      this.masterGain.connect(this.context.destination);
+      this.masterGain.connect(this.destination);
     }
     if (this.context.state === "suspended") {
       await this.context.resume();
@@ -193,6 +197,7 @@ const AudioIdentificationService = {
 
 const autoMixState = {
   running: false,
+  state: "Idle",
   mode: "club",
   sourceMode: "both",
   items: [],
@@ -203,7 +208,11 @@ const autoMixState = {
   preparedIndex: null,
   timers: [],
   transition: null,
-  handoffArmed: false
+  handoffArmed: false,
+  incomingDeck: null,
+  estimatedTransitionAt: null,
+  lastManualOverride: "None",
+  lastError: "None"
 };
 
 const drums = {
@@ -892,6 +901,12 @@ const instrument = {
 function createDeckState(id) {
   return {
     id,
+    status: "empty",
+    trackName: "",
+    analysis: null,
+    smartMixControlled: false,
+    manualOverride: false,
+    lastError: "",
     buffer: null,
     source: null,
     startedAt: 0,
@@ -908,6 +923,43 @@ function createDeckState(id) {
     filter: null,
     crossGain: null
   };
+}
+
+function setDeckStatus(id, status, options = {}) {
+  const deck = deckState[id];
+  deck.status = status;
+  if (options.smartMixControlled !== undefined) deck.smartMixControlled = options.smartMixControlled;
+  if (options.manualOverride !== undefined) deck.manualOverride = options.manualOverride;
+  if (options.error !== undefined) deck.lastError = options.error;
+  const label = document.querySelector(`#deck-status-${id}`);
+  if (label) {
+    const names = {
+      empty: "Empty",
+      loading: "Loading",
+      ready: "Ready",
+      playing: "Playing",
+      paused: "Paused",
+      cueing: "Cueing",
+      "transitioning-in": "Transitioning In",
+      "transitioning-out": "Transitioning Out",
+      error: "Error"
+    };
+    label.textContent = `${names[status] || status}${deck.smartMixControlled ? " · Smart Mix" : ""}${deck.manualOverride ? " · Manual override" : ""}`;
+    label.dataset.state = status;
+  }
+  renderDeckMeta(id);
+}
+
+function renderDeckMeta(id) {
+  const deck = deckState[id];
+  const meta = document.querySelector(`#deck-meta-${id}`);
+  if (!meta) return;
+  const bpm = deck.analysis?.bpm ? `${deck.analysis.bpm} BPM` : "BPM unknown";
+  const key = deck.analysis?.key ? `key ${deck.analysis.key}` : "key unknown";
+  const tempo = Number(document.querySelector(`#pitch-${id}`)?.value || 1).toFixed(2);
+  const gain = Number(document.querySelector(`#gain-${id}`)?.value || 0).toFixed(2);
+  const channel = Number(document.querySelector(`#channel-${id}`)?.value || 0).toFixed(2);
+  meta.textContent = `${bpm}, ${key}, tempo ${tempo}x, gain ${gain}, channel ${channel}`;
 }
 
 function connectDeck(deck) {
@@ -937,6 +989,7 @@ function makeSource(deck) {
       deck.playing = false;
       deck.offset = 0;
       setDeckPlaying(deck.id, false);
+      setDeckStatus(deck.id, "ready", { smartMixControlled: false });
       drawPlayhead(deck.id, 0);
     }
   };
@@ -952,8 +1005,19 @@ async function loadAudioFile(file) {
 async function loadFileToDeck(file, id) {
   if (!isSupportedAudioFile(file)) return;
   const deck = deckState[id];
+  if (autoMixState.running) triggerManualOverride(`Loaded a new track on Deck ${id.toUpperCase()}`, id);
   pauseDeck(id);
-  deck.buffer = await loadAudioFile(file);
+  setDeckStatus(id, "loading");
+  try {
+    deck.buffer = await loadAudioFile(file);
+  } catch (error) {
+    setDeckStatus(id, "error", { error: error.message || "Unable to decode audio" });
+    autoMixState.lastError = deck.lastError;
+    renderSmartMixPanel();
+    return;
+  }
+  deck.trackName = file.name;
+  deck.analysis = analyzeAudioBuffer(deck.buffer, file.name);
   deck.offset = 0;
   deck.selectionStart = null;
   deck.selectionEnd = null;
@@ -964,12 +1028,17 @@ async function loadFileToDeck(file, id) {
   updateSelectionDisplay(id);
   renderEditorSourceBin();
   renderAiContext();
+  setDeckStatus(id, "ready", { smartMixControlled: false, manualOverride: false, error: "" });
+  updateSmartMixSourceOptions();
 }
 
-function loadBufferToDeck(buffer, name, id) {
+function loadBufferToDeck(buffer, name, id, options = {}) {
   const deck = deckState[id];
+  if (autoMixState.running && !options.smartMixControlled) triggerManualOverride(`Loaded a new track on Deck ${id.toUpperCase()}`, id);
   pauseDeck(id);
   deck.buffer = buffer;
+  deck.trackName = name;
+  deck.analysis = options.analysis || analyzeAudioBuffer(buffer, name);
   deck.offset = 0;
   deck.selectionStart = null;
   deck.selectionEnd = null;
@@ -980,6 +1049,12 @@ function loadBufferToDeck(buffer, name, id) {
   updateSelectionDisplay(id);
   renderEditorSourceBin();
   renderAiContext();
+  setDeckStatus(id, "ready", {
+    smartMixControlled: Boolean(options.smartMixControlled),
+    manualOverride: false,
+    error: ""
+  });
+  updateSmartMixSourceOptions();
 }
 
 function addBufferToPad(buffer, name) {
@@ -1015,6 +1090,7 @@ function playDeck(id) {
   deck.source = source;
   deck.playing = true;
   setDeckPlaying(id, true);
+  setDeckStatus(id, "playing");
 }
 
 function currentDeckTime(id) {
@@ -1049,6 +1125,7 @@ function pauseDeck(id) {
   stopDeckSource(deck);
   deck.playing = false;
   setDeckPlaying(id, false);
+  setDeckStatus(id, deck.buffer ? "paused" : "empty");
 }
 
 function stopDeck(id) {
@@ -1059,12 +1136,15 @@ function stopDeck(id) {
   setDeckPlaying(id, false);
   drawPlayhead(id, 0);
   updateDeckTimeDisplay(id);
+  setDeckStatus(id, deck.buffer ? "ready" : "empty");
 }
 
 function clearDeck(id) {
   const deck = deckState[id];
   stopDeck(id);
   deck.buffer = null;
+  deck.trackName = "";
+  deck.analysis = null;
   deck.offset = 0;
   deck.selectionStart = null;
   deck.selectionEnd = null;
@@ -1073,14 +1153,18 @@ function clearDeck(id) {
   updateSelectionDisplay(id);
   drawWaveform(id);
   renderAiContext();
+  setDeckStatus(id, "empty", { smartMixControlled: false, manualOverride: false, error: "" });
+  updateSmartMixSourceOptions();
 }
 
 function cueDeck(id) {
   const deck = deckState[id];
+  setDeckStatus(id, "cueing");
   deck.offset = 0;
   if (deck.playing) playDeck(id);
   drawPlayhead(id, 0);
   updateDeckTimeDisplay(id);
+  setDeckStatus(id, deck.playing ? "playing" : "paused");
 }
 
 function stopDeckSource(deck) {
@@ -1358,6 +1442,10 @@ function animationLoop() {
   }
   animateMeters();
   monitorSmartMixHandoff();
+  if (!autoMixState.lastPanelRender || performance.now() - autoMixState.lastPanelRender > 500) {
+    autoMixState.lastPanelRender = performance.now();
+    renderSmartMixPanel();
+  }
   requestAnimationFrame(animationLoop);
 }
 
@@ -3856,33 +3944,85 @@ async function startAiMix(mode = document.querySelector("#smartMixMode")?.value 
   await startSmartMix(mode, document.querySelector("#smartMixSource")?.value || "both");
 }
 
+function detectActiveDeck() {
+  const playing = ["a", "b"].filter((id) => deckState[id].playing && deckState[id].buffer);
+  if (playing.length === 1) return playing[0];
+  if (playing.length === 2) return Number(document.querySelector("#crossfader")?.value || 0.5) <= 0.5 ? "a" : "b";
+  return null;
+}
+
+function deckAsSmartMixItem(id, mode) {
+  const deck = deckState[id];
+  if (!deck.buffer) return null;
+  return prepareSmartMixItem({
+    id: `deck-${id}`,
+    source: `Deck ${id.toUpperCase()}`,
+    name: deck.trackName || `Deck ${id.toUpperCase()}`,
+    buffer: deck.buffer,
+    analysis: deck.analysis
+  }, mode);
+}
+
 async function startSmartMix(mode = "club", sourceMode = "both") {
+  autoMixState.state = "Analyzing Active Deck";
   setSmartMixStatus(`Analyzing ${smartMixSourceLabel(sourceMode).toLowerCase()}...`);
-  const items = await collectAutoMixItems(mode, sourceMode);
+  renderSmartMixPanel();
+  const activeDeck = detectActiveDeck();
+  const oppositeDeck = activeDeck === "a" ? "b" : activeDeck === "b" ? "a" : null;
+  let items = await collectAutoMixItems(mode, sourceMode);
+  if (activeDeck) {
+    const activeItem = deckAsSmartMixItem(activeDeck, mode);
+    const incomingItem = deckAsSmartMixItem(oppositeDeck, mode);
+    items = [activeItem, incomingItem, ...items]
+      .filter(Boolean)
+      .filter((item, index, array) => array.findIndex((candidate) => candidate.buffer === item.buffer) === index);
+  }
   if (!items.length) {
-    setSmartMixStatus(`Smart Mix needs audio from ${smartMixSourceLabel(sourceMode).toLowerCase()}.`);
+    autoMixState.items = [];
+    autoMixState.plan = [];
+    autoMixState.state = "No Eligible Track Found";
+    setSmartMixStatus("No playable track matched the current Smart Mix source. Add local audio, change source, or load a track manually.");
+    renderSmartMixPanel();
     return;
   }
-  stopAiMix({ keepDecks: true });
-  const plan = buildSmartMixPlan(items, mode, sourceMode);
+  if (activeDeck && items.length < 2) {
+    autoMixState.items = items;
+    autoMixState.plan = [];
+    autoMixState.state = "No Eligible Track Found";
+    setSmartMixStatus("The active deck will keep playing. Add another playable track or broaden the Smart Mix source.");
+    renderSmartMixPanel();
+    return;
+  }
+  if (autoMixState.running) stopAiMix({ keepDecks: true, silent: true });
+  const plan = buildSmartMixPlan(items, mode, activeDeck ? "decks" : sourceMode);
   autoMixState.running = true;
+  autoMixState.state = activeDeck ? "Preparing Transition" : "Selecting Next Track";
   autoMixState.mode = mode;
   autoMixState.sourceMode = sourceMode;
   autoMixState.items = plan.items;
   autoMixState.plan = plan.transitions;
   autoMixState.index = 0;
-  autoMixState.activeDeck = "a";
+  autoMixState.activeDeck = activeDeck || "a";
+  autoMixState.incomingDeck = autoMixState.activeDeck === "a" ? "b" : "a";
+  autoMixState.lastManualOverride = "None";
   setSmartMixButtons(true);
-  setCrossfaderValue(0);
-  resetSmartDeckControls("a");
-  resetSmartDeckControls("b");
-  loadBufferToDeck(plan.items[0].buffer, plan.items[0].name, "a");
-  seekDeck("a", plan.items[0].cueIn);
-  applySmartMixPitchPolicy("a", plan.items[0]);
-  playDeck("a");
+  if (activeDeck) {
+    setDeckStatus(activeDeck, "playing", { smartMixControlled: true, manualOverride: false });
+  } else {
+    setCrossfaderValue(0);
+    resetSmartDeckControls("a");
+    resetSmartDeckControls("b");
+    loadBufferToDeck(plan.items[0].buffer, plan.items[0].name, "a", { analysis: plan.items[0].analysis, smartMixControlled: true });
+    seekDeck("a", plan.items[0].cueIn);
+    applySmartMixPitchPolicy("a", plan.items[0]);
+    playDeck("a");
+  }
   prepareNextSmartMixDeck();
-  setSmartMixStatus(`Smart Mix ${getSmartMixProfile(mode).name}: ${plan.summary}`);
+  setSmartMixStatus(activeDeck
+    ? `Smart Mix joined Deck ${activeDeck.toUpperCase()} without restarting it. Preparing Deck ${oppositeDeck.toUpperCase()} from ${smartMixSourceLabel(sourceMode)}.`
+    : `Smart Mix ${getSmartMixProfile(mode).name}: ${plan.summary}`);
   scheduleNextAutoMix();
+  renderSmartMixPanel();
   switchView("decks");
 }
 
@@ -4164,6 +4304,56 @@ function setSmartMixStatus(message) {
   if (status) status.textContent = message;
 }
 
+function renderSmartMixPanel() {
+  const current = autoMixState.items[autoMixState.index] || null;
+  const next = autoMixState.items.length > 1 ? autoMixState.items[(autoMixState.index + 1) % autoMixState.items.length] : null;
+  const transition = autoMixState.transition || (autoMixState.running ? currentSmartTransition() : null);
+  const bpmDifference = current && next ? Math.abs((current.analysis?.bpm || 0) - (next.analysis?.bpm || 0)) : null;
+  const values = {
+    smartMixState: autoMixState.state,
+    smartMixActiveDeck: autoMixState.running ? `Deck ${autoMixState.activeDeck.toUpperCase()}` : "None",
+    smartMixIncomingDeck: autoMixState.incomingDeck ? `Deck ${autoMixState.incomingDeck.toUpperCase()}` : "None",
+    smartMixCurrentTrack: current?.name || deckState[autoMixState.activeDeck]?.trackName || "None",
+    smartMixNextTrack: next?.name || "None",
+    smartMixSourceSummary: `${smartMixSourceLabel(autoMixState.sourceMode)} · ${autoMixState.items.length} eligible`,
+    smartMixTransitionStyle: transition ? transition.style.replace(/-/g, " ") : "Not planned",
+    smartMixBpmDifference: bpmDifference === null ? "Unknown" : `${bpmDifference} BPM`,
+    smartMixKeyCompatibility: transition ? (transition.harmonic ? "Compatible" : "Not matched") : "Unknown",
+    smartMixConfidence: transition ? `${transition.harmonic && bpmDifference < 8 ? "High" : bpmDifference < 15 ? "Medium" : "Low"} heuristic` : "Not analyzed",
+    smartMixOverride: autoMixState.lastManualOverride
+  };
+  Object.entries(values).forEach(([id, value]) => {
+    const element = document.querySelector(`#${id}`);
+    if (element) element.textContent = value;
+  });
+  const countdown = document.querySelector("#smartMixCountdown");
+  if (countdown) {
+    if (autoMixState.state === "Transitioning") countdown.textContent = "Transition starting";
+    else if (autoMixState.estimatedTransitionAt) countdown.textContent = `Estimated transition in ${Math.max(0, Math.ceil((autoMixState.estimatedTransitionAt - performance.now()) / 1000))} seconds`;
+    else if (autoMixState.state === "Transition Complete") countdown.textContent = "Transition complete";
+    else countdown.textContent = "No transition planned";
+  }
+  const diagnostics = document.querySelector("#smartMixDiagnostics");
+  if (diagnostics) diagnostics.hidden = !DECKFORGE_DEVELOPMENT;
+  const output = document.querySelector("#smartMixDiagnosticsOutput");
+  if (output && DECKFORGE_DEVELOPMENT) {
+    output.textContent = JSON.stringify({
+      activeDeck: autoMixState.activeDeck,
+      incomingDeck: autoMixState.incomingDeck,
+      deckA: deckState.a.status,
+      deckB: deckState.b.status,
+      smartMixState: autoMixState.state,
+      source: autoMixState.sourceMode,
+      selectedNextTrack: next?.name || null,
+      transitionTimerSeconds: autoMixState.estimatedTransitionAt ? Math.max(0, Math.ceil((autoMixState.estimatedTransitionAt - performance.now()) / 1000)) : null,
+      crossfader: Number(document.querySelector("#crossfader")?.value || 0.5),
+      schedulerArmed: autoMixState.handoffArmed,
+      lastManualOverride: autoMixState.lastManualOverride,
+      lastError: autoMixState.lastError
+    }, null, 2);
+  }
+}
+
 function setSmartMixButtons(isRunning) {
   const deckStart = document.querySelector("#smartMixToggle");
   const deckStop = document.querySelector("#smartMixStop");
@@ -4277,7 +4467,10 @@ function scheduleNextAutoMix() {
   );
   const currentTime = currentDeckTime(autoMixState.activeDeck);
   const delay = Math.max(1, transition.startAt - currentTime);
-  setSmartMixStatus(`Smart Mix preparing: ${transition.note}. Next cue in ${formatTime(delay)}.`);
+  autoMixState.state = "Waiting for Transition Point";
+  autoMixState.estimatedTransitionAt = performance.now() + delay * 1000;
+  setSmartMixStatus(`Smart Mix preparing: ${transition.note}. Estimated transition in ${Math.ceil(delay)} seconds.`);
+  renderSmartMixPanel();
   const timer = setTimeout(() => transitionToNextAutoMixItem(), delay * 1000);
   autoMixState.timers.push(timer);
 }
@@ -4323,7 +4516,15 @@ function prepareNextSmartMixDeck() {
     getSmartMixProfile(autoMixState.mode),
     next.analysis.bpm
   );
-  loadBufferToDeck(next.buffer, next.name, nextDeck);
+  autoMixState.state = deckState[nextDeck].buffer ? "Preparing Transition" : "Loading Incoming Deck";
+  autoMixState.incomingDeck = nextDeck;
+  if (deckState[nextDeck].buffer !== next.buffer) {
+    loadBufferToDeck(next.buffer, next.name, nextDeck, { analysis: next.analysis, smartMixControlled: true });
+  } else {
+    deckState[nextDeck].trackName = next.name;
+    deckState[nextDeck].analysis = next.analysis;
+    setDeckStatus(nextDeck, "ready", { smartMixControlled: true, manualOverride: false });
+  }
   seekDeck(nextDeck, transition.nextCue);
   setDeckPitchRatio(nextDeck, transition.tempoAssistRatio);
   const channel = document.querySelector(`#channel-${nextDeck}`);
@@ -4334,6 +4535,7 @@ function prepareNextSmartMixDeck() {
   autoMixState.preparedDeck = nextDeck;
   autoMixState.preparedIndex = nextIndex;
   setSmartMixStatus(`Smart Mix cued ${next.name} on Deck ${nextDeck.toUpperCase()} for the next handoff${transition.tempoAssistRatio !== 1 ? ` with a temporary BPM assist (${transition.tempoAssistRatio.toFixed(2)}x)` : ""}.`);
+  renderSmartMixPanel();
   return { deck: nextDeck, index: nextIndex };
 }
 
@@ -4355,7 +4557,12 @@ function transitionToNextAutoMixItem() {
   }
   playDeck(nextDeck);
   autoMixState.transition = transition;
+  autoMixState.state = "Transitioning";
+  autoMixState.estimatedTransitionAt = null;
+  setDeckStatus(fromDeck, "transitioning-out", { smartMixControlled: true });
+  setDeckStatus(nextDeck, "transitioning-in", { smartMixControlled: true });
   setSmartMixStatus(`Smart Mix handoff: Deck ${fromDeck.toUpperCase()} to Deck ${nextDeck.toUpperCase()} with ${transition.style.replace(/-/g, " ")}. Returning Deck ${nextDeck.toUpperCase()} to original BPM after the blend.`);
+  renderSmartMixPanel();
   performSmartTransition(fromDeck, nextDeck, transition, () => {
     stopDeck(fromDeck);
     resetSmartDeckControls(fromDeck);
@@ -4363,9 +4570,12 @@ function transitionToNextAutoMixItem() {
     rampDeckPitchToNatural(nextDeck, transition.tempoRestoreSeconds);
     autoMixState.index = nextIndex;
     autoMixState.activeDeck = nextDeck;
+    autoMixState.incomingDeck = fromDeck;
     autoMixState.preparedDeck = null;
     autoMixState.preparedIndex = null;
     autoMixState.transition = null;
+    autoMixState.state = "Transition Complete";
+    setDeckStatus(nextDeck, "playing", { smartMixControlled: true });
     prepareNextSmartMixDeck();
     scheduleNextAutoMix();
   });
@@ -4447,14 +4657,34 @@ function stopAiMix(options = {}) {
   autoMixState.handoffArmed = false;
   autoMixState.preparedDeck = null;
   autoMixState.preparedIndex = null;
-  if (!options.keepDecks) {
+  autoMixState.estimatedTransitionAt = null;
+  autoMixState.incomingDeck = null;
+  if (options.stopDecks) {
     stopDeck("a");
     stopDeck("b");
   }
   resetSmartDeckControls("a");
   resetSmartDeckControls("b");
+  for (const id of ["a", "b"]) {
+    setDeckStatus(id, deckState[id].playing ? "playing" : deckState[id].buffer ? "paused" : "empty", {
+      smartMixControlled: false
+    });
+  }
   setSmartMixButtons(false);
-  setSmartMixStatus("Smart Mix stopped. Manual deck control restored.");
+  if (!options.silent) {
+    autoMixState.state = options.manualOverride ? "Manual Override" : "Idle";
+    setSmartMixStatus(options.manualOverride
+      ? `Manual Override: ${options.manualOverride}. Automation stopped and deck audio was left under manual control.`
+      : "Smart Mix stopped. Deck audio continues under manual control.");
+  }
+  renderSmartMixPanel();
+}
+
+function triggerManualOverride(reason, deckId = null) {
+  if (!autoMixState.running) return;
+  autoMixState.lastManualOverride = reason;
+  if (deckId && deckState[deckId]) deckState[deckId].manualOverride = true;
+  stopAiMix({ keepDecks: true, manualOverride: reason });
 }
 
 function panicStopAllAudio() {
@@ -5269,10 +5499,20 @@ function setupEvents() {
     document.querySelector("#audioEnable").textContent = "Audio On";
   });
 
+  document.querySelector("#masterVolume").addEventListener("input", (event) => {
+    if (AudioEngine.masterGain) AudioEngine.masterGain.gain.value = Number(event.target.value);
+  });
+
   document.querySelectorAll(".tab-button").forEach((button) => {
     button.addEventListener("click", () => {
       switchView(button.dataset.target);
     });
+  });
+
+  document.querySelector("#deckModeToggle").addEventListener("click", (event) => {
+    const advanced = document.querySelector("#decks").classList.toggle("is-advanced");
+    event.currentTarget.setAttribute("aria-pressed", advanced ? "true" : "false");
+    event.currentTarget.textContent = advanced ? "Simple Controls" : "Advanced Controls";
   });
 
   document.querySelector("#editorSourceBin").addEventListener("dragstart", (event) => {
@@ -5423,11 +5663,19 @@ function setupEvents() {
   });
   document.querySelector("#smartMixStop").addEventListener("click", () => stopAiMix());
   document.querySelector("#smartMixMode").addEventListener("change", (event) => {
+    if (autoMixState.running) {
+      triggerManualOverride("Changed the transition style");
+      return;
+    }
     if (!autoMixState.running) {
       setSmartMixStatus(`${getSmartMixProfile(event.target.value).name} selected. Press Smart Mix to analyze and start.`);
     }
   });
   document.querySelector("#smartMixSource").addEventListener("change", (event) => {
+    if (autoMixState.running) {
+      triggerManualOverride("Changed the Smart Mix source");
+      return;
+    }
     if (!autoMixState.running) {
       setSmartMixStatus(`Smart Mix will use ${smartMixSourceLabel(event.target.value)} and return each incoming song to original BPM after transitions.`);
     }
@@ -5440,17 +5688,20 @@ function setupEvents() {
     });
 
     document.querySelector(`#pitch-${id}`).addEventListener("input", (event) => {
+      triggerManualOverride(`Adjusted Deck ${id.toUpperCase()} tempo`, id);
       const deck = deckState[id];
       if (deck.source) deck.source.playbackRate.value = Number(event.target.value);
     });
 
     document.querySelector(`#filter-${id}`).addEventListener("input", (event) => {
+      triggerManualOverride(`Adjusted Deck ${id.toUpperCase()} filter`, id);
       if (deckState[id].filter) deckState[id].filter.frequency.value = Number(event.target.value);
       const mixerFilter = document.querySelector(`#mixer-filter-${id}`);
       if (mixerFilter) mixerFilter.value = event.target.value;
     });
 
     document.querySelector(`#gain-${id}`).addEventListener("input", (event) => {
+      triggerManualOverride(`Adjusted Deck ${id.toUpperCase()} gain`, id);
       const mixerTrim = document.querySelector(`#mixer-trim-${id}`);
       if (mixerTrim) mixerTrim.value = event.target.value;
       updateDeckGain(id);
@@ -5460,6 +5711,7 @@ function setupEvents() {
   document.querySelectorAll("[data-sync-gain]").forEach((slider) => {
     slider.addEventListener("input", (event) => {
       const id = event.target.dataset.syncGain;
+      triggerManualOverride(`Adjusted Deck ${id.toUpperCase()} gain`, id);
       document.querySelector(`#gain-${id}`).value = event.target.value;
       updateDeckGain(id);
     });
@@ -5468,13 +5720,18 @@ function setupEvents() {
   document.querySelectorAll("[data-sync-filter]").forEach((slider) => {
     slider.addEventListener("input", (event) => {
       const id = event.target.dataset.syncFilter;
+      triggerManualOverride(`Adjusted Deck ${id.toUpperCase()} filter`, id);
       document.querySelector(`#filter-${id}`).value = event.target.value;
       if (deckState[id].filter) deckState[id].filter.frequency.value = Number(event.target.value);
     });
   });
 
   document.querySelectorAll("[data-channel-fader]").forEach((slider) => {
-    slider.addEventListener("input", (event) => updateDeckGain(event.target.dataset.channelFader));
+    slider.addEventListener("input", (event) => {
+      triggerManualOverride(`Adjusted Deck ${event.target.dataset.channelFader.toUpperCase()} channel volume`, event.target.dataset.channelFader);
+      updateDeckGain(event.target.dataset.channelFader);
+      renderDeckMeta(event.target.dataset.channelFader);
+    });
   });
 
   document.querySelectorAll("[data-action='cue-monitor']").forEach((button) => {
@@ -5492,11 +5749,15 @@ function setupEvents() {
     button.addEventListener("click", () => {
       const id = button.dataset.deck;
       const action = button.dataset.action;
-      if (autoMixState.running && ["play", "stop", "cue", "rewind", "forward", "loop", "clear-deck"].includes(action)) {
-        stopAiMix({ keepDecks: true });
+      if (autoMixState.running && ["play", "stop", "cue", "rewind", "forward", "restart", "loop", "clear-deck"].includes(action)) {
+        triggerManualOverride(`${action} on Deck ${id.toUpperCase()}`, id);
       }
       if (action === "play") deckState[id].playing ? pauseDeck(id) : playDeck(id);
       if (action === "stop") stopDeck(id);
+      if (action === "restart") {
+        seekDeck(id, 0);
+        playDeck(id);
+      }
       if (action === "clear-deck") clearDeck(id);
       if (action === "cue") cueDeck(id);
       if (action === "rewind") nudgeDeck(id, -15);
@@ -5522,6 +5783,7 @@ function setupEvents() {
       const id = event.target.dataset.seekDeck;
       const deck = deckState[id];
       if (!deck.buffer) return;
+      triggerManualOverride(`Seeked Deck ${id.toUpperCase()}`, id);
       seekDeck(id, (Number(event.target.value) / 1000) * deck.buffer.duration);
     });
   });
@@ -5582,7 +5844,10 @@ function setupEvents() {
   });
 
   document.querySelectorAll("#crossfader, #mixerCrossfader").forEach((slider) => {
-    slider.addEventListener("input", (event) => setCrossfaderValue(event.target.value));
+    slider.addEventListener("input", (event) => {
+      triggerManualOverride("Moved the crossfader");
+      setCrossfaderValue(event.target.value);
+    });
   });
   document.querySelector("#sampleFile").addEventListener("change", async (event) => {
     const file = event.target.files[0];
@@ -6276,6 +6541,29 @@ function renderSources() {
     `;
     list.appendChild(item);
   });
+  updateSmartMixSourceOptions();
+}
+
+function updateSmartMixSourceOptions() {
+  const select = document.querySelector("#smartMixSource");
+  if (!select) return;
+  const deckCount = ["a", "b"].filter((id) => deckState[id].buffer).length;
+  const crateCount = sourceFiles.length;
+  const config = {
+    both: { label: "Decks + DITC Local", count: deckCount + crateCount },
+    decks: { label: "Loaded Decks", count: deckCount },
+    crate: { label: crateSelection.local.size ? "DITC Selected Local" : "DITC All Local Tracks", count: crateSelection.local.size || crateCount }
+  };
+  [...select.options].forEach((option) => {
+    const item = config[option.value];
+    if (!item) return;
+    option.textContent = `${item.label} (${item.count})`;
+    option.disabled = item.count === 0;
+  });
+  if (select.selectedOptions[0]?.disabled) {
+    const firstAvailable = [...select.options].find((option) => !option.disabled);
+    if (firstAvailable) select.value = firstAvailable.value;
+  }
 }
 
 function detectPlatform(url) {
@@ -6301,4 +6589,7 @@ renderAiContext();
 renderEditor();
 drawWaveform("a");
 drawWaveform("b");
+setDeckStatus("a", "empty");
+setDeckStatus("b", "empty");
+renderSmartMixPanel();
 animationLoop();

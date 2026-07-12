@@ -10,6 +10,7 @@ The application uses JavaScript listeners rather than inline handlers. Dynamic c
 | Start Audio | `#audioEnable` | `AudioEngine.init` | Creates or resumes audio graph | Implemented, no visible failure state |
 | Record and download | `#recordMix`, `#downloadMix` | `toggleMixRecording`, anchor click | Records master to WebM | Implemented path, no permission or codec error UI |
 | Global BPM | `#globalBpm` | Read directly by drums, pads, editor and AI | Shared timing value | No input handler or validation feedback |
+| Master volume | `#masterVolume` | Updates `AudioEngine.masterGain` | Controls speaker and recording output level | Implemented path, verify clipping and recording level |
 | Smart Mix | `#smartMixMode`, `#smartMixSource`, toggle/stop | Smart Mix functions and `autoMixState` | Plans and schedules deck transitions | Implemented path, needs loading/error states |
 | Deck load and drop | `#file-a`, `#file-b`, `.deck` | load and drop handlers | Decode and load buffers | Implemented path, errors are not surfaced locally |
 | Deck transport | `[data-action]` | delegated action switch | Play/pause, stop, cue, nudge, loop, edit actions | Implemented paths, button availability does not reflect empty decks |
