@@ -5,6 +5,7 @@
 | Domain | Primary state | Secondary or DOM state | Persistence |
 | --- | --- | --- | --- |
 | Audio engine | `AudioEngine` | Start Audio label, record buttons | None |
+| Playback coordination | `AudioPlaybackRegistry`, `globalTransportState` | Persistent transport, source list and navigation indicators | None |
 | Decks | `deckState.a`, `deckState.b` | Titles, pitch/filter/gain, channel faders, play labels, selections | None |
 | Sampler | `sampler` arrays | Pad classes and editor inputs | None |
 | Drums | `drums` | Sequencer button classes, BPM input, preset selects | None |

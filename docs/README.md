@@ -18,6 +18,12 @@ This directory is the DeckForge v2 recovery and design baseline. It records obse
 12. [Decks regression checklist](11-decks-regression-checklist.md)
 13. [Working DITC baseline](12-working-ditc-baseline.md)
 14. [DITC regression checklist](13-ditc-regression-checklist.md)
+15. [Working audio playback baseline](14-working-audio-playback-baseline.md)
+16. [Global audio regression checklist](15-global-audio-regression-checklist.md)
+17. [Global audio transport architecture](16-global-audio-transport.md)
+18. [Performance deck regression checklist](17-performance-deck-regression-checklist.md)
+19. [Prompt-directed Smart Mix architecture](18-prompt-smart-mix.md)
+20. [Prompt-directed Smart Mix regression checklist](19-prompt-smart-mix-regression-checklist.md)
 
 ## Recovery snapshot
 

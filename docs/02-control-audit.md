@@ -22,7 +22,7 @@ The application uses JavaScript listeners rather than inline handlers. Dynamic c
 | Pad editor | trim, mode, quantize, preview, slice, save | pad editor functions | Mutates pad regions and crate | Implemented, controls remain active with empty pad and silently return |
 | Mic and tab sample | `#micSample`, `#tabSample` | media capture functions | Five-second MediaRecorder sample | Missing try/catch user error state and loading state |
 | Drum controls | play, clear, selects, preset, dynamic steps | drum functions | Mutates pattern and synthesized playback | Implemented path, clear has no undo |
-| Keys | generated keys, chord buttons, bass mode, A to K | instrument functions | Synth voices | Implemented path, computer shortcut help is incomplete for global Space |
+| Keys | generated keys, chord buttons, bass mode, A to K | instrument functions | Synth voices | Implemented path, verify instrument shortcuts do not conflict with global transport |
 | Stem controls | file/drop, split, stop, dynamic cards | stem functions | Server/fallback separation and preview | Implemented path, fallback quality warning exists |
 | Editor transport and tools | all `#editor*` controls | editor functions | Arrangement edits and scheduling | Implemented paths, many actions silently return without selection |
 | AI plan | prompt and plan buttons | plan functions | Builds and applies local heuristic plan | “AI” label can imply external model. No undo after apply |
@@ -39,7 +39,7 @@ The application uses JavaScript listeners rather than inline handlers. Dynamic c
 - Pad editor actions and editor clip tools can silently do nothing when prerequisites are missing.
 - Deck actions appear enabled on empty decks. Most functions return silently.
 - Smart Mix and media capture lack consistent loading, cancellation and error UI.
-- Space stops all audio, but this critical behavior has no visible control or adjacent instruction.
+- The persistent global transport exposes context-aware Space play/pause, Shift+Space restart and Escape Stop All Audio. Every shortcut and source lifecycle still requires manual verification.
 - Canvas waveforms, drag targets, sequencer steps and generated keys need keyboard and screen-reader review.
 - Select options and labels can update state or explanatory text without proving an audible change.
 - There are no inline event handlers.

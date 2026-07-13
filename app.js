@@ -106,6 +106,7 @@ const editorState = {
   zoom: 8,
   playhead: 0,
   playing: false,
+  paused: false,
   scheduled: [],
   pointerDrag: null,
   recording: null,
@@ -225,12 +226,48 @@ const autoMixState = {
   handoffArmed: false,
   incomingDeck: null,
   estimatedTransitionAt: null,
+  promptPlan: null,
   lastManualOverride: "None",
+  lastError: "None"
+};
+
+const SMART_PROMPT_HISTORY_KEY = "deckforge-smart-prompt-history";
+const SMART_PROMPT_RECIPES_KEY = "deckforge-smart-prompt-recipes";
+const smartPromptState = {
+  rawPrompt: "",
+  parsedIntent: null,
+  plan: null,
+  state: "Prompt Idle",
+  clarification: "",
+  lastError: "None",
+  history: [],
+  recipes: []
+};
+
+const bpmRecoveryState = {
+  deckId: null,
+  active: false,
+  pending: false,
+  manualOverride: false,
+  startRatio: 1,
+  currentRatio: 1,
+  targetRatio: 1,
+  originalBpm: 0,
+  blendBpm: 0,
+  durationBars: 8,
+  durationSeconds: 0,
+  curve: "smooth",
+  progress: 0,
+  startedAt: 0,
+  frame: null,
+  delayTimer: null,
+  plan: null,
   lastError: "None"
 };
 
 const drums = {
   playing: false,
+  paused: false,
   step: 0,
   timer: null,
   rows: ["Kick", "Snare", "Hat", "Clap", "Sub"],
@@ -926,6 +963,7 @@ function createDeckState(id) {
     startedAt: 0,
     offset: 0,
     playing: false,
+    commandVersion: 0,
     loop: false,
     scratchWasPlaying: false,
     lastScratchX: 0,
@@ -935,7 +973,13 @@ function createDeckState(id) {
     dragSelectMoved: false,
     gain: null,
     filter: null,
-    crossGain: null
+    crossGain: null,
+    analyser: null,
+    meterPeak: 0,
+    waveformPeaks: null,
+    loopBeats: 8,
+    loopStart: 0,
+    loopEnd: 0
   };
 }
 
@@ -954,6 +998,7 @@ function setDeckStatus(id, status, options = {}) {
       playing: "Playing",
       paused: "Paused",
       cueing: "Cueing",
+      preparing: "Preparing",
       "transitioning-in": "Transitioning In",
       "transitioning-out": "Transitioning Out",
       error: "Error"
@@ -974,6 +1019,28 @@ function renderDeckMeta(id) {
   const gain = Number(document.querySelector(`#gain-${id}`)?.value || 0).toFixed(2);
   const channel = Number(document.querySelector(`#channel-${id}`)?.value || 0).toFixed(2);
   meta.textContent = `${bpm}, ${key}, tempo ${tempo}x, gain ${gain}, channel ${channel}`;
+  const identity = parseTrackIdentity(deck.trackName);
+  const title = document.querySelector(`#title-${id}`);
+  const artwork = document.querySelector(`#artwork-${id}`);
+  if (title) title.textContent = deck.buffer ? identity.title : "Empty deck";
+  if (artwork) artwork.textContent = deck.buffer ? (identity.artist !== "Unknown" ? identity.artist[0] : identity.title[0] || id).toUpperCase() : id.toUpperCase();
+  const values = {
+    [`artist-${id}`]: identity.artist,
+    [`bpm-${id}`]: deck.analysis?.bpm || "--",
+    [`key-${id}`]: deck.analysis?.key || "--",
+    [`genre-${id}`]: deck.analysis?.genre || "Unknown",
+    [`track-duration-${id}`]: formatTime(deck.buffer?.duration || 0)
+  };
+  Object.entries(values).forEach(([elementId, value]) => {
+    const element = document.querySelector(`#${elementId}`);
+    if (element) element.textContent = value;
+  });
+}
+
+function parseTrackIdentity(name = "") {
+  const clean = name.replace(/\.[^/.]+$/, "").trim();
+  const parts = clean.split(/\s+-\s+/);
+  return parts.length > 1 ? { artist: parts[0], title: parts.slice(1).join(" - ") } : { artist: "Unknown", title: clean || "Empty deck" };
 }
 
 function connectDeck(deck) {
@@ -984,10 +1051,14 @@ function connectDeck(deck) {
   deck.filter.frequency.value = 16000;
   deck.gain = ctx.createGain();
   updateDeckGain(deck.id);
+  deck.analyser = ctx.createAnalyser();
+  deck.analyser.fftSize = 256;
+  deck.analyser.smoothingTimeConstant = 0.76;
   deck.crossGain = ctx.createGain();
   deck.crossGain.gain.value = 0.5;
   deck.filter.connect(deck.gain);
-  deck.gain.connect(deck.crossGain);
+  deck.gain.connect(deck.analyser);
+  deck.analyser.connect(deck.crossGain);
   deck.crossGain.connect(AudioEngine.masterAnalyser);
 }
 
@@ -997,6 +1068,10 @@ function makeSource(deck) {
   source.buffer = deck.buffer;
   source.playbackRate.value = Number(document.querySelector(`#pitch-${deck.id}`).value);
   source.loop = deck.loop;
+  if (deck.loop && deck.loopEnd > deck.loopStart) {
+    source.loopStart = deck.loopStart;
+    source.loopEnd = deck.loopEnd;
+  }
   source.connect(deck.filter);
   source.onended = () => {
     if (!source.loop && deck.source === source) {
@@ -1033,6 +1108,11 @@ async function loadFileToDeck(file, id) {
   deck.trackName = file.name;
   deck.analysis = analyzeAudioBuffer(deck.buffer, file.name);
   deck.offset = 0;
+  deck.waveformPeaks = null;
+  deck.loop = false;
+  deck.loopStart = 0;
+  deck.loopEnd = 0;
+  renderDeckLoopStatus(id);
   deck.selectionStart = null;
   deck.selectionEnd = null;
   document.querySelector(`#title-${id}`).textContent = file.name;
@@ -1054,6 +1134,11 @@ function loadBufferToDeck(buffer, name, id, options = {}) {
   deck.trackName = name;
   deck.analysis = options.analysis || analyzeAudioBuffer(buffer, name);
   deck.offset = 0;
+  deck.waveformPeaks = null;
+  deck.loop = false;
+  deck.loopStart = 0;
+  deck.loopEnd = 0;
+  renderDeckLoopStatus(id);
   deck.selectionStart = null;
   deck.selectionEnd = null;
   document.querySelector(`#title-${id}`).textContent = name;
@@ -1090,28 +1175,129 @@ function setPadBuffer(index, buffer, name, options = {}) {
   renderEditorSourceBin();
 }
 
-function playDeck(id) {
+async function playDeck(id) {
   const deck = deckState[id];
-  if (!deck.buffer) return;
-  connectDeck(deck);
+  if (!deck?.buffer) return false;
+  const commandVersion = ++deck.commandVersion;
+  setDeckStatus(id, "preparing");
+  try {
+    if (!AudioEngine.context || AudioEngine.context.state !== "running") await AudioEngine.init();
+    if (commandVersion !== deck.commandVersion || !deck.buffer) return false;
+    connectDeck(deck);
+    stopDeckSource(deck);
+    const ctx = AudioEngine.context;
+    const source = makeSource(deck);
+    const duration = deck.buffer.duration;
+    deck.offset = deck.offset % duration;
+    source.start(0, deck.offset);
+    deck.startedAt = ctx.currentTime - deck.offset;
+    deck.source = source;
+    deck.playing = true;
+    setDeckPlaying(id, true);
+    setDeckStatus(id, "playing", { error: "" });
+    renderGlobalTransport();
+    return true;
+  } catch (error) {
+    if (commandVersion !== deck.commandVersion) return false;
+    deck.playing = false;
+    setDeckPlaying(id, false);
+    const reason = error.message || "Unable to start deck playback";
+    setDeckStatus(id, "error", { error: reason });
+    globalTransportState.lastError = `Deck ${id.toUpperCase()}: ${reason}`;
+    if (DECKFORGE_DEVELOPMENT) console.error(`[DeckForge][Deck ${id.toUpperCase()}] play failed: ${reason}`);
+    renderGlobalTransport();
+    return false;
+  }
+}
+
+async function restartDeck(id) {
+  const deck = deckState[id];
+  const label = `Deck ${String(id).toUpperCase()}`;
+  if (DECKFORGE_DEVELOPMENT) console.debug(`[DeckForge][${label}] restart requested`);
+  if (!deck?.buffer) {
+    if (deck) setDeckStatus(id, "empty", { error: "No track is loaded" });
+    return false;
+  }
+  if (DECKFORGE_DEVELOPMENT) {
+    console.debug(`[DeckForge][${label}] loaded track valid`);
+    console.debug(`[DeckForge][Audio] context state before restart: ${AudioEngine.context?.state || "not started"}`);
+  }
   stopDeckSource(deck);
-  const ctx = AudioEngine.context;
-  const source = makeSource(deck);
-  const duration = deck.buffer.duration;
-  deck.offset = deck.offset % duration;
-  source.start(0, deck.offset);
-  deck.startedAt = ctx.currentTime - deck.offset;
-  deck.source = source;
-  deck.playing = true;
-  setDeckPlaying(id, true);
-  setDeckStatus(id, "playing");
+  deck.playing = false;
+  deck.offset = 0;
+  setDeckPlaying(id, false);
+  drawPlayhead(id, 0);
+  updateDeckTimeDisplay(id);
+  const played = await playDeck(id);
+  if (DECKFORGE_DEVELOPMENT) {
+    if (AudioEngine.context?.state === "running") console.debug("[DeckForge][Audio] context resumed");
+    console.debug(`[DeckForge][${label}] registry entry restored`);
+    if (played) console.debug(`[DeckForge][${label}] play promise resolved`);
+    else console.error(`[DeckForge][${label}] restart failed: ${deck.lastError || "playback was cancelled"}`);
+  }
+  return played;
 }
 
 function currentDeckTime(id) {
   const deck = deckState[id];
   if (!deck.buffer) return 0;
   if (!deck.playing) return deck.offset;
-  return (AudioEngine.context.currentTime - deck.startedAt) % deck.buffer.duration;
+  const elapsed = AudioEngine.context.currentTime - deck.startedAt;
+  if (deck.loop && deck.loopEnd > deck.loopStart && elapsed >= deck.loopStart) {
+    return deck.loopStart + ((elapsed - deck.loopStart) % (deck.loopEnd - deck.loopStart));
+  }
+  return elapsed % deck.buffer.duration;
+}
+
+function updateDeckLoop(id, enabled = deckState[id].loop) {
+  const deck = deckState[id];
+  if (!deck.buffer) return;
+  deck.loop = Boolean(enabled);
+  deck.loopBeats = Number(document.querySelector(`#loop-size-${id}`)?.value || deck.loopBeats || 8);
+  if (deck.loop) {
+    const beatSeconds = 60 / Number(deck.analysis?.bpm || 120);
+    const loopDuration = Math.min(deck.buffer.duration, beatSeconds * deck.loopBeats);
+    deck.loopStart = Math.min(currentDeckTime(id), Math.max(0, deck.buffer.duration - loopDuration));
+    deck.loopEnd = Math.min(deck.buffer.duration, deck.loopStart + loopDuration);
+  } else {
+    deck.loopStart = 0;
+    deck.loopEnd = 0;
+  }
+  if (deck.source) {
+    deck.source.loop = deck.loop;
+    if (deck.loop) {
+      deck.source.loopStart = deck.loopStart;
+      deck.source.loopEnd = deck.loopEnd;
+    }
+  }
+  const button = document.querySelector(`[data-action="loop"][data-deck="${id}"]`);
+  if (button) {
+    button.classList.toggle("is-active", deck.loop);
+    button.setAttribute("aria-pressed", deck.loop ? "true" : "false");
+  }
+  renderDeckLoopStatus(id);
+  drawPlayhead(id, deck.buffer.duration ? currentDeckTime(id) / deck.buffer.duration : 0);
+}
+
+function renderDeckLoopStatus(id) {
+  const deck = deckState[id];
+  const status = document.querySelector(`#loop-status-${id}`);
+  const button = document.querySelector(`[data-action="loop"][data-deck="${id}"]`);
+  if (button) {
+    button.classList.toggle("is-active", deck.loop);
+    button.setAttribute("aria-pressed", deck.loop ? "true" : "false");
+  }
+  if (!status) return;
+  if (!deck.loop || deck.loopEnd <= deck.loopStart) {
+    status.textContent = "Loop off";
+    return;
+  }
+  if (!deck.playing) {
+    status.textContent = `${deck.loopBeats} beats · armed`;
+    return;
+  }
+  const remaining = Math.max(0, deck.loopEnd - currentDeckTime(id));
+  status.textContent = `${deck.loopBeats} beats · ${remaining.toFixed(1)}s remaining`;
 }
 
 function seekDeck(id, time) {
@@ -1134,8 +1320,9 @@ function nudgeDeck(id, seconds) {
 
 function pauseDeck(id) {
   const deck = deckState[id];
+  deck.commandVersion += 1;
   if (!deck.playing) return;
-  deck.offset = (AudioEngine.context.currentTime - deck.startedAt) % deck.buffer.duration;
+  deck.offset = currentDeckTime(id);
   stopDeckSource(deck);
   deck.playing = false;
   setDeckPlaying(id, false);
@@ -1144,11 +1331,13 @@ function pauseDeck(id) {
 
 function stopDeck(id) {
   const deck = deckState[id];
+  deck.commandVersion += 1;
   stopDeckSource(deck);
   deck.playing = false;
   deck.offset = 0;
   setDeckPlaying(id, false);
   drawPlayhead(id, 0);
+  document.querySelector(`.platter[data-deck="${id}"]`)?.style.setProperty("--platter-angle", "0deg");
   updateDeckTimeDisplay(id);
   setDeckStatus(id, deck.buffer ? "ready" : "empty");
 }
@@ -1160,6 +1349,11 @@ function clearDeck(id) {
   deck.trackName = "";
   deck.analysis = null;
   deck.offset = 0;
+  deck.waveformPeaks = null;
+  deck.loop = false;
+  deck.loopStart = 0;
+  deck.loopEnd = 0;
+  renderDeckLoopStatus(id);
   deck.selectionStart = null;
   deck.selectionEnd = null;
   document.querySelector(`#title-${id}`).textContent = "Empty deck";
@@ -1219,7 +1413,26 @@ function updateCrossfader(value = Number(document.querySelector("#crossfader").v
   if (deckState.b.crossGain) deckState.b.crossGain.gain.value = Math.cos((1 - value) * Math.PI * 0.5);
 }
 
-function drawWaveform(id) {
+function buildWaveformPeaks(deck, width) {
+  if (!deck.buffer) return [];
+  const data = deck.buffer.getChannelData(0);
+  const samplesPerPixel = Math.max(1, Math.floor(data.length / width));
+  return Array.from({ length: width }, (_, x) => {
+    let min = 1;
+    let max = -1;
+    let energy = 0;
+    const start = x * samplesPerPixel;
+    for (let i = 0; i < samplesPerPixel; i += 1) {
+      const sample = data[start + i] || 0;
+      min = Math.min(min, sample);
+      max = Math.max(max, sample);
+      energy += Math.abs(sample);
+    }
+    return { min, max, energy: energy / samplesPerPixel };
+  });
+}
+
+function drawWaveform(id, playheadRatio = null) {
   const deck = deckState[id];
   const canvas = document.querySelector(`#wave-${id}`);
   const ctx = canvas.getContext("2d");
@@ -1229,32 +1442,59 @@ function drawWaveform(id) {
   ctx.fillStyle = "#0d1014";
   ctx.fillRect(0, 0, width, height);
   if (!deck.buffer) return;
-
-  const data = deck.buffer.getChannelData(0);
-  const samplesPerPixel = Math.max(1, Math.floor(data.length / width));
-  ctx.strokeStyle = id === "a" ? "#26d6c7" : "#ff3f6e";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (let x = 0; x < width; x += 1) {
-    let min = 1;
-    let max = -1;
-    const start = x * samplesPerPixel;
-    for (let i = 0; i < samplesPerPixel; i += 1) {
-      const sample = data[start + i] || 0;
-      min = Math.min(min, sample);
-      max = Math.max(max, sample);
+  if (!deck.waveformPeaks || deck.waveformPeaks.length !== width) deck.waveformPeaks = buildWaveformPeaks(deck, width);
+  const bpm = Number(deck.analysis?.bpm || 0);
+  if (bpm > 0) {
+    const beatSeconds = 60 / bpm;
+    const beatCount = Math.min(256, Math.floor(deck.buffer.duration / beatSeconds));
+    ctx.lineWidth = 1;
+    for (let beat = 0; beat <= beatCount; beat += 1) {
+      const x = (beat * beatSeconds / deck.buffer.duration) * width;
+      ctx.strokeStyle = beat % 4 === 0 ? "rgba(247,180,75,.24)" : "rgba(255,255,255,.07)";
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
     }
-    ctx.moveTo(x, (1 + min) * height * 0.5);
-    ctx.lineTo(x, (1 + max) * height * 0.5);
   }
-  ctx.stroke();
+  if (playheadRatio !== null) {
+    ctx.fillStyle = id === "a" ? "rgba(38,214,199,.1)" : "rgba(255,63,110,.1)";
+    ctx.fillRect(0, 0, Math.max(0, Math.min(1, playheadRatio)) * width, height);
+  }
+  deck.waveformPeaks.forEach((peak, x) => {
+    const intensity = Math.min(1, peak.energy * 5);
+    const lightness = Math.round(52 + intensity * 22);
+    ctx.fillStyle = id === "a" ? `hsl(174 70% ${lightness}%)` : `hsl(343 92% ${lightness}%)`;
+    const y = (1 + peak.min) * height * 0.5;
+    const barHeight = Math.max(1, (peak.max - peak.min) * height * 0.5);
+    ctx.fillRect(x, y, 1, barHeight);
+  });
+  if (deck.loop && deck.loopEnd > deck.loopStart) {
+    const loopX = deck.loopStart / deck.buffer.duration * width;
+    const loopWidth = (deck.loopEnd - deck.loopStart) / deck.buffer.duration * width;
+    ctx.fillStyle = "rgba(168,113,255,.16)";
+    ctx.fillRect(loopX, 0, loopWidth, height);
+    ctx.strokeStyle = "rgba(199,168,255,.85)";
+    ctx.strokeRect(loopX, 1, loopWidth, height - 2);
+  }
+  const transitionItem = autoMixState.items.find((item) => item.name === deck.trackName);
+  const transitionTime = transitionItem && (id === autoMixState.incomingDeck ? transitionItem.cueIn : transitionItem.cueOut);
+  if (Number.isFinite(transitionTime)) {
+    const x = transitionTime / deck.buffer.duration * width;
+    ctx.strokeStyle = "#a871ff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
+  }
   drawSelectionOverlay(id, ctx, width, height);
 }
 
 function drawPlayhead(id, ratio) {
   const canvas = document.querySelector(`#wave-${id}`);
   const ctx = canvas.getContext("2d");
-  drawWaveform(id);
+  drawWaveform(id, ratio);
   ctx.strokeStyle = "#f7b44b";
   ctx.lineWidth = 3;
   ctx.beginPath();
@@ -1452,6 +1692,10 @@ function animationLoop() {
       const ratio = ((AudioEngine.context.currentTime - deck.startedAt) % deck.buffer.duration) / deck.buffer.duration;
       drawPlayhead(id, ratio);
       updateDeckTimeDisplay(id);
+      renderDeckLoopStatus(id);
+      const pitch = Number(document.querySelector(`#pitch-${id}`)?.value || 1);
+      const angle = (AudioEngine.context.currentTime - deck.startedAt) * 200 * pitch;
+      document.querySelector(`.platter[data-deck="${id}"]`)?.style.setProperty("--platter-angle", `${angle}deg`);
     }
   }
   animateMeters();
@@ -1459,6 +1703,7 @@ function animationLoop() {
   if (!autoMixState.lastPanelRender || performance.now() - autoMixState.lastPanelRender > 500) {
     autoMixState.lastPanelRender = performance.now();
     renderSmartMixPanel();
+    renderGlobalTransport();
   }
   requestAnimationFrame(animationLoop);
 }
@@ -1472,6 +1717,35 @@ function animateMeters() {
   const meters = document.querySelectorAll(".master-meter span");
   meters[0].style.transform = `scaleY(${Math.max(0.08, low)})`;
   meters[1].style.transform = `scaleY(${Math.max(0.08, high)})`;
+  for (const id of ["a", "b"]) animateDeckMeter(id);
+}
+
+function animateDeckMeter(id) {
+  const deck = deckState[id];
+  if (!deck.analyser) return;
+  const samples = new Uint8Array(deck.analyser.fftSize);
+  deck.analyser.getByteTimeDomainData(samples);
+  let squareSum = 0;
+  let instantaneousPeak = 0;
+  samples.forEach((value) => {
+    const sample = (value - 128) / 128;
+    squareSum += sample * sample;
+    instantaneousPeak = Math.max(instantaneousPeak, Math.abs(sample));
+  });
+  const level = deck.playing ? Math.min(1, Math.sqrt(squareSum / samples.length) * 3.4) : 0;
+  deck.meterPeak = Math.max(level, deck.meterPeak * 0.975);
+  const left = Math.round(level * 100);
+  const right = Math.round(level * 96);
+  const peak = Math.min(99, Math.round(deck.meterPeak * 100));
+  const leftBar = document.querySelector(`[data-meter="${id}-left"]`);
+  const rightBar = document.querySelector(`[data-meter="${id}-right"]`);
+  const leftPeak = document.querySelector(`[data-peak="${id}-left"]`);
+  const rightPeak = document.querySelector(`[data-peak="${id}-right"]`);
+  if (leftBar) leftBar.style.width = `${left}%`;
+  if (rightBar) rightBar.style.width = `${right}%`;
+  if (leftPeak) leftPeak.style.left = `${peak}%`;
+  if (rightPeak) rightPeak.style.left = `${Math.max(0, peak - 2)}%`;
+  document.querySelector(`[data-clip="${id}"]`)?.classList.toggle("is-clipping", instantaneousPeak >= 0.98);
 }
 
 function renderPads() {
@@ -1577,6 +1851,12 @@ function nextPadTriggerTime() {
 function stopAllPads() {
   sampler.active.forEach((active, index) => {
     if (active) stopPad(index);
+  });
+}
+
+function stopPadLoops() {
+  sampler.active.forEach((active, index) => {
+    if (active && sampler.modes[index] === "loop") stopPad(index);
   });
 }
 
@@ -2175,6 +2455,7 @@ async function playEditorArrangement() {
   await AudioEngine.init();
   stopEditorArrangement();
   editorState.playing = true;
+  editorState.paused = false;
   document.querySelector("#editorPlay").textContent = "Playing";
   const startAt = AudioEngine.context.currentTime + 0.08;
   const from = editorState.playhead;
@@ -2251,8 +2532,17 @@ function stopEditorArrangement() {
   });
   editorState.scheduled = [];
   editorState.playing = false;
+  editorState.paused = false;
   const play = document.querySelector("#editorPlay");
   if (play) play.textContent = "Play";
+}
+
+function pauseEditorArrangement() {
+  const playhead = editorState.playhead;
+  stopEditorArrangement();
+  editorState.playhead = playhead;
+  editorState.paused = true;
+  editorStatus(`Arrangement paused at ${formatTime(playhead)}.`);
 }
 
 function addEditorTrack() {
@@ -3954,6 +4244,264 @@ async function loadSelectedCrateToDecks() {
   }
 }
 
+function readSmartPromptStorage() {
+  try { smartPromptState.history = JSON.parse(localStorage.getItem(SMART_PROMPT_HISTORY_KEY) || "[]"); } catch { smartPromptState.history = []; }
+  try { smartPromptState.recipes = JSON.parse(localStorage.getItem(SMART_PROMPT_RECIPES_KEY) || "[]"); } catch { smartPromptState.recipes = []; }
+}
+
+function writeSmartPromptStorage() {
+  localStorage.setItem(SMART_PROMPT_HISTORY_KEY, JSON.stringify(smartPromptState.history.slice(0, 12)));
+  localStorage.setItem(SMART_PROMPT_RECIPES_KEY, JSON.stringify(smartPromptState.recipes.slice(0, 12)));
+}
+
+function supportedPromptStyle(text) {
+  if (/quick|cut|open.?format/.test(text)) return { style: "quick-blend", label: "Quick blend" };
+  if (/bass\s*swap/.test(text)) return { style: "bass-swap-phrase", label: "Bass swap" };
+  if (/drop\s*mix/.test(text)) return { style: "drop-mix", label: "Drop mix" };
+  if (/filter/.test(text)) return { style: "filter-sweep", label: "Filter fade" };
+  if (/long|slow|smooth|blend/.test(text)) return { style: /long|slow/.test(text) ? "long-dissolve" : "smooth-crossfade", label: /long|slow/.test(text) ? "Long dissolve" : "Smooth blend" };
+  return { style: "smooth-crossfade", label: "Smooth blend" };
+}
+
+function parseSmartMixPrompt(rawPrompt) {
+  const prompt = String(rawPrompt || "").trim();
+  const text = prompt.toLowerCase();
+  const activeDeck = detectActiveDeck() || "a";
+  const requestedDeck = text.match(/(?:into|use|bring in)\s+deck\s*([ab])/i)?.[1]?.toLowerCase();
+  const incomingDeck = requestedDeck || (activeDeck === "a" ? "b" : "a");
+  const active = deckState[activeDeck];
+  const incoming = deckState[incomingDeck];
+  const activeRatio = Number(document.querySelector(`#pitch-${activeDeck}`)?.value || 1);
+  const activeBpm = Number(active.analysis?.bpm || document.querySelector("#globalBpm")?.value || 120) * activeRatio;
+  const originalIncomingBpm = Number(incoming.analysis?.bpm || 0);
+  const normalizedIncomingBpm = originalIncomingBpm ? normalizeBpmForMix(originalIncomingBpm, activeBpm) : 0;
+  const rawShift = normalizedIncomingBpm ? (activeBpm / normalizedIncomingBpm - 1) * 100 : 0;
+  const shiftPercent = Math.abs(rawShift);
+  const explicitBars = Number(text.match(/(?:in|wait|after)\s+(4|8|16|32)\s*bars?/)?.[1] || 0);
+  let barsUntilTransition = explicitBars || 16;
+  let transitionTrigger = explicitBars ? `In ${explicitBars} bars` : "Next estimated 16-bar boundary";
+  let targetSection = "Beat-grid estimate";
+  const warnings = [];
+  const unsupported = [];
+  const phraseRequest = /chorus|verse|hook|breakdown|instrumental section/.test(text);
+  if (/next\s+bar/.test(text)) { barsUntilTransition = 1; transitionTrigger = "Next bar"; }
+  if (/outro/.test(text)) {
+    targetSection = "Estimated outro";
+    const remaining = active.buffer ? Math.max(1, active.buffer.duration - currentDeckTime(activeDeck) - 12) : phraseLengthSeconds(activeBpm, 16);
+    barsUntilTransition = Math.max(1, Math.round(remaining / phraseLengthSeconds(activeBpm, 1)));
+    transitionTrigger = "Estimated outro boundary";
+    warnings.push("Reliable outro detection is unavailable, using the analyzed mix-out estimate.");
+  } else if (/before (?:this )?(?:track|song) ends?|before.*ends?/.test(text)) {
+    targetSection = "Before track end";
+    const remaining = active.buffer ? Math.max(1, active.buffer.duration - currentDeckTime(activeDeck) - 10) : phraseLengthSeconds(activeBpm, 8);
+    barsUntilTransition = Math.max(1, Math.round(remaining / phraseLengthSeconds(activeBpm, 1)));
+    transitionTrigger = "Before track end estimate";
+  } else if (phraseRequest) {
+    const section = text.match(/chorus|verse|hook|breakdown|instrumental section/)?.[0] || "section";
+    targetSection = `Next ${section} estimate`;
+    transitionTrigger = `Next ${barsUntilTransition}-bar boundary`;
+    warnings.push(`${section[0].toUpperCase() + section.slice(1)} detection is unavailable, using the next ${barsUntilTransition}-bar boundary.`);
+  }
+  const style = supportedPromptStyle(text);
+  if (/echo/.test(text)) { unsupported.push("True echo processing is not available yet"); warnings.push("Echo-out is unavailable, using a quick filter-assisted blend."); style.style = "filter-sweep"; style.label = "Filter-assisted quick blend"; }
+  if (/acapella|stem\s*swap/.test(text)) unsupported.push("Independent stem routing is not available in Smart Mix");
+  if (/keep.*vocal.*over|vocal.*over.*intro/.test(text)) { unsupported.push("Outgoing vocal overlays require independent stem routing"); warnings.push("Vocal overlay routing is unavailable, using a full-mix blend."); }
+  if (/loop transition/.test(text)) unsupported.push("Automated loop transitions are not available yet");
+  const blendBars = Number(text.match(/(4|8|16|32)[- ]bar\s+(?:blend|transition|mix)/)?.[1] || (/quick|cut/.test(text) ? 4 : /long|slow/.test(text) ? 16 : 8));
+  const recoveryRequested = /return|original bpm|natural tempo|bpm recovery/.test(text) || !/keep incoming.*tempo|no bpm recovery/.test(text);
+  const recoveryBars = Number(text.match(/(?:return|recover|original bpm|natural tempo)[^.!]*?(?:over|in)\s+(2|4|8|16)\s*bars?/)?.[1] || 8);
+  const recoveryStartBars = Number(text.match(/(?:after|wait)\s+(4|8|16)\s*bars?[^.!]*?(?:return|recover)/)?.[1] || 0);
+  const curve = /linear/.test(text) ? "linear" : /ease in/.test(text) ? "ease-in" : /ease out/.test(text) ? "ease-out" : /phrase.?step/.test(text) ? "phrase-stepped" : "smooth";
+  const avoidVocalOverlap = /avoid.*vocal|no vocal.*overlap|after the vocal/.test(text);
+  if (avoidVocalOverlap && !stemState.stems.length) warnings.push("Vocal clash avoidance uses density estimates because prepared stems are unavailable.");
+  const forceTrackSelection = /pick|choose|from ditc|next compatible/.test(text);
+  const incomingTrackSource = incoming.buffer && !forceTrackSelection ? `Loaded Deck ${incomingDeck.toUpperCase()}` : forceTrackSelection ? "DITC selection" : smartMixSourceLabel(document.querySelector("#smartMixSource")?.value || "both");
+  if (!incoming.buffer && !forceTrackSelection) warnings.push(`Deck ${incomingDeck.toUpperCase()} is empty. Smart Mix will select from ${incomingTrackSource}.`);
+  if (!originalIncomingBpm && incoming.buffer) warnings.push("Incoming BPM is unavailable, so temporary BPM matching cannot be planned safely.");
+  let safety = "Normal";
+  if (shiftPercent > 4) { safety = "Moderate"; warnings.push(`Temporary tempo shift is ${shiftPercent.toFixed(1)}%, which may be audible.`); }
+  if (shiftPercent > 8) { safety = "Large"; warnings.push("The BPM difference exceeds the recommended 8% automatic blend range. Use a safer quick transition or choose another track."); }
+  if (shiftPercent > 12) { safety = "Extreme"; warnings.push("Automatic beatmatched blending is blocked until a safer plan is selected."); }
+  if (/key lock/.test(text)) warnings.push("Key lock is not supported by the current Web Audio deck engine.");
+  else if (shiftPercent > 0.5) warnings.push("Key lock is unavailable, so temporary tempo matching also changes pitch.");
+  const activeTempoChangeRequested = !/do not change|don't change|keep.*tempo|preserve.*tempo/.test(text) && /(?:change|adjust).*(?:deck [ab]|active).*(?:bpm|tempo)/.test(text);
+  if (activeTempoChangeRequested) warnings.push("Prompt-controlled active-deck tempo changes are unavailable; the active deck will be preserved.");
+  let clarification = phraseRequest && explicitBars && !/then/.test(text)
+    ? "Which should control the transition, the requested section estimate or the explicit bar countdown?"
+    : "";
+  if (requestedDeck === activeDeck) clarification = `Deck ${activeDeck.toUpperCase()} is already active. Edit the prompt if you want Deck ${activeDeck === "a" ? "B" : "A"} as the incoming deck.`;
+  const estimatedTimeUntilTransition = phraseLengthSeconds(activeBpm, barsUntilTransition);
+  const confidence = Math.max(35, Math.min(96, 94 - warnings.length * 6 - (shiftPercent > 8 ? 18 : 0) - (phraseRequest ? 8 : 0)));
+  return {
+    id: createId(), rawPrompt: prompt, activeDeck, incomingDeck, incomingTrackSource,
+    transitionTrigger, barsUntilTransition, estimatedTimeUntilTransition, targetSection,
+    transitionStyle: style.style, transitionStyleLabel: style.label, blendLengthBars: blendBars,
+    avoidVocalOverlap, preserveActiveDeckTempo: true,
+    temporaryIncomingBpm: originalIncomingBpm ? activeBpm : null, originalIncomingBpm: originalIncomingBpm || null,
+    tempoAssistRatio: normalizedIncomingBpm ? clamp(activeBpm / normalizedIncomingBpm, 0.88, 1.12) : 1,
+    tempoShiftPercent: shiftPercent, tempoSafety: safety, bpmRecoveryEnabled: recoveryRequested,
+    bpmRecoveryStart: recoveryStartBars ? `After ${recoveryStartBars} bars` : "Immediately after transition",
+    bpmRecoveryStartBars: recoveryStartBars, bpmRecoveryDurationBars: recoveryBars, bpmRecoveryCurve: curve,
+    keyLockEnabled: false, stemInstructions: avoidVocalOverlap ? "Prefer low-vocal estimate" : "Full mix",
+    loopInstructions: /loop/.test(text) ? "Requested, unavailable for automation" : "None",
+    padInstructions: "None", confidence, warnings, unsupported, clarification,
+    forceTrackSelection, requiresSaferPlan: shiftPercent > 12,
+    explanation: `Deck ${incomingDeck.toUpperCase()} will ${originalIncomingBpm ? `temporarily match ${activeBpm.toFixed(1)} BPM` : "use its available tempo"} while Deck ${activeDeck.toUpperCase()} remains uninterrupted. ${recoveryRequested && originalIncomingBpm ? `After the blend, it will return toward ${originalIncomingBpm} BPM over ${recoveryBars} bars using a ${curve.replace(/-/g, " ")} curve.` : "No automated BPM recovery is planned."}`
+  };
+}
+
+function renderSmartPromptPlan() {
+  const plan = smartPromptState.plan;
+  const card = document.querySelector("#smartPromptPlan");
+  const clarification = document.querySelector("#smartPromptClarification");
+  if (!card) return;
+  card.hidden = !plan;
+  clarification.hidden = !smartPromptState.clarification;
+  clarification.textContent = smartPromptState.clarification;
+  document.querySelector("#applySmartPrompt").disabled = !plan || Boolean(smartPromptState.clarification) || plan.requiresSaferPlan;
+  document.querySelector("#cancelSmartPrompt").disabled = !plan;
+  if (!plan) return;
+  document.querySelector("#smartPromptPlanState").textContent = smartPromptState.state;
+  document.querySelector("#smartPromptConfidence").textContent = `${plan.confidence}%`;
+  const details = [
+    ["Active Deck", `Deck ${plan.activeDeck.toUpperCase()}`], ["Incoming Deck", `Deck ${plan.incomingDeck.toUpperCase()}`],
+    ["Source", plan.incomingTrackSource], ["Trigger", plan.transitionTrigger], ["Transition", `${plan.blendLengthBars}-bar ${plan.transitionStyleLabel}`],
+    ["Vocal overlap", plan.avoidVocalOverlap ? "Avoid" : "Allowed"], ["Active tempo", plan.preserveActiveDeckTempo ? "Preserve" : "Prompt controlled"],
+    ["Blend BPM", plan.temporaryIncomingBpm?.toFixed(1) || "Pending track"], ["Original BPM", plan.originalIncomingBpm || "Pending track"],
+    ["BPM recovery", plan.bpmRecoveryEnabled ? `${plan.bpmRecoveryDurationBars} bars, ${plan.bpmRecoveryCurve}` : "Off"],
+    ["Safety", `${plan.tempoSafety}${plan.tempoShiftPercent ? ` · ${plan.tempoShiftPercent.toFixed(1)}%` : ""}`], ["Key lock", "Unavailable"]
+  ];
+  document.querySelector("#smartPromptPlanDetails").innerHTML = details.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("");
+  const notices = [...plan.warnings, ...plan.unsupported.map((item) => `Unavailable: ${item}.`)];
+  document.querySelector("#smartPromptWarnings").textContent = notices.length ? `Warnings: ${notices.join(" ")}` : "No plan warnings.";
+  document.querySelector("#smartPromptExplanation").textContent = plan.explanation;
+  document.querySelector("#promptRecoveryBars").value = String(plan.bpmRecoveryDurationBars);
+  document.querySelector("#promptRecoveryCurve").value = plan.bpmRecoveryCurve;
+  renderSmartPromptLibrary();
+}
+
+function renderSmartPromptLibrary() {
+  const renderItems = (items, kind) => items.length ? items.map((item, index) => `<button type="button" data-prompt-library="${kind}" data-prompt-index="${index}" title="Reuse ${escapeHtml(item.prompt || item.name)}">${escapeHtml(item.name || item.prompt)}</button>${kind === "history" ? `<button type="button" data-prompt-favorite data-prompt-index="${index}" aria-label="${item.favorite ? "Unfavorite" : "Favorite"} ${escapeHtml(item.prompt)}">${item.favorite ? "★" : "☆"}</button>` : ""}<button type="button" data-prompt-delete="${kind}" data-prompt-index="${index}" aria-label="Delete ${escapeHtml(item.name || item.prompt)}">×</button>`).join("") : `<span>No ${kind} yet.</span>`;
+  const history = document.querySelector("#smartPromptHistory");
+  const recipes = document.querySelector("#smartPromptRecipes");
+  if (history) history.innerHTML = `<strong>History</strong>${renderItems(smartPromptState.history, "history")}`;
+  if (recipes) recipes.innerHTML = `<strong>Recipes</strong>${renderItems(smartPromptState.recipes, "recipes")}`;
+}
+
+function planSmartPrompt() {
+  const input = document.querySelector("#smartMixPrompt");
+  const prompt = input.value.trim();
+  if (!prompt) return;
+  smartPromptState.state = "Parsing Prompt";
+  smartPromptState.rawPrompt = prompt;
+  try {
+    const plan = parseSmartMixPrompt(prompt);
+    smartPromptState.parsedIntent = plan;
+    smartPromptState.plan = plan;
+    smartPromptState.clarification = plan.clarification;
+    smartPromptState.state = plan.clarification || plan.requiresSaferPlan ? "Plan Needs Clarification" : "Plan Ready";
+    smartPromptState.history = [{ prompt, favorite: false, createdAt: Date.now() }, ...smartPromptState.history.filter((item) => item.prompt !== prompt)].slice(0, 12);
+    writeSmartPromptStorage();
+  } catch (error) {
+    smartPromptState.state = "Error";
+    smartPromptState.lastError = error.message || "Prompt parsing failed";
+  }
+  renderSmartPromptPlan();
+}
+
+function applyPromptToTransition(transition, promptPlan) {
+  if (!transition || !promptPlan) return transition;
+  const activeBpm = Number(transition.from.analysis?.bpm || 120) * Number(document.querySelector(`#pitch-${promptPlan.activeDeck}`)?.value || 1);
+  const originalIncomingBpm = Number(transition.to.analysis?.bpm || 0);
+  const normalizedIncomingBpm = normalizeBpmForMix(originalIncomingBpm, activeBpm);
+  const tempoAssistRatio = normalizedIncomingBpm ? activeBpm / normalizedIncomingBpm : 1;
+  const shiftPercent = Math.abs((tempoAssistRatio - 1) * 100);
+  const maximumShift = Number(document.querySelector("#promptMaxShift")?.value || 8);
+  promptPlan.originalIncomingBpm = originalIncomingBpm || null;
+  promptPlan.temporaryIncomingBpm = originalIncomingBpm ? activeBpm : null;
+  promptPlan.tempoShiftPercent = shiftPercent;
+  promptPlan.tempoAssistRatio = clamp(tempoAssistRatio, 0.88, 1.12);
+  if (shiftPercent > maximumShift) {
+    promptPlan.requiresSaferPlan = true;
+    promptPlan.tempoSafety = shiftPercent > 12 ? "Extreme" : "Large";
+    promptPlan.warnings.push(`Selected track requires a ${shiftPercent.toFixed(1)}% tempo shift, above the ${maximumShift}% safety limit.`);
+  }
+  if (shiftPercent > 0.5 && !promptPlan.warnings.some((warning) => warning.includes("Key lock"))) promptPlan.warnings.push("Key lock is unavailable, so temporary tempo matching also changes pitch.");
+  const requestedOverlap = phraseLengthSeconds(activeBpm, promptPlan.blendLengthBars);
+  const maxOverlap = Math.max(4, Math.min(transition.from.buffer.duration - 0.5, transition.to.buffer.duration - transition.nextCue - 0.5));
+  transition.style = promptPlan.transitionStyle;
+  transition.overlap = Math.max(2, Math.min(requestedOverlap, maxOverlap));
+  transition.startAt = Math.max(currentDeckTime(promptPlan.activeDeck) + 1, Math.min(transition.from.buffer.duration - transition.overlap - 0.5, currentDeckTime(promptPlan.activeDeck) + promptPlan.estimatedTimeUntilTransition));
+  transition.tempoAssistRatio = promptPlan.tempoAssistRatio;
+  transition.tempoRestoreSeconds = phraseLengthSeconds(promptPlan.temporaryIncomingBpm || transition.to.analysis?.bpm || 120, promptPlan.bpmRecoveryDurationBars);
+  transition.filterSweep = /filter|bass|long|vocal|drop/.test(transition.style);
+  transition.promptPlan = promptPlan;
+  transition.note = `${promptPlan.transitionStyleLabel.toLowerCase()} ${promptPlan.transitionTrigger.toLowerCase()} into ${formatTime(transition.nextCue)}`;
+  return transition;
+}
+
+function promptCandidateMatches(item, promptPlan) {
+  const text = promptPlan.rawPrompt.toLowerCase();
+  const searchable = `${item.name} ${item.analysis?.genre || ""} ${item.analysis?.mood || ""} ${item.notes || ""}`.toLowerCase();
+  const requestedTerms = ["east coast", "west coast", "house", "hip-hop", "hip hop", "r&b", "jungle", "dnb", "dark", "bright", "chill", "high energy", "low energy"].filter((term) => text.includes(term));
+  return !requestedTerms.length || requestedTerms.some((term) => searchable.includes(term.replace("high energy", "high").replace("low energy", "low")));
+}
+
+function useSaferSmartPrompt() {
+  const plan = smartPromptState.plan;
+  if (!plan) return;
+  plan.transitionStyle = "quick-blend";
+  plan.transitionStyleLabel = "Quick blend";
+  plan.blendLengthBars = 4;
+  plan.tempoAssistRatio = 1;
+  plan.temporaryIncomingBpm = plan.originalIncomingBpm;
+  plan.bpmRecoveryEnabled = false;
+  plan.requiresSaferPlan = false;
+  plan.tempoSafety = "Safer alternative";
+  plan.warnings.push("Beatmatched tempo assistance was removed because the requested shift exceeded the safe range.");
+  plan.explanation = `Deck ${plan.incomingDeck.toUpperCase()} will use a short transition at its natural tempo. Deck ${plan.activeDeck.toUpperCase()} remains uninterrupted until the handoff.`;
+  smartPromptState.clarification = "";
+  smartPromptState.state = "Plan Ready";
+  renderSmartPromptPlan();
+}
+
+async function applySmartPromptPlan() {
+  const plan = smartPromptState.plan;
+  if (!plan || smartPromptState.clarification || plan.requiresSaferPlan) return;
+  const maximumShift = Number(document.querySelector("#promptMaxShift")?.value || 8);
+  if (plan.tempoShiftPercent > maximumShift && Math.abs(plan.tempoAssistRatio - 1) > 0.005) {
+    plan.requiresSaferPlan = true;
+    plan.warnings.push(`The planned ${plan.tempoShiftPercent.toFixed(1)}% shift exceeds the selected ${maximumShift}% safety limit.`);
+    smartPromptState.state = "Plan Needs Clarification";
+    renderSmartPromptPlan();
+    return;
+  }
+  plan.bpmRecoveryDurationBars = Number(document.querySelector("#promptRecoveryBars")?.value || plan.bpmRecoveryDurationBars);
+  plan.bpmRecoveryCurve = document.querySelector("#promptRecoveryCurve")?.value || plan.bpmRecoveryCurve;
+  smartPromptState.state = "Plan Applied";
+  renderSmartPromptPlan();
+  const selectedSource = document.querySelector("#smartMixSource")?.value || "both";
+  await startSmartMix(document.querySelector("#smartMixMode")?.value || "club", plan.forceTrackSelection && selectedSource === "decks" ? "crate" : selectedSource, plan);
+}
+
+function cancelSmartPromptPlan() {
+  if (autoMixState.running && autoMixState.promptPlan) stopAiMix({ keepDecks: true });
+  smartPromptState.plan = null;
+  smartPromptState.parsedIntent = null;
+  smartPromptState.clarification = "";
+  smartPromptState.state = "Cancelled";
+  renderSmartPromptPlan();
+}
+
+function saveSmartPromptRecipe() {
+  const plan = smartPromptState.plan;
+  if (!plan) return;
+  const name = `${plan.transitionStyleLabel} · ${plan.barsUntilTransition} bars`;
+  smartPromptState.recipes = [{ name, prompt: plan.rawPrompt, plan: { transitionStyle: plan.transitionStyle, blendLengthBars: plan.blendLengthBars, bpmRecoveryDurationBars: plan.bpmRecoveryDurationBars, bpmRecoveryCurve: plan.bpmRecoveryCurve, avoidVocalOverlap: plan.avoidVocalOverlap }, createdAt: Date.now() }, ...smartPromptState.recipes].slice(0, 12);
+  writeSmartPromptStorage();
+  renderSmartPromptLibrary();
+}
+
 async function startAiMix(mode = document.querySelector("#smartMixMode")?.value || "club") {
   await startSmartMix(mode, document.querySelector("#smartMixSource")?.value || "both");
 }
@@ -3977,16 +4525,21 @@ function deckAsSmartMixItem(id, mode) {
   }, mode);
 }
 
-async function startSmartMix(mode = "club", sourceMode = "both") {
+async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = null) {
   autoMixState.state = "Analyzing Active Deck";
   setSmartMixStatus(`Analyzing ${smartMixSourceLabel(sourceMode).toLowerCase()}...`);
   renderSmartMixPanel();
   const activeDeck = detectActiveDeck();
   const oppositeDeck = activeDeck === "a" ? "b" : activeDeck === "b" ? "a" : null;
+  if (promptPlan && activeDeck) {
+    promptPlan.activeDeck = activeDeck;
+    promptPlan.incomingDeck = oppositeDeck;
+  }
   let items = await collectAutoMixItems(mode, sourceMode);
+  if (promptPlan?.forceTrackSelection) items = items.filter((item) => !item.id.startsWith("deck-") && promptCandidateMatches(item, promptPlan));
   if (activeDeck) {
     const activeItem = deckAsSmartMixItem(activeDeck, mode);
-    const incomingItem = deckAsSmartMixItem(oppositeDeck, mode);
+    const incomingItem = promptPlan?.forceTrackSelection ? null : deckAsSmartMixItem(oppositeDeck, mode);
     items = [activeItem, incomingItem, ...items]
       .filter(Boolean)
       .filter((item, index, array) => array.findIndex((candidate) => candidate.buffer === item.buffer) === index);
@@ -4003,12 +4556,23 @@ async function startSmartMix(mode = "club", sourceMode = "both") {
     autoMixState.items = items;
     autoMixState.plan = [];
     autoMixState.state = "No Eligible Track Found";
-    setSmartMixStatus("The active deck will keep playing. Add another playable track or broaden the Smart Mix source.");
+    setSmartMixStatus(promptPlan?.forceTrackSelection
+      ? "The active deck will keep playing. No DITC track matched the prompt constraints; broaden the request or load the incoming deck manually."
+      : "The active deck will keep playing. Add another playable track or broaden the Smart Mix source.");
     renderSmartMixPanel();
     return;
   }
   if (autoMixState.running) stopAiMix({ keepDecks: true, silent: true });
   const plan = buildSmartMixPlan(items, mode, activeDeck ? "decks" : sourceMode);
+  if (promptPlan && plan.transitions[0]) applyPromptToTransition(plan.transitions[0], promptPlan);
+  if (promptPlan?.requiresSaferPlan) {
+    smartPromptState.state = "Plan Needs Clarification";
+    smartPromptState.plan = promptPlan;
+    setSmartMixStatus("The selected incoming track exceeds the configured tempo safety limit. Use the safer plan or choose another track; the active deck continues unchanged.");
+    renderSmartPromptPlan();
+    renderSmartMixPanel();
+    return;
+  }
   autoMixState.running = true;
   autoMixState.state = activeDeck ? "Preparing Transition" : "Selecting Next Track";
   autoMixState.mode = mode;
@@ -4019,6 +4583,7 @@ async function startSmartMix(mode = "club", sourceMode = "both") {
   autoMixState.activeDeck = activeDeck || "a";
   autoMixState.incomingDeck = autoMixState.activeDeck === "a" ? "b" : "a";
   autoMixState.lastManualOverride = "None";
+  autoMixState.promptPlan = promptPlan;
   setSmartMixButtons(true);
   if (activeDeck) {
     setDeckStatus(activeDeck, "playing", { smartMixControlled: true, manualOverride: false });
@@ -4292,6 +4857,117 @@ function rampDeckPitchToNatural(id, seconds = 3) {
   autoMixState.timers.push(requestAnimationFrame(step));
 }
 
+function recoveryCurveValue(progress, curve) {
+  if (curve === "linear") return progress;
+  if (curve === "ease-in") return progress * progress;
+  if (curve === "ease-out") return 1 - Math.pow(1 - progress, 2);
+  if (curve === "phrase-stepped") return Math.floor(progress * 8) / 8;
+  return easeInOut(progress);
+}
+
+function renderBpmRecovery() {
+  const panel = document.querySelector("#bpmRecoveryPanel");
+  if (!panel) return;
+  panel.hidden = !bpmRecoveryState.plan;
+  if (!bpmRecoveryState.plan) return;
+  const currentBpm = bpmRecoveryState.originalBpm * bpmRecoveryState.currentRatio;
+  document.querySelector("#bpmRecoveryState").textContent = bpmRecoveryState.manualOverride ? "Manual tempo override" : bpmRecoveryState.active ? "BPM Recovery Active" : bpmRecoveryState.pending ? "BPM Recovery Pending" : bpmRecoveryState.progress >= 1 ? "BPM Recovery Complete" : "Recovery paused";
+  document.querySelector("#bpmOriginal").textContent = bpmRecoveryState.originalBpm.toFixed(1);
+  document.querySelector("#bpmBlend").textContent = bpmRecoveryState.blendBpm.toFixed(1);
+  document.querySelector("#bpmCurrent").textContent = currentBpm.toFixed(1);
+  document.querySelector("#bpmTarget").textContent = bpmRecoveryState.originalBpm.toFixed(1);
+  const percent = Math.round(bpmRecoveryState.progress * 100);
+  document.querySelector("#bpmRecoveryProgress").style.width = `${percent}%`;
+  document.querySelector("#bpmRecoveryProgress").parentElement.setAttribute("aria-valuenow", String(percent));
+  document.querySelector("#bpmRecoveryBars").textContent = `${(bpmRecoveryState.progress * bpmRecoveryState.durationBars).toFixed(1)} of ${bpmRecoveryState.durationBars} bars`;
+  document.querySelector("#bpmRecoveryCurve").textContent = bpmRecoveryState.curve.replace(/(^|-)(\w)/g, (_, separator, letter) => `${separator ? " " : ""}${letter.toUpperCase()}`);
+  document.querySelector("#resumeBpmRecovery").disabled = bpmRecoveryState.active || bpmRecoveryState.progress >= 1;
+}
+
+function cancelBpmRecovery(reason = "Cancelled", manualOverride = false, clearPlan = false) {
+  if (bpmRecoveryState.frame) cancelAnimationFrame(bpmRecoveryState.frame);
+  if (bpmRecoveryState.delayTimer) clearTimeout(bpmRecoveryState.delayTimer);
+  bpmRecoveryState.frame = null;
+  bpmRecoveryState.delayTimer = null;
+  bpmRecoveryState.active = false;
+  bpmRecoveryState.pending = false;
+  bpmRecoveryState.manualOverride = manualOverride;
+  if (manualOverride) {
+    smartPromptState.state = "Manual Override";
+    setSmartMixStatus("Manual tempo override. BPM recovery stopped and the selected tempo was preserved.");
+  } else if (reason) {
+    setSmartMixStatus(`BPM recovery ${reason.toLowerCase()}.`);
+  }
+  if (clearPlan) bpmRecoveryState.plan = null;
+  renderBpmRecovery();
+}
+
+function runBpmRecovery() {
+  if (!bpmRecoveryState.plan || !bpmRecoveryState.deckId) return;
+  if (bpmRecoveryState.frame) cancelAnimationFrame(bpmRecoveryState.frame);
+  bpmRecoveryState.pending = false;
+  bpmRecoveryState.active = true;
+  bpmRecoveryState.manualOverride = false;
+  bpmRecoveryState.startRatio = Number(document.querySelector(`#pitch-${bpmRecoveryState.deckId}`)?.value || bpmRecoveryState.currentRatio || 1);
+  bpmRecoveryState.currentRatio = bpmRecoveryState.startRatio;
+  bpmRecoveryState.startedAt = performance.now();
+  smartPromptState.state = "BPM Recovery Active";
+  function step(now) {
+    if (!bpmRecoveryState.active) return;
+    const rawProgress = Math.min(1, (now - bpmRecoveryState.startedAt) / Math.max(100, bpmRecoveryState.durationSeconds * 1000));
+    const curved = recoveryCurveValue(rawProgress, bpmRecoveryState.curve);
+    bpmRecoveryState.progress = rawProgress;
+    bpmRecoveryState.currentRatio = bpmRecoveryState.startRatio + (bpmRecoveryState.targetRatio - bpmRecoveryState.startRatio) * curved;
+    setDeckPitchRatio(bpmRecoveryState.deckId, bpmRecoveryState.currentRatio);
+    renderBpmRecovery();
+    if (rawProgress < 1) {
+      bpmRecoveryState.frame = requestAnimationFrame(step);
+    } else {
+      bpmRecoveryState.active = false;
+      bpmRecoveryState.frame = null;
+      bpmRecoveryState.currentRatio = bpmRecoveryState.targetRatio;
+      keepDeckNaturalPitch(bpmRecoveryState.deckId);
+      smartPromptState.state = "BPM Recovery Complete";
+      setSmartMixStatus(`Deck ${bpmRecoveryState.deckId.toUpperCase()} returned smoothly to its original BPM.`);
+      renderBpmRecovery();
+      renderSmartPromptPlan();
+    }
+  }
+  bpmRecoveryState.frame = requestAnimationFrame(step);
+  renderBpmRecovery();
+}
+
+function startPlannedBpmRecovery(id, transition) {
+  const plan = transition.promptPlan;
+  if (!plan?.bpmRecoveryEnabled || Math.abs(Number(document.querySelector(`#pitch-${id}`)?.value || 1) - 1) < 0.005) {
+    rampDeckPitchToNatural(id, transition.tempoRestoreSeconds);
+    return;
+  }
+  cancelBpmRecovery("Recalculated", false, true);
+  const originalBpm = Number(deckState[id].analysis?.bpm || plan.originalIncomingBpm || 120);
+  const startRatio = Number(document.querySelector(`#pitch-${id}`)?.value || 1);
+  bpmRecoveryState.deckId = id;
+  bpmRecoveryState.active = false;
+  bpmRecoveryState.pending = true;
+  bpmRecoveryState.manualOverride = false;
+  bpmRecoveryState.startRatio = startRatio;
+  bpmRecoveryState.currentRatio = startRatio;
+  bpmRecoveryState.targetRatio = 1;
+  bpmRecoveryState.originalBpm = originalBpm;
+  bpmRecoveryState.blendBpm = originalBpm * startRatio;
+  bpmRecoveryState.durationBars = plan.bpmRecoveryDurationBars;
+  bpmRecoveryState.durationSeconds = phraseLengthSeconds(originalBpm * startRatio, plan.bpmRecoveryDurationBars);
+  bpmRecoveryState.curve = plan.bpmRecoveryCurve;
+  bpmRecoveryState.progress = 0;
+  bpmRecoveryState.plan = plan;
+  smartPromptState.state = "BPM Recovery Pending";
+  renderSmartPromptPlan();
+  const delaySeconds = phraseLengthSeconds(originalBpm * startRatio, plan.bpmRecoveryStartBars || 0);
+  if (delaySeconds > 0) bpmRecoveryState.delayTimer = setTimeout(runBpmRecovery, delaySeconds * 1000);
+  else runBpmRecovery();
+  renderBpmRecovery();
+}
+
 function smartMixSourceLabel(sourceMode) {
   if (sourceMode === "decks") return "loaded decks";
   if (sourceMode === "crate") return "crate tracks";
@@ -4347,6 +5023,22 @@ function renderSmartMixPanel() {
     else if (autoMixState.state === "Transition Complete") countdown.textContent = "Transition complete";
     else countdown.textContent = "No transition planned";
   }
+  const crossfaderValue = Number(document.querySelector("#crossfader")?.value || 0.5);
+  const transitionPercent = autoMixState.running
+    ? Math.round((autoMixState.incomingDeck === "a" ? 1 - crossfaderValue : crossfaderValue) * 100)
+    : 50;
+  const outgoing = document.querySelector("#transitionOutgoing");
+  const incoming = document.querySelector("#transitionIncoming");
+  const progress = document.querySelector("#transitionProgress");
+  const progressTrack = progress?.parentElement;
+  if (outgoing) outgoing.textContent = `Deck ${autoMixState.activeDeck?.toUpperCase() || "A"}`;
+  if (incoming) incoming.textContent = `Deck ${autoMixState.incomingDeck?.toUpperCase() || "B"}`;
+  if (progress) progress.style.width = `${transitionPercent}%`;
+  if (progressTrack) progressTrack.setAttribute("aria-valuenow", String(transitionPercent));
+  const eqBlend = document.querySelector("#transitionEqBlend");
+  if (eqBlend) eqBlend.textContent = `EQ blend: ${autoMixState.state === "Transitioning" ? `${transitionPercent}%` : "neutral"}`;
+  const stemUsage = document.querySelector("#transitionStemUsage");
+  if (stemUsage) stemUsage.textContent = "Stems: full mix";
   const diagnostics = document.querySelector("#smartMixDiagnostics");
   if (diagnostics) diagnostics.hidden = !DECKFORGE_DEVELOPMENT;
   const output = document.querySelector("#smartMixDiagnosticsOutput");
@@ -4362,10 +5054,56 @@ function renderSmartMixPanel() {
       transitionTimerSeconds: autoMixState.estimatedTransitionAt ? Math.max(0, Math.ceil((autoMixState.estimatedTransitionAt - performance.now()) / 1000)) : null,
       crossfader: Number(document.querySelector("#crossfader")?.value || 0.5),
       schedulerArmed: autoMixState.handoffArmed,
+      rawPrompt: smartPromptState.rawPrompt,
+      parsedIntent: smartPromptState.parsedIntent,
+      promptState: smartPromptState.state,
+      promptTrigger: smartPromptState.plan?.transitionTrigger || null,
+      promptTransitionStyle: smartPromptState.plan?.transitionStyle || null,
+      incomingSource: smartPromptState.plan?.incomingTrackSource || null,
+      activeBpm: smartPromptState.plan?.temporaryIncomingBpm || null,
+      incomingOriginalBpm: smartPromptState.plan?.originalIncomingBpm || null,
+      temporaryBpm: smartPromptState.plan?.temporaryIncomingBpm || null,
+      recoveryStart: smartPromptState.plan?.bpmRecoveryStart || null,
+      recoveryDurationBars: bpmRecoveryState.durationBars,
+      recoveryCurve: bpmRecoveryState.curve,
+      recoveryProgress: bpmRecoveryState.progress,
+      recoveryManualOverride: bpmRecoveryState.manualOverride,
       lastManualOverride: autoMixState.lastManualOverride,
-      lastError: autoMixState.lastError
+      lastError: smartPromptState.lastError !== "None" ? smartPromptState.lastError : autoMixState.lastError
     }, null, 2);
   }
+}
+
+function renderGlobalTransport() {
+  const registry = window.AudioPlaybackRegistry;
+  if (!registry) return;
+  const snapshot = registry.snapshot();
+  const active = snapshot.filter((source) => source.playing || source.paused);
+  const audible = active.filter((source) => source.playing);
+  const primary = audible[0] || active[0] || null;
+  const contextState = AudioEngine.context?.state || "not started";
+  const state = globalTransportState.paused ? "Paused" : audible.length ? "Playing" : active.length ? "Paused" : contextState === "running" ? "Ready" : "Audio not started";
+  document.querySelector("#globalPlaybackState").textContent = `${state} · Output ${contextState}`;
+  document.querySelector("#globalPlaybackSource").textContent = audible.length > 1 ? "Multiple Sources Playing" : primary ? `${primary.displayName}, ${primary.metadata?.name || "Active"}` : "No active source";
+  document.querySelector("#globalPlaybackTime").textContent = formatTime(primary?.metadata?.elapsed || 0);
+  document.querySelector("#globalResume").disabled = contextState === "running" && !globalTransportState.paused;
+  document.querySelector("#globalPause").disabled = contextState !== "running" || !audible.length || globalTransportState.paused;
+  document.querySelector("#globalRestart").disabled = !primary || typeof primary.restart !== "function";
+  document.querySelector("#globalStop").disabled = !active.length;
+  document.querySelector("#globalPlaybackSourceList").innerHTML = active.length ? active.map((source) => `<div class="global-source-row"><span>${escapeHtml(source.displayName)}<small>${escapeHtml(source.metadata?.name || "")}</small></span><button data-global-stop-source="${source.id}" aria-label="Stop ${escapeHtml(source.displayName)}">Stop</button></div>`).join("") : "No active sources.";
+  const pageMap = { deck: "decks", preview: ditcState.previewTrackId ? "sources" : "stems", performance: null, timeline: "editor", automation: "decks" };
+  document.querySelectorAll(".tab-button").forEach((button) => button.classList.remove("has-audio"));
+  active.forEach((source) => {
+    let target = pageMap[source.type];
+    if (source.id === "pads") target = "sampler";
+    if (source.id === "drums") target = "drums";
+    if (source.id === "keys") target = "keys";
+    if (target) document.querySelector(`.tab-button[data-target="${target}"]`)?.classList.add("has-audio");
+  });
+  const details = document.querySelector("#globalAudioDiagnostics");
+  if (details) details.hidden = !DECKFORGE_DEVELOPMENT;
+  const output = document.querySelector("#globalAudioDiagnosticsOutput");
+  if (output && DECKFORGE_DEVELOPMENT) output.textContent = JSON.stringify({ audioContextState: contextState, registeredSources: snapshot.map((source) => source.id), activeSources: active.map((source) => source.id), pausedSources: snapshot.filter((source) => source.paused).map((source) => source.id), loopingSources: snapshot.filter((source) => source.looping).map((source) => source.id), automatedSources: snapshot.filter((source) => source.automated).map((source) => source.id), masterVolume: Number(document.querySelector("#masterVolume")?.value || 0), activeTimers: { drums: Boolean(drums.timer), smartMix: autoMixState.timers.length, arrangementNodes: editorState.scheduled.length }, lastPlaybackEvent: registry.lastPlaybackEvent, lastStopEvent: registry.lastStopEvent, lastAudioError: globalTransportState.lastError !== "None" ? globalTransportState.lastError : registry.lastError, deckOwnership: { a: deckState.a.smartMixControlled ? "Smart Mix" : "Manual", b: deckState.b.smartMixControlled ? "Smart Mix" : "Manual" }, smartMixState: autoMixState.state }, null, 2);
 }
 
 function setSmartMixButtons(isRunning) {
@@ -4481,7 +5219,8 @@ function scheduleNextAutoMix() {
   );
   const currentTime = currentDeckTime(autoMixState.activeDeck);
   const delay = Math.max(1, transition.startAt - currentTime);
-  autoMixState.state = "Waiting for Transition Point";
+  autoMixState.state = autoMixState.promptPlan ? "Waiting for Trigger" : "Waiting for Transition Point";
+  if (autoMixState.promptPlan) { smartPromptState.state = "Waiting for Trigger"; renderSmartPromptPlan(); }
   autoMixState.estimatedTransitionAt = performance.now() + delay * 1000;
   setSmartMixStatus(`Smart Mix preparing: ${transition.note}. Estimated transition in ${Math.ceil(delay)} seconds.`);
   renderSmartMixPanel();
@@ -4530,7 +5269,8 @@ function prepareNextSmartMixDeck() {
     getSmartMixProfile(autoMixState.mode),
     next.analysis.bpm
   );
-  autoMixState.state = deckState[nextDeck].buffer ? "Preparing Transition" : "Loading Incoming Deck";
+  autoMixState.state = autoMixState.promptPlan ? "Preparing Incoming Deck" : deckState[nextDeck].buffer ? "Preparing Transition" : "Loading Incoming Deck";
+  if (autoMixState.promptPlan) { smartPromptState.state = "Preparing Incoming Deck"; renderSmartPromptPlan(); }
   autoMixState.incomingDeck = nextDeck;
   if (deckState[nextDeck].buffer !== next.buffer) {
     loadBufferToDeck(next.buffer, next.name, nextDeck, { analysis: next.analysis, smartMixControlled: true });
@@ -4572,6 +5312,7 @@ function transitionToNextAutoMixItem() {
   playDeck(nextDeck);
   autoMixState.transition = transition;
   autoMixState.state = "Transitioning";
+  if (transition.promptPlan) { smartPromptState.state = "Transitioning"; renderSmartPromptPlan(); }
   autoMixState.estimatedTransitionAt = null;
   setDeckStatus(fromDeck, "transitioning-out", { smartMixControlled: true });
   setDeckStatus(nextDeck, "transitioning-in", { smartMixControlled: true });
@@ -4581,7 +5322,8 @@ function transitionToNextAutoMixItem() {
     stopDeck(fromDeck);
     resetSmartDeckControls(fromDeck);
     resetSmartDeckControls(nextDeck);
-    rampDeckPitchToNatural(nextDeck, transition.tempoRestoreSeconds);
+    if (transition.promptPlan) startPlannedBpmRecovery(nextDeck, transition);
+    else rampDeckPitchToNatural(nextDeck, transition.tempoRestoreSeconds);
     autoMixState.index = nextIndex;
     autoMixState.activeDeck = nextDeck;
     autoMixState.incomingDeck = fromDeck;
@@ -4661,7 +5403,9 @@ function fadeCrossfaderTo(target, seconds, frame, done) {
 }
 
 function stopAiMix(options = {}) {
+  const hadPromptPlan = Boolean(autoMixState.promptPlan);
   autoMixState.running = false;
+  if (!options.preserveRecoveryPlan && bpmRecoveryState.plan) cancelBpmRecovery(options.manualOverride ? "Manual override" : "Cancelled", false, true);
   autoMixState.timers.forEach((timer) => {
     clearTimeout(timer);
     cancelAnimationFrame(timer);
@@ -4673,6 +5417,7 @@ function stopAiMix(options = {}) {
   autoMixState.preparedIndex = null;
   autoMixState.estimatedTransitionAt = null;
   autoMixState.incomingDeck = null;
+  autoMixState.promptPlan = null;
   if (options.stopDecks) {
     stopDeck("a");
     stopDeck("b");
@@ -4691,6 +5436,10 @@ function stopAiMix(options = {}) {
       ? `Manual Override: ${options.manualOverride}. Automation stopped and deck audio was left under manual control.`
       : "Smart Mix stopped. Deck audio continues under manual control.");
   }
+  if (hadPromptPlan) {
+    smartPromptState.state = options.manualOverride ? "Manual Override" : "Cancelled";
+    renderSmartPromptPlan();
+  }
   renderSmartMixPanel();
 }
 
@@ -4698,21 +5447,68 @@ function triggerManualOverride(reason, deckId = null) {
   if (!autoMixState.running) return;
   autoMixState.lastManualOverride = reason;
   if (deckId && deckState[deckId]) deckState[deckId].manualOverride = true;
-  stopAiMix({ keepDecks: true, manualOverride: reason });
+  stopAiMix({ keepDecks: true, manualOverride: reason, preserveRecoveryPlan: bpmRecoveryState.manualOverride });
 }
 
-function panicStopAllAudio() {
-  stopAiMix();
-  stopDeck("a");
-  stopDeck("b");
-  stopAllPads();
-  stopDrums();
-  stopAllInstrumentVoices();
-  stopStemPreview();
+const globalTransportState = { paused: false, lastError: "None" };
+
+function initializePlaybackRegistry() {
+  const registry = window.AudioPlaybackRegistry;
+  if (!registry) return;
+  ["a", "b"].forEach((id) => registry.register({
+    id: `deck-${id}`, type: "deck", displayName: `Deck ${id.toUpperCase()}`, overlapAllowed: true,
+    stop: () => stopDeck(id), pause: () => pauseDeck(id), resume: () => playDeck(id), restart: () => restartDeck(id),
+    getState: () => ({ playing: deckState[id].playing, paused: deckState[id].status === "paused", looping: deckState[id].loop, automated: deckState[id].smartMixControlled, metadata: { name: deckState[id].trackName || `Deck ${id.toUpperCase()}`, elapsed: currentDeckTime(id) } })
+  }));
+  registry.register({ id: "ditc-preview", type: "preview", displayName: "DITC Preview", preview: true, stop: stopDitcPreview, getState: () => ({ playing: Boolean(ditcState.previewTrackId && stemState.previewSource), metadata: { name: sourceFiles.find((item) => item.id === ditcState.previewTrackId)?.title || "DITC track", elapsed: 0 } }) });
+  registry.register({ id: "pads", type: "performance", displayName: "Pads", overlapAllowed: true, stop: stopAllPads, getState: () => ({ playing: sampler.active.some(Boolean), looping: sampler.active.some((source, index) => Boolean(source && sampler.modes[index] === "loop")), metadata: { name: `${sampler.active.filter(Boolean).length} pads active`, elapsed: 0 } }) });
+  registry.register({ id: "drums", type: "performance", displayName: "Drums", overlapAllowed: true, stop: stopDrums, pause: pauseDrums, resume: startDrums, restart: () => { stopDrums(); drums.step = 0; startDrums(); }, getState: () => ({ playing: drums.playing, paused: drums.paused, looping: drums.playing, metadata: { name: drumPresets.find((item) => item.id === drums.preset)?.name || "Drum pattern", elapsed: 0 } }) });
+  registry.register({ id: "keys", type: "performance", displayName: "Keys", overlapAllowed: true, stop: stopAllInstrumentVoices, getState: () => ({ playing: instrument.activeVoices.length > 0, metadata: { name: `${instrument.activeVoices.length} live voices`, elapsed: 0 } }) });
+  registry.register({ id: "stems-preview", type: "preview", displayName: "Stem Preview", preview: true, stop: stopStemPreview, getState: () => ({ playing: Boolean(stemState.previewSource && !ditcState.previewTrackId), metadata: { name: stemState.sourceName || "Stem preview", elapsed: 0 } }) });
+  registry.register({ id: "arrangement", type: "timeline", displayName: "Arrangement", stop: stopEditorArrangement, pause: pauseEditorArrangement, resume: playEditorArrangement, restart: () => { stopEditorArrangement(); editorState.playhead = 0; playEditorArrangement(); }, getState: () => ({ playing: editorState.playing, paused: editorState.paused, metadata: { name: `Arrangement at ${formatTime(editorState.playhead)}`, elapsed: editorState.playhead } }) });
+  registry.register({ id: "smart-mix", type: "automation", displayName: "Smart Mix", stop: () => stopAiMix({ keepDecks: true }), getState: () => ({ playing: autoMixState.running, automated: autoMixState.running, metadata: { name: autoMixState.state, elapsed: 0 } }) });
+  registry.register({ id: "mix-recording", type: "recording", displayName: "Mix Recording", stop: () => { if (AudioEngine.recorder?.state === "recording") AudioEngine.recorder.stop(); }, getState: () => ({ playing: AudioEngine.recorder?.state === "recording", metadata: { name: "Mix recording", elapsed: 0 } }) });
+}
+
+async function stopAllAudio() {
+  globalTransportState.paused = false;
+  if (window.AudioPlaybackRegistry) await window.AudioPlaybackRegistry.stopAll();
+  if (editorState.recording) stopEditorPerformanceRecording();
   ditcState.previewTrackId = null;
   renderSources();
-  stopEditorArrangement();
-  if (editorState.recording) stopEditorPerformanceRecording();
+  renderGlobalTransport();
+}
+
+function panicStopAllAudio() { stopAllAudio(); }
+
+async function pauseGlobalAudio() {
+  if (!AudioEngine.context || AudioEngine.context.state !== "running") return;
+  try { await AudioEngine.context.suspend(); globalTransportState.paused = true; renderGlobalTransport(); }
+  catch (error) { globalTransportState.lastError = error.message || "AudioContext pause failed"; }
+}
+
+async function resumeGlobalAudio() {
+  try { await AudioEngine.init(); globalTransportState.paused = false; renderGlobalTransport(); }
+  catch (error) { globalTransportState.lastError = error.message || "AudioContext resume failed"; }
+}
+
+async function resumeContextualPlayback() {
+  await resumeGlobalAudio();
+  const registry = window.AudioPlaybackRegistry;
+  const paused = registry?.snapshot().find((source) => source.paused && typeof source.resume === "function");
+  if (paused) {
+    await registry.invoke(paused, "resume");
+    return;
+  }
+  if (registry?.snapshot().some((source) => source.playing)) return;
+  const loadedDeck = ["a", "b"].find((id) => deckState[id].buffer);
+  if (loadedDeck) playDeck(loadedDeck);
+}
+
+async function restartContextualPlayback() {
+  await resumeGlobalAudio();
+  await window.AudioPlaybackRegistry?.restartPrimary();
+  renderGlobalTransport();
 }
 
 function renderInstrumentOptions() {
@@ -5227,16 +6023,29 @@ function applyDrumPreset(id) {
 }
 
 function startDrums() {
+  if (drums.playing || drums.timer) return;
   drums.playing = true;
+  drums.paused = false;
   document.querySelector("#drumPlay").textContent = "Stop Drums";
   tickDrums();
 }
 
 function stopDrums() {
   drums.playing = false;
+  drums.paused = false;
   clearTimeout(drums.timer);
   drums.timer = null;
   document.querySelector("#drumPlay").textContent = "Start Drums";
+  document.querySelectorAll(".step").forEach((step) => step.classList.remove("is-current"));
+}
+
+function pauseDrums() {
+  if (!drums.playing) return;
+  drums.playing = false;
+  drums.paused = true;
+  clearTimeout(drums.timer);
+  drums.timer = null;
+  document.querySelector("#drumPlay").textContent = "Resume Drums";
   document.querySelectorAll(".step").forEach((step) => step.classList.remove("is-current"));
 }
 
@@ -5539,8 +6348,25 @@ function addDroppedSourceUrl(url) {
 
 function setupEvents() {
   document.querySelector("#audioEnable").addEventListener("click", async () => {
-    await AudioEngine.init();
-    document.querySelector("#audioEnable").textContent = "Audio On";
+    try {
+      await AudioEngine.init();
+      document.querySelector("#audioEnable").textContent = "Audio On";
+      renderGlobalTransport();
+    } catch (error) {
+      globalTransportState.lastError = error.message || "Audio could not start";
+      document.querySelector("#audioEnable").textContent = "Audio Error";
+    }
+  });
+
+  document.querySelector("#globalResume").addEventListener("click", async () => {
+    await resumeContextualPlayback();
+  });
+  document.querySelector("#globalPause").addEventListener("click", pauseGlobalAudio);
+  document.querySelector("#globalRestart").addEventListener("click", restartContextualPlayback);
+  document.querySelector("#globalStop").addEventListener("click", stopAllAudio);
+  document.querySelector("#globalPlaybackSourceList").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-global-stop-source]");
+    if (button) window.AudioPlaybackRegistry?.stopSource(button.dataset.globalStopSource).then(renderGlobalTransport);
   });
 
   document.querySelector("#masterVolume").addEventListener("input", (event) => {
@@ -5684,7 +6510,13 @@ function setupEvents() {
     renderEditor();
   });
   document.querySelector("#editorPlay").addEventListener("click", playEditorArrangement);
+  document.querySelector("#editorPause").addEventListener("click", pauseEditorArrangement);
   document.querySelector("#editorStop").addEventListener("click", stopEditorArrangement);
+  document.querySelector("#editorRestart").addEventListener("click", () => {
+    stopEditorArrangement();
+    editorState.playhead = 0;
+    playEditorArrangement();
+  });
   document.querySelector("#editorRecordPerformance").addEventListener("click", () => {
     editorState.recording ? stopEditorPerformanceRecording() : startEditorPerformanceRecording(false);
   });
@@ -5724,6 +6556,65 @@ function setupEvents() {
       setSmartMixStatus(`Smart Mix will use ${smartMixSourceLabel(event.target.value)} and return each incoming song to original BPM after transitions.`);
     }
   });
+  document.querySelector("#planSmartPrompt").addEventListener("click", planSmartPrompt);
+  document.querySelector("#smartMixPrompt").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); planSmartPrompt(); }
+  });
+  document.querySelector("#applySmartPrompt").addEventListener("click", applySmartPromptPlan);
+  document.querySelector("#cancelSmartPrompt").addEventListener("click", cancelSmartPromptPlan);
+  document.querySelector("#clearSmartPrompt").addEventListener("click", () => {
+    document.querySelector("#smartMixPrompt").value = "";
+    cancelSmartPromptPlan();
+    smartPromptState.state = "Prompt Idle";
+  });
+  document.querySelector("#previewSmartPrompt").addEventListener("click", () => {
+    if (!smartPromptState.plan) return;
+    setSmartMixStatus(`Plan preview: ${smartPromptState.plan.transitionTrigger}, ${smartPromptState.plan.blendLengthBars}-bar ${smartPromptState.plan.transitionStyleLabel.toLowerCase()}, ${smartPromptState.plan.bpmRecoveryEnabled ? `${smartPromptState.plan.bpmRecoveryDurationBars}-bar BPM recovery` : "no BPM recovery"}. No audio was changed.`);
+  });
+  document.querySelector("#explainSmartPrompt").addEventListener("click", () => {
+    if (smartPromptState.plan) document.querySelector("#smartPromptExplanation").textContent = smartPromptState.plan.explanation;
+  });
+  document.querySelector("#saferSmartPrompt").addEventListener("click", useSaferSmartPrompt);
+  document.querySelector("#saveSmartRecipe").addEventListener("click", saveSmartPromptRecipe);
+  document.querySelector("#smartPromptChips").addEventListener("click", (event) => {
+    const chip = event.target.closest("button");
+    if (!chip) return;
+    const input = document.querySelector("#smartMixPrompt");
+    input.value = input.value.trim() ? `${input.value.trim()}. ${chip.textContent}.` : chip.textContent;
+    input.focus();
+  });
+  document.querySelector(".smart-prompt-library").addEventListener("click", (event) => {
+    const index = Number(event.target.dataset.promptIndex);
+    const kind = event.target.dataset.promptLibrary || event.target.dataset.promptDelete;
+    if (event.target.dataset.promptLibrary) {
+      const item = kind === "history" ? smartPromptState.history[index] : smartPromptState.recipes[index];
+      if (item) { document.querySelector("#smartMixPrompt").value = item.prompt; document.querySelector("#smartMixPrompt").focus(); }
+    }
+    if (event.target.dataset.promptDelete) {
+      if (kind === "history") smartPromptState.history.splice(index, 1); else smartPromptState.recipes.splice(index, 1);
+      writeSmartPromptStorage(); renderSmartPromptLibrary();
+    }
+    if (event.target.hasAttribute("data-prompt-favorite") && smartPromptState.history[index]) {
+      smartPromptState.history[index].favorite = !smartPromptState.history[index].favorite;
+      writeSmartPromptStorage(); renderSmartPromptLibrary();
+    }
+  });
+  document.querySelector("#promptRecoveryBars").addEventListener("change", (event) => {
+    if (smartPromptState.plan) { smartPromptState.plan.bpmRecoveryDurationBars = Number(event.target.value); renderSmartPromptPlan(); }
+  });
+  document.querySelector("#promptRecoveryCurve").addEventListener("change", (event) => {
+    if (smartPromptState.plan) { smartPromptState.plan.bpmRecoveryCurve = event.target.value; renderSmartPromptPlan(); }
+  });
+  document.querySelector("#resumeBpmRecovery").addEventListener("click", runBpmRecovery);
+  document.querySelector("#recalculateBpmRecovery").addEventListener("click", () => {
+    if (!bpmRecoveryState.plan) return;
+    bpmRecoveryState.durationBars = Number(document.querySelector("#promptRecoveryBars")?.value || bpmRecoveryState.durationBars);
+    bpmRecoveryState.curve = document.querySelector("#promptRecoveryCurve")?.value || bpmRecoveryState.curve;
+    bpmRecoveryState.durationSeconds = phraseLengthSeconds(bpmRecoveryState.originalBpm * Number(document.querySelector(`#pitch-${bpmRecoveryState.deckId}`)?.value || 1), bpmRecoveryState.durationBars);
+    bpmRecoveryState.progress = 0;
+    runBpmRecovery();
+  });
+  document.querySelector("#cancelBpmRecovery").addEventListener("click", () => cancelBpmRecovery("Cancelled", false, true));
 
   for (const id of ["a", "b"]) {
     document.querySelector(`#file-${id}`).addEventListener("change", async (event) => {
@@ -5732,6 +6623,10 @@ function setupEvents() {
     });
 
     document.querySelector(`#pitch-${id}`).addEventListener("input", (event) => {
+      if ((bpmRecoveryState.active || bpmRecoveryState.pending) && bpmRecoveryState.deckId === id) {
+        bpmRecoveryState.currentRatio = Number(event.target.value);
+        cancelBpmRecovery("Manual tempo override", true, false);
+      }
       triggerManualOverride(`Adjusted Deck ${id.toUpperCase()} tempo`, id);
       const deck = deckState[id];
       if (deck.source) deck.source.playbackRate.value = Number(event.target.value);
@@ -5790,27 +6685,20 @@ function setupEvents() {
   });
 
   document.querySelectorAll("[data-action]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const id = button.dataset.deck;
       const action = button.dataset.action;
       if (autoMixState.running && ["play", "stop", "cue", "rewind", "forward", "restart", "loop", "clear-deck"].includes(action)) {
         triggerManualOverride(`${action} on Deck ${id.toUpperCase()}`, id);
       }
-      if (action === "play") deckState[id].playing ? pauseDeck(id) : playDeck(id);
+      if (action === "play") deckState[id].playing ? pauseDeck(id) : await playDeck(id);
       if (action === "stop") stopDeck(id);
-      if (action === "restart") {
-        seekDeck(id, 0);
-        playDeck(id);
-      }
+      if (action === "restart") await restartDeck(id);
       if (action === "clear-deck") clearDeck(id);
       if (action === "cue") cueDeck(id);
       if (action === "rewind") nudgeDeck(id, -15);
       if (action === "forward") nudgeDeck(id, 15);
-      if (action === "loop") {
-        deckState[id].loop = !deckState[id].loop;
-        button.classList.toggle("is-active", deckState[id].loop);
-        if (deckState[id].source) deckState[id].source.loop = deckState[id].loop;
-      }
+      if (action === "loop") updateDeckLoop(id, !deckState[id].loop);
       if (action === "mark-in") markSelection(id, "in");
       if (action === "mark-out") markSelection(id, "out");
       if (action === "preview-selection") previewSelection(id);
@@ -5829,6 +6717,15 @@ function setupEvents() {
       if (!deck.buffer) return;
       triggerManualOverride(`Seeked Deck ${id.toUpperCase()}`, id);
       seekDeck(id, (Number(event.target.value) / 1000) * deck.buffer.duration);
+    });
+  });
+
+  document.querySelectorAll("[data-loop-size]").forEach((select) => {
+    select.addEventListener("change", () => {
+      const id = select.dataset.loopSize;
+      deckState[id].loopBeats = Number(select.value);
+      if (deckState[id].loop) updateDeckLoop(id, true);
+      else renderDeckLoopStatus(id);
     });
   });
 
@@ -5917,6 +6814,7 @@ function setupEvents() {
   document.querySelector("#micSample").addEventListener("click", recordMicSample);
   document.querySelector("#tabSample").addEventListener("click", recordTabSample);
   document.querySelector("#stopPads").addEventListener("click", stopAllPads);
+  document.querySelector("#stopPadLoops").addEventListener("click", stopPadLoops);
   document.querySelector("#drumMachine").addEventListener("change", () => {
     updatePresetNotes();
     applyDrumPreset(document.querySelector("#drumPreset").value);
@@ -5936,14 +6834,32 @@ function setupEvents() {
   document.querySelector("#bassMode").addEventListener("click", () => {
     setBassMode(!instrument.bassMode);
   });
+  document.querySelector("#releaseKeys").addEventListener("click", stopAllInstrumentVoices);
   document.querySelectorAll("[data-chord]").forEach((button) => {
     button.addEventListener("click", () => playInstrumentChord(button.dataset.chord));
   });
   document.addEventListener("keydown", (event) => {
-    if (event.repeat || event.target.matches("input, select, textarea")) return;
+    if (event.repeat || event.target.matches("input, select, textarea, [contenteditable='true']")) return;
+    if (event.code === "Escape" || (event.code === "Space" && event.shiftKey && (event.metaKey || event.ctrlKey))) {
+      event.preventDefault();
+      stopAllAudio();
+      return;
+    }
+    if (event.code === "Space" && event.shiftKey) {
+      event.preventDefault();
+      restartContextualPlayback();
+      return;
+    }
     if (event.code === "Space") {
       event.preventDefault();
-      panicStopAllAudio();
+      const active = window.AudioPlaybackRegistry?.active() || [];
+      if (globalTransportState.paused || AudioEngine.context?.state === "suspended") {
+        resumeContextualPlayback();
+      } else if (active.some((source) => source.playing)) {
+        pauseGlobalAudio();
+      } else {
+        resumeContextualPlayback();
+      }
       return;
     }
     const note = instrument.keyboard.find((item) => item.key.toLowerCase() === event.key.toLowerCase());
@@ -5955,6 +6871,12 @@ function setupEvents() {
   document.querySelector("#drumPlay").addEventListener("click", async () => {
     await AudioEngine.init();
     drums.playing ? stopDrums() : startDrums();
+  });
+  document.querySelector("#drumPause").addEventListener("click", pauseDrums);
+  document.querySelector("#drumRestart").addEventListener("click", () => {
+    stopDrums();
+    drums.step = 0;
+    startDrums();
   });
   document.querySelector("#drumClear").addEventListener("click", () => {
     drums.pattern = drums.pattern.map((row) => row.map(() => 0));
@@ -7040,6 +7962,8 @@ function detectPlatform(url) {
   return "Link";
 }
 
+initializePlaybackRegistry();
+readSmartPromptStorage();
 setupEvents();
 renderPads();
 renderPadEditor();
@@ -7055,4 +7979,8 @@ drawWaveform("b");
 setDeckStatus("a", "empty");
 setDeckStatus("b", "empty");
 renderSmartMixPanel();
+renderSmartPromptPlan();
+renderSmartPromptLibrary();
+renderBpmRecovery();
+renderGlobalTransport();
 animationLoop();

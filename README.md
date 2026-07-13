@@ -13,6 +13,7 @@ The repository contains substantial prototype implementations for two decks, mix
 - `index.html` contains the static application shell.
 - `styles.css` contains the complete visual layer.
 - `app.js` is a single browser script containing state, Web Audio graphs, rendering, analysis and event handling.
+- `src/audio/playback-registry.js` coordinates playback ownership and Global Stop while leaving feature audio engines intact.
 - `stem_server.py` serves the frontend and provides optional `POST /api/stems` separation through Demucs.
 
 No build step is required.

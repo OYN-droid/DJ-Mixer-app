@@ -21,7 +21,7 @@ Statuses are based on code inspection. “Unable to Verify Without Manual Testin
 | File drag and drop | Unable to Verify Without Manual Testing | decks, crate, stems, editor and mixtape drop areas | Filters supported extensions and decodes files | Browser-specific behavior. Medium |
 | Folder drag and drop | Unable to Verify Without Manual Testing | crate/reference drop; WebKit entry traversal | Recursively collects entries in supporting browsers | Non-WebKit fallback and permissions need testing. Medium |
 | Backend stem server | Partially Working | `stem_server.py`, `POST /api/stems` | Static server plus Demucs job execution | Missing limits, authentication and cleanup. High |
-| Global Stop All Audio | Partially Working | Space key; `panicStopAllAudio` | Stops decks, pads, drums, keys, stem preview, editor and Smart Mix | No visible button. Recording and every transient source need verification. Critical |
+| Global audio transport | Unable to Verify Without Manual Testing | Persistent header controls; `AudioPlaybackRegistry`; `stopAllAudio` | Shows active ownership and coordinates play/resume, pause, restart, per-source stop and Stop All Audio. Escape is the emergency shortcut | Verify every source, overlap cleanup, recording and keyboard behavior. Critical |
 | Mix recording | Unable to Verify Without Manual Testing | `#recordMix`, `#downloadMix`; `toggleMixRecording` | Records master MediaStream destination to WebM | Codec support and URL cleanup need tests. High |
 | Connected music sources | Placeholder | URL crate and `detectPlatform` | Apple Music, Spotify, YouTube, SoundCloud and Bandcamp are labels only | Do not imply playback integration. Medium |
 | Audio recognition providers | Placeholder | localStorage provider configs, endpoint adapters | ACRCloud, AudD, AcoustID and custom endpoints can be called if externally configured | No bundled service, secure secret proxy or verified schema. High |
@@ -29,4 +29,4 @@ Statuses are based on code inspection. “Unable to Verify Without Manual Testin
 
 ## First recovery target
 
-Make manual two-deck playback, stop, seek, gain, crossfader and a visible global stop reliable before expanding AI or production features.
+Manually verify two-deck playback, stop, seek, gain, crossfader and the new global transport before expanding AI or production features.

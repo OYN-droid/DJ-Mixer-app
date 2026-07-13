@@ -19,7 +19,8 @@ For every test, check one result and add notes.
 | Crossfader fully cuts A at B end and B at A end | [ ] | [ ] | [ ] | |
 | Both crossfader controls stay synchronized | [ ] | [ ] | [ ] | |
 | Trim, filter and channel fader audibly affect the expected deck | [ ] | [ ] | [ ] | |
-| Space stops all active audio systems | [ ] | [ ] | [ ] | |
+| Stop All Audio and Escape stop every active audio system | [ ] | [ ] | [ ] | |
+| Space plays or pauses contextually and Shift+Space restarts the primary source | [ ] | [ ] | [ ] | |
 | Crate local preview/load actions work | [ ] | [ ] | [ ] | |
 | Direct audio URL succeeds or shows a useful CORS error | [ ] | [ ] | [ ] | |
 | Pad load, trigger, gate, loop, trim, slice and Stop Pads work | [ ] | [ ] | [ ] | |
@@ -36,7 +37,7 @@ For every test, check one result and add notes.
 | Mix recording starts, stops and downloads a playable WebM | [ ] | [ ] | [ ] | |
 | Invalid files, failed decode, denied media and failed fetch show errors | [ ] | [ ] | [ ] | |
 | Leaving each view while audio plays has clear expected behavior | [ ] | [ ] | [ ] | |
-| Space stop does not fire while typing in an input or textarea | [ ] | [ ] | [ ] | |
+| Global transport shortcuts do not fire while typing in an input or textarea | [ ] | [ ] | [ ] | |
 | Refresh preserves URL crate entries and notes | [ ] | [ ] | [ ] | |
 | Refresh clearly loses memory-only local files, decks, pads and arrangement | [ ] | [ ] | [ ] | |
 | Keyboard-only navigation reaches and operates all controls | [ ] | [ ] | [ ] | |
@@ -44,4 +45,4 @@ For every test, check one result and add notes.
 
 ## Audio overlap stress test
 
-Start both decks, a looping pad, drums, a held key, stem preview and editor playback. Press Space once. Confirm silence, stopped UI states and no later scheduled sound. Repeat during a Smart Mix transition and during recording.
+Start both decks, a looping pad, drums, a held key, stem preview and editor playback. Press Stop All Audio once and confirm silence, stopped UI states and no later scheduled sound. Repeat with Escape, during a Smart Mix transition and during recording.

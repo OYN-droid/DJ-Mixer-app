@@ -40,6 +40,10 @@
           </div>
           <div class="transport">
             <button id="audioEnable" class="primary-button">Start Audio</button>
+            <button id="globalResume" class="primary-button" title="Play or resume (Space)" disabled>Play / Resume</button>
+            <button id="globalPause" class="secondary-button" title="Pause audio (Space)" disabled>Pause</button>
+            <button id="globalRestart" class="secondary-button" title="Restart active source (Shift+Space)" disabled>Restart</button>
+            <button id="globalStop" class="global-stop-button" title="Stop all audio (Escape)" disabled>Stop All Audio</button>
             <button id="recordMix" class="icon-button" title="Record mix" aria-label="Record mix">●</button>
             <button id="downloadMix" class="icon-button" title="Download recording" aria-label="Download recording" disabled>↓</button>
             <div class="tempo-box">
@@ -50,8 +54,21 @@
               <label for="masterVolume">Master</label>
               <input id="masterVolume" type="range" min="0" max="1.2" step="0.01" value="0.9">
             </div>
+            <div class="global-playback-summary" aria-live="polite">
+              <span id="globalPlaybackState">Audio not started</span>
+              <strong id="globalPlaybackSource">No active source</strong>
+              <span id="globalPlaybackTime">0:00</span>
+            </div>
+            <details id="globalPlaybackDetails" class="global-playback-details">
+              <summary>Sources</summary>
+              <div id="globalPlaybackSourceList">No active sources.</div>
+            </details>
           </div>
         </header>
+        <details id="globalAudioDiagnostics" class="global-audio-diagnostics">
+          <summary>Global audio diagnostics</summary>
+          <pre id="globalAudioDiagnosticsOutput"></pre>
+        </details>
 
         <section id="decks" class="view is-active" aria-labelledby="decksTitle">
           <div class="decks-header">
@@ -83,17 +100,63 @@
               <button id="smartMixStop" class="secondary-button" disabled>Stop Smart Mix</button>
               <div class="crossfader">
                 <span>A</span>
-                <input id="crossfader" type="range" min="0" max="1" step="0.01" value="0.5">
+                <input id="crossfader" type="range" min="0" max="1" step="0.01" value="0.5" aria-label="Deck crossfader">
                 <span>B</span>
               </div>
             </div>
           </div>
+          <section class="smart-prompt" aria-labelledby="smartPromptTitle">
+            <div class="smart-prompt-heading">
+              <div><span class="eyebrow">Direct Smart Mix</span><h3 id="smartPromptTitle">Describe the next transition</h3></div>
+              <button id="clearSmartPrompt" class="text-button" type="button">Clear</button>
+            </div>
+            <div class="smart-prompt-bar">
+              <input id="smartMixPrompt" type="text" placeholder="Tell Smart Mix when and how to transition…" autocomplete="off">
+              <button id="planSmartPrompt" class="primary-button" type="button">Plan Transition</button>
+              <button id="applySmartPrompt" class="secondary-button" type="button" disabled>Apply Plan</button>
+              <button id="cancelSmartPrompt" class="secondary-button" type="button" disabled>Cancel Plan</button>
+            </div>
+            <div id="smartPromptChips" class="smart-prompt-chips" aria-label="Suggested Smart Mix prompts">
+              <button type="button">After Next Chorus</button><button type="button">In 16 Bars</button><button type="button">At Outro</button><button type="button">Quick Cut</button><button type="button">Smooth Blend</button><button type="button">Avoid Vocal Clash</button><button type="button">Keep Active Deck Tempo</button><button type="button">Return Incoming Track to Original BPM</button><button type="button">Pick Next Track from DITC</button>
+            </div>
+            <div id="smartPromptClarification" class="smart-prompt-clarification" hidden></div>
+            <article id="smartPromptPlan" class="smart-prompt-plan" hidden aria-live="polite">
+              <div class="smart-prompt-plan-head"><div><span class="eyebrow">Planned Transition</span><strong id="smartPromptPlanState">Plan Ready</strong></div><strong id="smartPromptConfidence">0%</strong></div>
+              <dl id="smartPromptPlanDetails"></dl>
+              <p id="smartPromptWarnings" class="smart-prompt-warnings"></p>
+              <p id="smartPromptExplanation" class="smart-prompt-explanation"></p>
+              <div class="smart-prompt-plan-actions">
+                <button id="previewSmartPrompt" type="button" class="secondary-button">Preview Plan</button>
+                <button id="explainSmartPrompt" type="button" class="secondary-button">Why this transition?</button>
+                <button id="saferSmartPrompt" type="button" class="secondary-button">Use Safer Plan</button>
+                <button id="saveSmartRecipe" type="button" class="secondary-button">Save Recipe</button>
+              </div>
+              <div class="smart-prompt-advanced advanced-only">
+                <label>Recovery duration <select id="promptRecoveryBars"><option value="2">2 bars</option><option value="4">4 bars</option><option value="8" selected>8 bars</option><option value="16">16 bars</option></select></label>
+                <label>Recovery curve <select id="promptRecoveryCurve"><option value="smooth" selected>Smooth S-Curve</option><option value="linear">Linear</option><option value="ease-in">Ease In</option><option value="ease-out">Ease Out</option><option value="phrase-stepped">Phrase-Stepped</option></select></label>
+                <label>Maximum shift <select id="promptMaxShift"><option value="4">4%</option><option value="8" selected>8%</option><option value="12">12%</option></select></label>
+              </div>
+            </article>
+            <details class="smart-prompt-library advanced-only"><summary>Prompt history and recipes</summary><div id="smartPromptHistory"></div><div id="smartPromptRecipes"></div></details>
+          </section>
           <section id="smartMixPanel" class="smart-mix-panel" aria-live="polite">
             <div class="smart-mix-panel-head">
               <div><span class="eyebrow">Smart Mix</span><strong id="smartMixState">Idle</strong></div>
               <span id="smartMixCountdown">No transition planned</span>
             </div>
             <p id="smartMixStatus" class="smart-mix-status">Smart Mix is ready. Add at least two playable tracks, or load both decks.</p>
+            <div class="transition-visual advanced-only" aria-label="Smart Mix transition visualization">
+              <div class="transition-route"><strong id="transitionOutgoing">Deck A</strong><span>OUT</span><span class="transition-arrow">→</span><span>IN</span><strong id="transitionIncoming">Deck B</strong></div>
+              <div class="transition-progress" role="progressbar" aria-label="Crossfade progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span id="transitionProgress"></span></div>
+              <div class="transition-readouts"><span id="transitionEqBlend">EQ blend: neutral</span><span id="transitionStemUsage">Stems: full mix</span></div>
+            </div>
+            <div id="bpmRecoveryPanel" class="bpm-recovery" hidden>
+              <div class="bpm-recovery-head"><strong>BPM Recovery</strong><span id="bpmRecoveryState">Pending</span></div>
+              <div class="bpm-recovery-values"><span>Original <strong id="bpmOriginal">--</strong></span><span>Blend <strong id="bpmBlend">--</strong></span><span>Current <strong id="bpmCurrent">--</strong></span><span>Target <strong id="bpmTarget">--</strong></span></div>
+              <div class="bpm-recovery-track" role="progressbar" aria-label="BPM recovery progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="bpmRecoveryProgress"></span></div>
+              <div class="bpm-recovery-meta"><span id="bpmRecoveryBars">0 of 8 bars</span><span id="bpmRecoveryCurve">Smooth S-Curve</span><span>Key Lock: unavailable</span></div>
+              <div class="bpm-recovery-actions"><button id="resumeBpmRecovery" type="button">Resume BPM Recovery</button><button id="recalculateBpmRecovery" type="button">Recalculate</button><button id="cancelBpmRecovery" type="button">Cancel Recovery</button></div>
+            </div>
             <dl class="smart-mix-details advanced-only">
               <div><dt>Active</dt><dd id="smartMixActiveDeck">None</dd></div>
               <div><dt>Incoming</dt><dd id="smartMixIncomingDeck">None</dd></div>
@@ -115,11 +178,21 @@
           <div class="deck-grid">
             <article class="deck" data-deck="a">
               <div class="deck-top">
-                <div>
+                <div class="deck-identity">
+                  <div id="artwork-a" class="deck-artwork" aria-hidden="true">A</div>
+                  <div class="deck-track-copy">
                   <p class="eyebrow">Deck A</p>
                   <h3 id="title-a">Empty deck</h3>
                   <p id="deck-status-a" class="deck-status" data-state="empty">Empty</p>
-                  <p id="deck-meta-a" class="deck-meta">BPM unknown, key unknown</p>
+                  <div class="deck-metadata" aria-label="Deck A track metadata">
+                    <span><small>Artist</small><strong id="artist-a">Unknown</strong></span>
+                    <span><small>BPM</small><strong id="bpm-a">--</strong></span>
+                    <span><small>Key</small><strong id="key-a">--</strong></span>
+                    <span><small>Genre</small><strong id="genre-a">Unknown</strong></span>
+                    <span><small>Length</small><strong id="track-duration-a">0:00</strong></span>
+                  </div>
+                  <p id="deck-meta-a" class="deck-meta sr-only">BPM unknown, key unknown</p>
+                  </div>
                 </div>
                 <label class="file-button">
                   Load
@@ -134,7 +207,7 @@
                   <span class="vinyl-ring"></span>
                   <span class="vinyl-label">A</span>
                 </button>
-                <canvas id="wave-a" class="waveform" width="640" height="100"></canvas>
+                <canvas id="wave-a" class="waveform" width="640" height="118" aria-label="Deck A waveform. Use the adjacent seek slider for keyboard seeking."></canvas>
               </div>
 
               <div class="deck-controls">
@@ -143,7 +216,7 @@
                 <button class="transport-button" data-action="play" data-deck="a">Play</button>
                 <button class="transport-button" data-action="stop" data-deck="a">Stop</button>
                 <button class="transport-button" data-action="restart" data-deck="a">Restart</button>
-                <button class="transport-button" data-action="loop" data-deck="a">Loop</button>
+                <button class="transport-button" data-action="loop" data-deck="a" aria-pressed="false">Loop</button>
                 <button class="transport-button" data-action="forward" data-deck="a">+15s</button>
               </div>
 
@@ -151,6 +224,12 @@
                 <span id="time-a">0:00</span>
                 <input id="seek-a" data-seek-deck="a" type="range" min="0" max="1000" value="0">
                 <span id="duration-a">0:00</span>
+              </div>
+              <div class="loop-panel">
+                <label for="loop-size-a">Loop size
+                  <select id="loop-size-a" data-loop-size="a"><option value="1">1 beat</option><option value="2">2 beats</option><option value="4">4 beats</option><option value="8" selected>8 beats</option><option value="16">16 beats</option></select>
+                </label>
+                <span id="loop-status-a">Loop off</span>
               </div>
 
               <div class="edit-strip advanced-only">
@@ -178,12 +257,10 @@
                 <span class="eyebrow">Channel A</span>
                 <button class="cue-button" data-action="cue-monitor" data-deck="a" aria-pressed="false">Cue</button>
               </div>
-              <div class="mixer-meter" aria-hidden="true">
-                <span></span>
-                <span></span>
-                <span></span>
-                <span></span>
-                <span></span>
+              <div class="mixer-meter" aria-label="Deck A output meter">
+                <span class="meter-label">L</span><span class="meter-track"><i data-meter="a-left"></i><b data-peak="a-left"></b></span>
+                <span class="meter-label">R</span><span class="meter-track"><i data-meter="a-right"></i><b data-peak="a-right"></b></span>
+                <span class="clip-indicator" data-clip="a">CLIP</span>
               </div>
               <label class="mixer-mini-control">Trim <input id="mixer-trim-a" data-sync-gain="a" type="range" min="0" max="1.2" step="0.01" value="0.85"></label>
               <label class="mixer-mini-control">Filter <input id="mixer-filter-a" data-sync-filter="a" type="range" min="200" max="16000" step="10" value="16000"></label>
@@ -212,12 +289,10 @@
                 <span class="eyebrow">Channel B</span>
                 <button class="cue-button" data-action="cue-monitor" data-deck="b" aria-pressed="false">Cue</button>
               </div>
-              <div class="mixer-meter" aria-hidden="true">
-                <span></span>
-                <span></span>
-                <span></span>
-                <span></span>
-                <span></span>
+              <div class="mixer-meter" aria-label="Deck B output meter">
+                <span class="meter-label">L</span><span class="meter-track"><i data-meter="b-left"></i><b data-peak="b-left"></b></span>
+                <span class="meter-label">R</span><span class="meter-track"><i data-meter="b-right"></i><b data-peak="b-right"></b></span>
+                <span class="clip-indicator" data-clip="b">CLIP</span>
               </div>
               <label class="mixer-mini-control">Trim <input id="mixer-trim-b" data-sync-gain="b" type="range" min="0" max="1.2" step="0.01" value="0.85"></label>
               <label class="mixer-mini-control">Filter <input id="mixer-filter-b" data-sync-filter="b" type="range" min="200" max="16000" step="10" value="16000"></label>
@@ -230,11 +305,21 @@
 
             <article class="deck" data-deck="b">
               <div class="deck-top">
-                <div>
+                <div class="deck-identity">
+                  <div id="artwork-b" class="deck-artwork" aria-hidden="true">B</div>
+                  <div class="deck-track-copy">
                   <p class="eyebrow">Deck B</p>
                   <h3 id="title-b">Empty deck</h3>
                   <p id="deck-status-b" class="deck-status" data-state="empty">Empty</p>
-                  <p id="deck-meta-b" class="deck-meta">BPM unknown, key unknown</p>
+                  <div class="deck-metadata" aria-label="Deck B track metadata">
+                    <span><small>Artist</small><strong id="artist-b">Unknown</strong></span>
+                    <span><small>BPM</small><strong id="bpm-b">--</strong></span>
+                    <span><small>Key</small><strong id="key-b">--</strong></span>
+                    <span><small>Genre</small><strong id="genre-b">Unknown</strong></span>
+                    <span><small>Length</small><strong id="track-duration-b">0:00</strong></span>
+                  </div>
+                  <p id="deck-meta-b" class="deck-meta sr-only">BPM unknown, key unknown</p>
+                  </div>
                 </div>
                 <label class="file-button">
                   Load
@@ -249,7 +334,7 @@
                   <span class="vinyl-ring"></span>
                   <span class="vinyl-label">B</span>
                 </button>
-                <canvas id="wave-b" class="waveform" width="640" height="100"></canvas>
+                <canvas id="wave-b" class="waveform" width="640" height="118" aria-label="Deck B waveform. Use the adjacent seek slider for keyboard seeking."></canvas>
               </div>
 
               <div class="deck-controls">
@@ -258,7 +343,7 @@
                 <button class="transport-button" data-action="play" data-deck="b">Play</button>
                 <button class="transport-button" data-action="stop" data-deck="b">Stop</button>
                 <button class="transport-button" data-action="restart" data-deck="b">Restart</button>
-                <button class="transport-button" data-action="loop" data-deck="b">Loop</button>
+                <button class="transport-button" data-action="loop" data-deck="b" aria-pressed="false">Loop</button>
                 <button class="transport-button" data-action="forward" data-deck="b">+15s</button>
               </div>
 
@@ -266,6 +351,12 @@
                 <span id="time-b">0:00</span>
                 <input id="seek-b" data-seek-deck="b" type="range" min="0" max="1000" value="0">
                 <span id="duration-b">0:00</span>
+              </div>
+              <div class="loop-panel">
+                <label for="loop-size-b">Loop size
+                  <select id="loop-size-b" data-loop-size="b"><option value="1">1 beat</option><option value="2">2 beats</option><option value="4">4 beats</option><option value="8" selected>8 beats</option><option value="16">16 beats</option></select>
+                </label>
+                <span id="loop-status-b">Loop off</span>
               </div>
 
               <div class="edit-strip advanced-only">
@@ -303,6 +394,7 @@
               <button id="micSample" class="secondary-button">Mic Sample</button>
               <button id="tabSample" class="secondary-button">Tab Audio</button>
               <button id="stopPads" class="secondary-button">Stop Pads</button>
+              <button id="stopPadLoops" class="secondary-button">Stop Loops</button>
             </div>
           </div>
           <div class="pad-editor" aria-label="Pad sample editor">
@@ -350,6 +442,8 @@
             </div>
             <div class="transport">
               <button id="drumPlay" class="primary-button">Start Drums</button>
+              <button id="drumPause" class="secondary-button">Pause</button>
+              <button id="drumRestart" class="secondary-button">Restart</button>
               <button id="drumClear" class="secondary-button">Clear</button>
             </div>
           </div>
@@ -385,6 +479,7 @@
               <select id="instrumentPreset"></select>
             </div>
             <button id="bassMode" class="secondary-button" aria-pressed="false">Bass Mode</button>
+            <button id="releaseKeys" class="secondary-button">Release Notes</button>
             <p id="instrumentNotes"></p>
           </div>
           <div class="instrument-layout">
@@ -434,7 +529,9 @@
             </div>
             <div class="editor-transport">
             <button id="editorPlay" class="primary-button">Play</button>
+            <button id="editorPause" class="secondary-button">Pause</button>
             <button id="editorStop" class="secondary-button">Stop</button>
+            <button id="editorRestart" class="secondary-button">Restart</button>
             <button id="editorRecordPerformance" class="secondary-button">Record Perf</button>
             <button id="editorOverdubPerformance" class="secondary-button">Overdub</button>
             <button id="editorAddTrack" class="secondary-button">Add Track</button>
@@ -620,6 +717,7 @@
       </main>
     </div>
 
+    <script src="src/audio/playback-registry.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

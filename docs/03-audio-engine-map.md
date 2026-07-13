@@ -4,6 +4,8 @@
 
 `AudioEngine.init` lazily creates one `AudioContext`, a `MediaStreamDestination` for recording, a master analyser and a master gain. The analyser feeds the master gain, which connects to speakers and the recorder destination. Audio resumes only after Start Audio or another function explicitly calls initialization.
 
+Playback ownership is coordinated by `src/audio/playback-registry.js`. The registry does not replace feature audio graphs. It reads live feature state and invokes their existing lifecycle callbacks.
+
 ```mermaid
 flowchart LR
   UI[User interaction] --> State[Global feature state]
@@ -42,9 +44,9 @@ flowchart LR
 
 The Master control updates a dedicated master gain node after the analyser. Each deck gain is trim multiplied by channel fader. Crossfader uses per-deck cross gains with an equal-power curve. Non-deck systems connect to the master analyser and bypass the crossfader.
 
-## Global stop
+## Global transport and stop
 
-Space invokes `panicStopAllAudio`, which calls Smart Mix stop, deck stops, pad stop, drum stop, instrument stop, stem-preview stop and editor stop. This is broad in code but must be tested with overlapping audio and recording. It is not represented by a visible button.
+The persistent header transport reads live source state from `AudioPlaybackRegistry`. Space plays or pauses contextually, Shift+Space restarts the primary active source and Escape invokes the same authoritative `stopAllAudio` path as the visible Stop All Audio button. The registry isolates source cleanup errors so one failed callback does not prevent the remaining registered sources from stopping. Overlapping audio and recording cleanup still require manual browser testing.
 
 ## Cleanup and navigation
 
@@ -52,7 +54,7 @@ View navigation only changes CSS classes. It intentionally does not stop audio. 
 
 ## Risks
 
-- Audio can continue after navigation by design, but ownership is not visible across views.
+- Audio can continue after navigation by design. The header reports active ownership and navigation tabs indicate views with active audio, but this behavior requires manual verification.
 - Smart Mix combines timeouts and animation frames in one timer collection. Cancellation correctness is high risk.
 - One master analyser is also the routing splitter. There is no limiter, master gain, mute or clipping protection.
 - Cue monitor has no separate output bus.
