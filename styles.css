@@ -938,6 +938,60 @@ input[type="range"] {
   box-shadow: var(--shadow);
 }
 
+.pads-toolbar .sampler-actions label,
+.pad-browser label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.pads-workspace {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.55fr) minmax(420px, 1.5fr) minmax(280px, 0.9fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.pad-browser,
+.pad-stage,
+.pad-builder-dialog {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0c1015;
+  box-shadow: var(--shadow);
+}
+
+.pad-browser { display: grid; gap: 14px; }
+.pad-browser-actions,
+.pad-category-list { display: grid; gap: 8px; }
+.pad-category-chip { justify-content: space-between; text-align: left; }
+.pad-local-transport { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.pad-empty-state { display: grid; gap: 4px; padding: 12px; margin-bottom: 10px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); }
+.pad-empty-state strong { color: var(--ink); }
+.pad-empty-state[hidden] { display: none; }
+.pad-progress { position: absolute; inset: auto 0 0; height: 4px; background: rgba(38, 214, 199, 0.9); transform-origin: left; }
+.pad-badge { font-size: 0.66rem; color: rgba(255,255,255,.82); text-transform: uppercase; }
+.pad.is-drop-target { outline: 3px solid var(--aqua); outline-offset: 2px; }
+.pad-builder-dialog { width: min(680px, calc(100vw - 32px)); color: var(--ink); }
+.pad-builder-dialog::backdrop { background: rgba(0,0,0,.76); }
+.pad-builder-dialog textarea { width: 100%; }
+.dialog-close { float: right; }
+
+#sampler[data-pad-mode="simple"] .advanced-pad-control { display: none; }
+#sampler[data-pad-mode="simple"] .pads-workspace { grid-template-columns: minmax(170px, .5fr) minmax(420px, 1.5fr) minmax(230px, .7fr); }
+
+.pad[data-category="DJ Drops"] { --pad-category: #ef9b45; }
+.pad[data-category="Vocals"] { --pad-category: #a56bf2; }
+.pad[data-category="Movie Quotes"] { --pad-category: #dc5960; }
+.pad[data-category="Sports"] { --pad-category: #4f8ee8; }
+.pad[data-category="Loops"] { --pad-category: #55b978; }
+.pad[data-category="FX"] { --pad-category: #d7bb46; }
+.pad[data-category="Scratches"] { --pad-category: #45c7d3; }
+.pad[data-category="User-created"] { --pad-category: #d8dce3; }
+.pad[data-category] { border-color: var(--pad-category, rgba(255,255,255,.28)); box-shadow: inset 0 -5px 0 var(--pad-category, #777), 0 8px 18px rgba(0,0,0,.38); }
+
 .pad-editor-header,
 .pad-editor-actions,
 .pad-edit-controls {
@@ -1055,6 +1109,27 @@ input[type="range"] {
   box-shadow:
     inset 0 0 18px rgba(255, 255, 255, 0.2),
     0 8px 18px rgba(0, 0, 0, 0.38);
+}
+
+.pad:active { transform: translateY(2px) scale(.985); }
+.pad:focus-visible { outline: 3px solid white; outline-offset: 3px; }
+
+@media (max-width: 1100px) {
+  .pads-workspace,
+  #sampler[data-pad-mode="simple"] .pads-workspace { grid-template-columns: 1fr 1fr; }
+  .pad-stage { grid-column: 1 / -1; grid-row: 1; }
+}
+
+@media (max-width: 700px) {
+  .pads-workspace,
+  #sampler[data-pad-mode="simple"] .pads-workspace { grid-template-columns: 1fr; }
+  .pad-stage { grid-column: auto; }
+  .pad-grid { grid-template-columns: repeat(4, minmax(64px, 1fr)); padding-inline: 10px; }
+  .pads-toolbar .sampler-actions { align-items: end; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pad, .pad.is-hot { transition: none; animation: none; }
 }
 
 .pad strong,

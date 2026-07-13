@@ -71,8 +71,30 @@ const sampler = {
   ends: Array(16).fill(null),
   modes: Array(16).fill("trigger"),
   quantize: "off",
-  selected: 0
+  selected: 0,
+  bank: "A",
+  scene: "Intro",
+  workspaceMode: "simple",
+  gains: Array(16).fill(0.9),
+  pans: Array(16).fill(0),
+  pitches: Array(16).fill(0),
+  filters: Array(16).fill(20000),
+  categories: Array(16).fill("User-created"),
+  chokes: Array(16).fill(0),
+  sources: Array(16).fill("Memory audio"),
+  relink: Array(16).fill(false),
+  held: new Set(),
+  lastTrigger: "None",
+  lastStop: "None",
+  lastError: "None",
+  banks: {},
+  scenes: {},
+  takeHistory: [],
+  promptHistory: []
 };
+
+const PAD_KEYS = ["1", "2", "3", "4", "q", "w", "e", "r", "a", "s", "d", "f", "z", "x", "c", "v"];
+const PAD_CATEGORIES = ["DITC", "Recent samples", "Favorites", "DJ Drops", "Vocals", "Movie Quotes", "Sports Clips", "FX", "Drums", "Loops", "Scratches", "Generated Pads"];
 
 const sourceFiles = [];
 const droppedFilePaths = new WeakMap();
@@ -1205,10 +1227,14 @@ function setPadBuffer(index, buffer, name, options = {}) {
   sampler.starts[index] = Math.max(0, options.start || 0);
   sampler.ends[index] = Math.min(buffer.duration, options.end || buffer.duration);
   sampler.modes[index] = options.mode || (buffer.duration > 8 ? "loop" : "trigger");
+  sampler.categories[index] = options.category || (buffer.duration > 8 ? "Loops" : "User-created");
+  sampler.sources[index] = options.source || "Local or in-memory audio";
+  sampler.relink[index] = false;
   sampler.selected = index;
   renderPads();
   renderPadEditor();
   renderEditorSourceBin();
+  savePadWorkspace();
 }
 
 async function playDeck(id) {
@@ -1735,6 +1761,7 @@ function animationLoop() {
     }
   }
   animateMeters();
+  updatePadProgress();
   monitorSmartMixHandoff();
   if (!autoMixState.lastPanelRender || performance.now() - autoMixState.lastPanelRender > 500) {
     autoMixState.lastPanelRender = performance.now();
@@ -1784,6 +1811,10 @@ function animateDeckMeter(id) {
   document.querySelector(`[data-clip="${id}"]`)?.classList.toggle("is-clipping", instantaneousPeak >= 0.98);
 }
 
+function padModeLabel(mode) {
+  return ({ trigger: "One Shot", hold: "Hold", gate: "Gate", toggle: "Toggle", loop: "Loop", repeat: "Repeat", roll: "Roll", "dj-drop": "DJ Drop" })[mode] || "One Shot";
+}
+
 function renderPads() {
   const pads = document.querySelector("#pads");
   pads.innerHTML = "";
@@ -1796,12 +1827,24 @@ function renderPads() {
     button.className = `pad${isPlaying ? " is-hot" : ""}${isSelected ? " is-selected" : ""}`;
     const buffer = sampler.buffers[index];
     const region = buffer ? getPadRegion(index) : null;
-    const mode = sampler.modes[index] === "loop" ? "Loop" : "Trigger";
-    button.innerHTML = `<strong>${index + 1}. ${name}</strong><small>${buffer ? `${isPlaying ? "Playing" : mode} - ${formatTime(region.start)}-${formatTime(region.end)}` : "Empty pad"}</small>`;
-    button.addEventListener("click", () => {
+    const mode = padModeLabel(sampler.modes[index]);
+    const category = sampler.categories[index] || "User-created";
+    button.type = "button";
+    button.dataset.category = buffer ? category : "Empty";
+    button.setAttribute("aria-pressed", String(isPlaying));
+    button.setAttribute("aria-label", `Pad ${index + 1}, ${name}, ${buffer ? `${category}, ${mode}` : "empty"}, shortcut ${PAD_KEYS[index].toUpperCase()}`);
+    button.innerHTML = `<span class="pad-badge">${buffer ? category : "Empty"} · ${PAD_KEYS[index].toUpperCase()}</span><strong>${index + 1}. ${name}</strong><small>${buffer ? `${isPlaying ? "Playing" : mode} · ${formatTime(region.end - region.start)}` : "Drop audio here"}</small><span class="pad-progress" style="transform:scaleX(0)"></span>`;
+    button.addEventListener("pointerdown", async (event) => {
+      if (event.button !== 0) return;
       selectPad(index);
-      triggerPad(index);
+      await AudioEngine.init();
+      triggerPad(index, { held: true });
     });
+    button.addEventListener("pointerup", () => releasePad(index));
+    button.addEventListener("pointercancel", () => releasePad(index));
+    button.addEventListener("dragover", (event) => { event.preventDefault(); button.classList.add("is-drop-target"); });
+    button.addEventListener("dragleave", () => button.classList.remove("is-drop-target"));
+    button.addEventListener("drop", (event) => handlePadDrop(event, index));
     slot.appendChild(button);
     if (sampler.buffers[index]) {
       const deleteButton = document.createElement("button");
@@ -1818,15 +1861,26 @@ function renderPads() {
     }
     pads.appendChild(slot);
   });
+  document.querySelector("#padEmptyState")?.toggleAttribute("hidden", sampler.buffers.some(Boolean));
+  renderPadDiagnostics();
 }
 
-function triggerPad(index) {
+function triggerPad(index, options = {}) {
   const buffer = sampler.buffers[index];
   if (!buffer || !AudioEngine.context) return;
-  stopPad(index);
+  const mode = sampler.modes[index];
+  if ((mode === "toggle" || mode === "loop") && sampler.active[index]) {
+    stopPad(index);
+    return;
+  }
+  stopPad(index, { quiet: true });
+  const choke = Number(sampler.chokes[index]) || (mode === "dj-drop" ? 4 : 0);
+  if (choke) sampler.active.forEach((active, other) => { if (active && other !== index && (Number(sampler.chokes[other]) === choke || (mode === "dj-drop" && sampler.modes[other] === "dj-drop"))) stopPad(other, { quiet: true }); });
   const ctx = AudioEngine.context;
   const source = ctx.createBufferSource();
   const gain = ctx.createGain();
+  const filter = ctx.createBiquadFilter();
+  const pan = typeof ctx.createStereoPanner === "function" ? ctx.createStereoPanner() : null;
   const region = getPadRegion(index);
   const startAt = nextPadTriggerTime();
   recordEditorPerformanceEvent({
@@ -1836,19 +1890,26 @@ function triggerPad(index) {
     regionStart: region.start,
     regionEnd: region.end,
     duration: region.end - region.start,
-    loop: sampler.modes[index] === "loop",
+    loop: ["loop", "toggle", "repeat", "roll"].includes(mode),
+    playbackMode: mode,
     velocity: 0.9
   });
   source.buffer = buffer;
-  source.loop = sampler.modes[index] === "loop";
+  source.loop = ["loop", "toggle", "repeat", "roll"].includes(mode);
   if (source.loop) {
     source.loopStart = region.start;
     source.loopEnd = region.end;
   }
-  gain.gain.value = 0.9;
-  source.connect(gain);
-  gain.connect(AudioEngine.masterAnalyser);
-  sampler.active[index] = { source, gain };
+  source.playbackRate.value = 2 ** ((Number(sampler.pitches[index]) || 0) / 12);
+  gain.gain.value = Number(sampler.gains[index]) || 0;
+  filter.type = "lowpass";
+  filter.frequency.value = Number(sampler.filters[index]) || 20000;
+  source.connect(filter);
+  filter.connect(gain);
+  if (pan) { gain.connect(pan); pan.pan.value = Number(sampler.pans[index]) || 0; pan.connect(AudioEngine.masterAnalyser); } else gain.connect(AudioEngine.masterAnalyser);
+  sampler.active[index] = { source, gain, filter, pan, startedAt: startAt, duration: region.end - region.start, mode, choke };
+  if (options.held && ["hold", "gate", "repeat", "roll"].includes(mode)) sampler.held.add(index);
+  sampler.lastTrigger = `${index + 1}. ${sampler.names[index]} (${padModeLabel(mode)})`;
   source.onended = () => {
     sampler.active[index] = null;
     renderPads();
@@ -1862,17 +1923,25 @@ function triggerPad(index) {
   renderAiContext();
 }
 
-function stopPad(index) {
+function releasePad(index) {
+  const mode = sampler.modes[index];
+  sampler.held.delete(index);
+  if (["hold", "gate", "repeat", "roll"].includes(mode)) stopPad(index);
+}
+
+function stopPad(index, options = {}) {
   const active = sampler.active[index];
   if (!active) return;
   sampler.active[index] = null;
+  sampler.held.delete(index);
   active.source.onended = null;
   try {
     active.source.stop();
   } catch {
     /* Pad may already have ended. */
   }
-  renderPads();
+  sampler.lastStop = `${index + 1}. ${sampler.names[index]}`;
+  if (!options.quiet) renderPads();
 }
 
 function nextPadTriggerTime() {
@@ -1892,8 +1961,192 @@ function stopAllPads() {
 
 function stopPadLoops() {
   sampler.active.forEach((active, index) => {
-    if (active && sampler.modes[index] === "loop") stopPad(index);
+    if (active && ["loop", "toggle", "repeat", "roll"].includes(sampler.modes[index])) stopPad(index);
   });
+}
+
+function releaseHeldPads() {
+  [...sampler.held].forEach((index) => releasePad(index));
+  setPadEditorStatus("Released held, gate, repeat, and roll pads.");
+}
+
+function panicPads() {
+  stopAllPads();
+  sampler.held.clear();
+  setPadEditorStatus("Pad panic completed. All pad sources and held state reset.");
+}
+
+async function handlePadDrop(event, index) {
+  event.preventDefault();
+  event.currentTarget.classList.remove("is-drop-target");
+  const file = [...(event.dataTransfer?.files || [])].find((item) => item.type.startsWith("audio/"));
+  if (file) {
+    try {
+      await AudioEngine.init();
+      const buffer = await loadAudioFile(file);
+      if (sampler.buffers[index] && !window.confirm(`Replace ${sampler.names[index]} on Pad ${index + 1}?`)) return;
+      setPadBuffer(index, buffer, file.name, { source: `Local file: ${file.name}` });
+      setPadEditorStatus(`Assigned ${file.name} to Pad ${index + 1}.`);
+    } catch (error) {
+      sampler.lastError = error.message;
+      setPadEditorStatus(`Could not load dropped audio: ${error.message}`);
+    }
+    return;
+  }
+  const trackId = event.dataTransfer?.getData("application/x-deckforge-ditc-track") || event.dataTransfer?.getData("text/plain");
+  const source = sourceFiles.find((item) => item.id === trackId);
+  if (source?.buffer) {
+    if (sampler.buffers[index] && !window.confirm(`Replace ${sampler.names[index]} on Pad ${index + 1}?`)) return;
+    setPadBuffer(index, source.buffer, source.name, { source: "DITC local library" });
+    setPadEditorStatus(`Assigned ${source.name} from DITC to Pad ${index + 1}.`);
+    return;
+  }
+  setPadEditorStatus("This drag source does not expose decoded audio. Use its Send to Pad action or a local/DITC audio file.");
+}
+
+function capturePadBank() {
+  return {
+    names: [...sampler.names], starts: [...sampler.starts], ends: [...sampler.ends], modes: [...sampler.modes],
+    gains: [...sampler.gains], pans: [...sampler.pans], pitches: [...sampler.pitches], filters: [...sampler.filters],
+    categories: [...sampler.categories], chokes: [...sampler.chokes], sources: [...sampler.sources], relink: [...sampler.relink],
+    buffers: [...sampler.buffers]
+  };
+}
+
+function emptyPadBank() {
+  return { names: Array.from({ length: 16 }, (_, index) => `Pad ${index + 1}`), starts: Array(16).fill(0), ends: Array(16).fill(null), modes: Array(16).fill("trigger"), gains: Array(16).fill(0.9), pans: Array(16).fill(0), pitches: Array(16).fill(0), filters: Array(16).fill(20000), categories: Array(16).fill("User-created"), chokes: Array(16).fill(0), sources: Array(16).fill("Unassigned"), relink: Array(16).fill(false), buffers: Array(16).fill(null) };
+}
+
+function applyPadBank(bank) {
+  ["names", "starts", "ends", "modes", "gains", "pans", "pitches", "filters", "categories", "chokes", "sources", "relink", "buffers"].forEach((key) => { sampler[key] = [...bank[key]]; });
+  sampler.active = Array(16).fill(null);
+  sampler.selected = 0;
+}
+
+function switchPadBank(name) {
+  if (name === sampler.bank) return;
+  panicPads();
+  sampler.banks[sampler.bank] = capturePadBank();
+  sampler.bank = name;
+  sampler.banks[name] ||= emptyPadBank();
+  applyPadBank(sampler.banks[name]);
+  savePadWorkspace();
+  renderPads(); renderPadEditor();
+  setPadEditorStatus(`Switched to Bank ${name}. Pad audio was stopped; decks were not affected.`);
+}
+
+function switchPadScene(name) {
+  panicPads();
+  sampler.scenes[sampler.scene] = { bank: sampler.bank, quantize: sampler.quantize };
+  sampler.scene = name;
+  const scene = sampler.scenes[name];
+  if (scene) { document.querySelector("#padQuantize").value = scene.quantize; sampler.quantize = scene.quantize; if (scene.bank !== sampler.bank) switchPadBank(scene.bank); }
+  savePadWorkspace(); renderPadDiagnostics();
+}
+
+function savePadWorkspace() {
+  sampler.banks[sampler.bank] = capturePadBank();
+  const serializableBanks = Object.fromEntries(Object.entries(sampler.banks).map(([name, bank]) => [name, { ...bank, buffers: undefined, relink: bank.names.map((padName, index) => Boolean(bank.buffers[index]) || bank.relink[index]) }]));
+  localStorage.setItem("deckforge-pad-workspace", JSON.stringify({ bank: sampler.bank, scene: sampler.scene, workspaceMode: sampler.workspaceMode, quantize: sampler.quantize, banks: serializableBanks, scenes: sampler.scenes, promptHistory: sampler.promptHistory.slice(-20) }));
+}
+
+function restorePadWorkspace() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("deckforge-pad-workspace") || "null");
+    sampler.banks.A = capturePadBank();
+    ["B", "C", "D"].forEach((name) => { sampler.banks[name] = emptyPadBank(); });
+    if (!saved) return;
+    Object.entries(saved.banks || {}).forEach(([name, bank]) => { sampler.banks[name] = { ...emptyPadBank(), ...bank, buffers: Array(16).fill(null) }; });
+    sampler.bank = saved.bank || "A"; sampler.scene = saved.scene || "Intro"; sampler.workspaceMode = saved.workspaceMode || "simple"; sampler.quantize = saved.quantize || "off"; sampler.scenes = saved.scenes || {}; sampler.promptHistory = saved.promptHistory || [];
+    applyPadBank(sampler.banks[sampler.bank] || emptyPadBank());
+  } catch (error) { sampler.lastError = `Workspace restore: ${error.message}`; sampler.banks.A = capturePadBank(); }
+}
+
+function renderPadDiagnostics() {
+  const details = document.querySelector("#padDiagnostics");
+  if (details) details.hidden = !DECKFORGE_DEVELOPMENT;
+  const output = document.querySelector("#padDiagnosticsOutput");
+  if (!output || !DECKFORGE_DEVELOPMENT) return;
+  output.textContent = JSON.stringify({ bank: sampler.bank, scene: sampler.scene, activePads: sampler.active.map((active, index) => active ? index + 1 : null).filter(Boolean), loopingPads: sampler.active.map((active, index) => active?.source.loop ? index + 1 : null).filter(Boolean), heldPads: [...sampler.held].map((index) => index + 1), chokeGroups: sampler.chokes, recording: Boolean(editorState.recording), quantize: sampler.quantize, lastTrigger: sampler.lastTrigger, lastStop: sampler.lastStop, lastError: sampler.lastError, audioBufferCount: sampler.buffers.filter(Boolean).length, objectUrlCount: 0 }, null, 2);
+}
+
+function renderPadWorkspaceControls() {
+  const section = document.querySelector("#sampler");
+  if (section) section.dataset.padMode = sampler.workspaceMode;
+  document.querySelector("#padWorkspaceMode").value = sampler.workspaceMode;
+  document.querySelector("#padBank").value = sampler.bank;
+  document.querySelector("#padScene").value = sampler.scene;
+  document.querySelector("#padQuantize").value = sampler.quantize;
+  const list = document.querySelector("#padCategories");
+  if (list) list.innerHTML = PAD_CATEGORIES.map((category) => `<button type="button" class="secondary-button pad-category-chip" data-pad-category-filter="${category}"><span>${category}</span><span>${category === "DITC" ? sourceFiles.length : sampler.categories.filter((item, index) => item === category && sampler.buffers[index]).length}</span></button>`).join("");
+}
+
+function loadStarterPadBank() {
+  if (sampler.buffers.some(Boolean) && !window.confirm(`Bank ${sampler.bank} contains audio. Clear it and load the starter layout?`)) return;
+  panicPads();
+  const starter = emptyPadBank();
+  starter.names = ["Kick", "Snare", "Closed Hat", "Open Hat", "DJ Drop", "Vocal", "Crowd", "Movie Quote", "Impact", "Riser", "Loop A", "Loop B", "Scratch A", "Scratch B", "User 1", "User 2"];
+  starter.categories = ["Drums", "Drums", "Drums", "Drums", "DJ Drops", "Vocals", "Sports", "Movie Quotes", "FX", "FX", "Loops", "Loops", "Scratches", "Scratches", "User-created", "User-created"];
+  starter.relink = starter.names.map(() => true);
+  applyPadBank(starter); sampler.banks[sampler.bank] = starter;
+  savePadWorkspace(); renderPads(); renderPadEditor();
+  setPadEditorStatus("Starter layout loaded as honest Relink Required slots. Add your own audio to make each pad playable.");
+}
+
+function previewAiPadPlan() {
+  const prompt = document.querySelector("#aiPadPrompt").value.trim();
+  if (!prompt) { document.querySelector("#aiPadPlan").textContent = "Enter a prompt first."; return; }
+  const sources = sourceFiles.filter((source) => source.buffer).slice(0, 16);
+  const occupied = sampler.buffers.filter(Boolean).length;
+  const plan = { pads: Math.min(16, sources.length), sourceTracks: sources.map((source) => source.name), categories: prompt.toLowerCase().includes("sports") ? ["Sports", "FX"] : prompt.toLowerCase().includes("house") ? ["Loops", "FX", "Vocals"] : ["DJ Drops", "Scratches", "Vocals", "FX"], suggestedBank: sampler.bank, suggestedScenes: [sampler.scene, "Transition"], extractionRegions: "Whole decoded local sources; automatic hook extraction is unavailable", playbackModes: sources.map((source) => source.buffer.duration > 8 ? "Loop" : "One Shot"), confidence: sources.length ? "Medium" : "Low", warnings: [...(occupied ? [`Bank ${sampler.bank} has ${occupied} occupied pad(s); Apply will ask before replacing.`] : []), ...(sources.length ? [] : ["No decoded DITC local sources are available. Import local audio first."])] };
+  sampler.pendingAiPlan = { prompt, sources, plan };
+  document.querySelector("#aiPadPlan").textContent = JSON.stringify(plan, null, 2);
+  document.querySelector("#applyAiPadPlan").disabled = !sources.length;
+}
+
+function applyAiPadPlan() {
+  const pending = sampler.pendingAiPlan;
+  if (!pending?.sources.length) return;
+  if (sampler.buffers.some(Boolean) && !window.confirm(`Replace occupied pads in Bank ${sampler.bank} with this plan?`)) return;
+  panicPads(); applyPadBank(emptyPadBank());
+  pending.sources.forEach((source, index) => setPadBuffer(index, source.buffer, source.name, { source: "AI plan from DITC local source", category: pending.plan.categories[index % pending.plan.categories.length] }));
+  sampler.promptHistory.push(pending.prompt); savePadWorkspace();
+  document.querySelector("#aiPadBuilder").close();
+  setPadEditorStatus(`Applied a ${pending.sources.length}-pad local plan. No new audio was generated.`);
+}
+
+function updatePadProgress() {
+  if (!AudioEngine.context) return;
+  sampler.active.forEach((active, index) => {
+    if (!active) return;
+    const elapsed = Math.max(0, AudioEngine.context.currentTime - active.startedAt);
+    const ratio = active.source.loop ? (elapsed % active.duration) / active.duration : Math.min(1, elapsed / active.duration);
+    const progress = document.querySelectorAll("#pads .pad-progress")[index];
+    if (progress) progress.style.transform = `scaleX(${ratio})`;
+    const small = document.querySelectorAll("#pads .pad small")[index];
+    if (small) small.textContent = `${active.source.loop ? "Looping" : "Playing"} · ${formatTime(Math.max(0, active.duration - (active.source.loop ? elapsed % active.duration : elapsed)))} left`;
+  });
+}
+
+function previewPadMacro() {
+  const value = document.querySelector("#padMacro").value;
+  setPadEditorStatus(value === "transition" ? `Preview: stop active pad loops, then trigger Pad ${sampler.selected + 1}. Decks and Smart Mix are untouched.` : `Preview: trigger Pad ${sampler.selected + 1} using its current mode and settings.`);
+}
+
+async function runPadMacro() {
+  cancelPadMacro();
+  await AudioEngine.init();
+  const value = document.querySelector("#padMacro").value;
+  if (value === "transition") stopPadLoops();
+  sampler.macroRun = { cancelled: false, value };
+  if (!sampler.macroRun.cancelled) triggerPad(sampler.selected);
+  setPadEditorStatus(`Ran supported ${value === "transition" ? "pad transition" : "trigger"} macro. Local Stop or Panic remains authoritative.`);
+}
+
+function cancelPadMacro() {
+  if (sampler.macroRun) sampler.macroRun.cancelled = true;
+  sampler.macroRun = null;
+  setPadEditorStatus("Pad macro cancelled. Already-started audio remains under local transport control.");
 }
 
 function deletePad(index) {
@@ -1903,9 +2156,14 @@ function deletePad(index) {
   sampler.starts[index] = 0;
   sampler.ends[index] = null;
   sampler.modes[index] = "trigger";
+  sampler.categories[index] = "User-created";
+  sampler.chokes[index] = 0;
+  sampler.sources[index] = "Unassigned";
+  sampler.relink[index] = false;
   renderPads();
   renderPadEditor();
   renderAiContext();
+  savePadWorkspace();
 }
 
 function selectPad(index) {
@@ -1934,7 +2192,7 @@ function renderPadEditor() {
   if (!title || !meta || !start || !end || !mode || !quantize) return;
   title.textContent = `${index + 1}. ${sampler.names[index]}`;
   if (!buffer) {
-    meta.textContent = "Empty pad. Load a sample or send a deck/crate clip here.";
+    meta.textContent = sampler.relink[index] ? `Relink Required: ${sampler.names[index]} metadata was restored, but browser security requires the local audio file again.` : "Empty pad. Load a sample or send a deck/crate clip here.";
     start.value = 0;
     end.value = 1000;
     mode.value = "trigger";
@@ -1943,11 +2201,13 @@ function renderPadEditor() {
     return;
   }
   const region = getPadRegion(index);
-  meta.textContent = `${formatTime(buffer.duration)} source / region ${formatTime(region.start)} - ${formatTime(region.end)} / ${sampler.modes[index] === "loop" ? "Loop" : "Trigger"}`;
+  meta.textContent = `${formatTime(buffer.duration)} source · ${sampler.sources[index]} · region ${formatTime(region.start)} - ${formatTime(region.end)} · ${padModeLabel(sampler.modes[index])}`;
   start.value = Math.round((region.start / buffer.duration) * 1000);
   end.value = Math.round((region.end / buffer.duration) * 1000);
   mode.value = sampler.modes[index];
   quantize.value = sampler.quantize;
+  const values = { padGain: sampler.gains[index], padPan: sampler.pans[index], padPitch: sampler.pitches[index], padFilter: sampler.filters[index], padCategory: sampler.categories[index], padChoke: sampler.chokes[index] };
+  Object.entries(values).forEach(([id, value]) => { const control = document.querySelector(`#${id}`); if (control) control.value = value; });
   drawPadWaveform();
 }
 
@@ -1969,12 +2229,25 @@ function updateSelectedPadMode(value) {
   sampler.modes[sampler.selected] = value;
   renderPadEditor();
   renderPads();
+  savePadWorkspace();
+}
+
+function updateSelectedPadSetting(key, value) {
+  const index = sampler.selected;
+  sampler[key][index] = ["categories"].includes(key) ? value : Number(value);
+  const active = sampler.active[index];
+  if (active && key === "gains") active.gain.gain.value = Number(value);
+  if (active && key === "pans" && active.pan) active.pan.pan.value = Number(value);
+  if (active && key === "filters") active.filter.frequency.value = Number(value);
+  if (active && key === "pitches") active.source.playbackRate.value = 2 ** (Number(value) / 12);
+  renderPads(); savePadWorkspace();
 }
 
 function updatePadQuantize(value) {
   sampler.quantize = value;
   renderPadEditor();
   setPadEditorStatus(value === "off" ? "Pad quantize off. Pads trigger immediately." : `Pads trigger on the next ${value}.`);
+  savePadWorkspace();
 }
 
 function previewSelectedPadRegion() {
@@ -6219,7 +6492,7 @@ function initializePlaybackRegistry() {
     getState: () => ({ playing: deckState[id].playing, paused: deckState[id].status === "paused", looping: deckState[id].loop, automated: deckState[id].smartMixControlled, metadata: { name: deckState[id].trackName || `Deck ${id.toUpperCase()}`, elapsed: currentDeckTime(id) } })
   }));
   registry.register({ id: "ditc-preview", type: "preview", displayName: "DITC Preview", preview: true, stop: stopDitcPreview, getState: () => ({ playing: Boolean(ditcState.previewTrackId && stemState.previewSource), metadata: { name: sourceFiles.find((item) => item.id === ditcState.previewTrackId)?.title || "DITC track", elapsed: 0 } }) });
-  registry.register({ id: "pads", type: "performance", displayName: "Pads", overlapAllowed: true, stop: stopAllPads, getState: () => ({ playing: sampler.active.some(Boolean), looping: sampler.active.some((source, index) => Boolean(source && sampler.modes[index] === "loop")), metadata: { name: `${sampler.active.filter(Boolean).length} pads active`, elapsed: 0 } }) });
+  registry.register({ id: "pads", type: "performance", displayName: "Pads", overlapAllowed: true, stop: stopAllPads, getState: () => { const active = sampler.active.map((source, index) => source ? index : -1).filter((index) => index >= 0); const loops = active.filter((index) => sampler.active[index]?.source.loop); const held = active.filter((index) => sampler.held.has(index)); const latest = active.at(-1); return { playing: active.length > 0, looping: loops.length > 0, recording: Boolean(editorState.recording), metadata: { name: active.length ? `Pads, ${active.length} active${loops.length ? `, ${loops.length} loops` : ""}${held.length ? `, ${held.length} held` : ""}${latest !== undefined ? ` · Pad ${latest + 1}, ${sampler.names[latest]}` : ""}` : "Pads idle", elapsed: 0, activePads: active, loopingPads: loops, heldPads: held, chokeGroups: sampler.chokes } }; } });
   registry.register({ id: "drums", type: "performance", displayName: "Drums", overlapAllowed: true, stop: stopDrums, pause: pauseDrums, resume: startDrums, restart: () => { stopDrums(); drums.step = 0; startDrums(); }, getState: () => ({ playing: drums.playing, paused: drums.paused, looping: drums.playing, metadata: { name: drumPresets.find((item) => item.id === drums.preset)?.name || "Drum pattern", elapsed: 0 } }) });
   registry.register({ id: "keys", type: "performance", displayName: "Keys", overlapAllowed: true, stop: stopAllInstrumentVoices, getState: () => ({ playing: instrument.activeVoices.length > 0, metadata: { name: `${instrument.activeVoices.length} live voices`, elapsed: 0 } }) });
   registry.register({ id: "stems-preview", type: "preview", displayName: "Stem Preview", preview: true, stop: stopStemPreview, getState: () => ({ playing: Boolean(stemState.previewSource && !ditcState.previewTrackId), metadata: { name: stemState.sourceName || "Stem preview", elapsed: 0 } }) });
@@ -7674,7 +7947,38 @@ function setupEvents() {
   document.querySelector("#micSample").addEventListener("click", recordMicSample);
   document.querySelector("#tabSample").addEventListener("click", recordTabSample);
   document.querySelector("#stopPads").addEventListener("click", stopAllPads);
+  document.querySelector("#stopPadsLocal").addEventListener("click", stopAllPads);
   document.querySelector("#stopPadLoops").addEventListener("click", stopPadLoops);
+  document.querySelector("#releaseHeldPads").addEventListener("click", releaseHeldPads);
+  document.querySelector("#panicPads").addEventListener("click", panicPads);
+  document.querySelector("#clearSelectedPad").addEventListener("click", () => deletePad(sampler.selected));
+  document.querySelector("#padWorkspaceMode").addEventListener("change", (event) => { sampler.workspaceMode = event.target.value; renderPadWorkspaceControls(); savePadWorkspace(); });
+  document.querySelector("#padBank").addEventListener("change", (event) => switchPadBank(event.target.value));
+  document.querySelector("#padScene").addEventListener("change", (event) => switchPadScene(event.target.value));
+  document.querySelector("#loadStarterBank").addEventListener("click", loadStarterPadBank);
+  document.querySelector("#padSearch").addEventListener("input", (event) => {
+    const query = event.target.value.trim().toLowerCase();
+    document.querySelectorAll("#pads .pad-slot").forEach((slot, index) => { const haystack = `${sampler.names[index]} ${sampler.categories[index]} ${sampler.sources[index]}`.toLowerCase(); slot.hidden = Boolean(query && !haystack.includes(query)); });
+  });
+  document.querySelector("#padCategories").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-pad-category-filter]");
+    if (!button) return;
+    const category = button.dataset.padCategoryFilter;
+    document.querySelector("#padSearch").value = category === "DITC" ? "" : category;
+    document.querySelector("#padSearch").dispatchEvent(new Event("input"));
+    setPadEditorStatus(category === "DITC" ? `${sourceFiles.length} decoded local DITC source(s) can be dragged or planned into pads.` : `Showing pads matching ${category}.`);
+  });
+  [["padGain", "gains"], ["padPan", "pans"], ["padPitch", "pitches"], ["padFilter", "filters"], ["padCategory", "categories"], ["padChoke", "chokes"]].forEach(([id, key]) => document.querySelector(`#${id}`).addEventListener("input", (event) => updateSelectedPadSetting(key, event.target.value)));
+  document.querySelector("#openAiPadBuilder").addEventListener("click", () => document.querySelector("#aiPadBuilder").showModal());
+  document.querySelector("#previewAiPadPlan").addEventListener("click", (event) => { event.preventDefault(); previewAiPadPlan(); });
+  document.querySelector("#applyAiPadPlan").addEventListener("click", (event) => { event.preventDefault(); applyAiPadPlan(); });
+  document.querySelector("#saveAiPadPrompt").addEventListener("click", (event) => { event.preventDefault(); const prompt = document.querySelector("#aiPadPrompt").value.trim(); if (prompt) { sampler.promptHistory.push(prompt); savePadWorkspace(); document.querySelector("#aiPadPlan").textContent = "Prompt saved locally."; } });
+  document.querySelector("#previewPadMacro").addEventListener("click", previewPadMacro);
+  document.querySelector("#runPadMacro").addEventListener("click", runPadMacro);
+  document.querySelector("#cancelPadMacro").addEventListener("click", cancelPadMacro);
+  document.querySelector("#padRecord").addEventListener("click", async () => { await AudioEngine.init(); editorState.recording ? stopEditorPerformanceRecording() : startEditorPerformanceRecording(false); document.querySelector("#padRecord").classList.toggle("is-active", Boolean(editorState.recording)); renderPadDiagnostics(); });
+  document.querySelector("#padOverdub").addEventListener("click", async () => { await AudioEngine.init(); editorState.recording ? stopEditorPerformanceRecording() : startEditorPerformanceRecording(true); document.querySelector("#padOverdub").classList.toggle("is-active", Boolean(editorState.recording)); renderPadDiagnostics(); });
+  document.querySelector("#padUndoTake").addEventListener("click", () => { const index = [...editorState.clips].map((clip) => clip.type).lastIndexOf("pad"); if (index < 0) { setPadEditorStatus("No saved pad take to undo."); return; } sampler.takeHistory.push(editorState.clips.splice(index, 1)[0]); renderEditor(); setPadEditorStatus("Removed the latest pad performance clip. Arrangement Undo can restore broader edits."); });
   document.querySelector("#drumMachine").addEventListener("change", () => {
     updatePresetNotes();
     applyDrumPreset(document.querySelector("#drumPreset").value);
@@ -7722,11 +8026,21 @@ function setupEvents() {
       }
       return;
     }
+    const padIndex = PAD_KEYS.indexOf(event.key.toLowerCase());
+    if (padIndex >= 0 && document.querySelector("#sampler")?.classList.contains("is-active")) {
+      event.preventDefault();
+      AudioEngine.init().then(() => triggerPad(padIndex, { held: true }));
+      return;
+    }
     const note = instrument.keyboard.find((item) => item.key.toLowerCase() === event.key.toLowerCase());
     if (!note) return;
     event.preventDefault();
     const button = [...document.querySelectorAll(".key-button")][instrument.keyboard.indexOf(note)];
     playInstrumentNote(note.offset, false, button);
+  });
+  document.addEventListener("keyup", (event) => {
+    const padIndex = PAD_KEYS.indexOf(event.key.toLowerCase());
+    if (padIndex >= 0) releasePad(padIndex);
   });
   document.querySelector("#drumPlay").addEventListener("click", async () => {
     await AudioEngine.init();
@@ -8822,11 +9136,13 @@ function detectPlatform(url) {
   return "Link";
 }
 
+restorePadWorkspace();
 initializePlaybackRegistry();
 readSmartPromptStorage();
 setupEvents();
 renderPads();
 renderPadEditor();
+renderPadWorkspaceControls();
 renderInstrumentOptions();
 renderKeyboard();
 renderPresetOptions();

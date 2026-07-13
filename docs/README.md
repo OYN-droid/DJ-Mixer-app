@@ -28,6 +28,8 @@ This directory is the DeckForge v2 recovery and design baseline. It records obse
 22. [Authoritative transition regression checklist](21-authoritative-transition-regression-checklist.md)
 23. [Intelligent tempo safety](22-intelligent-tempo-safety.md)
 24. [Tempo safety regression checklist](23-tempo-safety-regression-checklist.md)
+25. [Working Pads baseline](24-working-pads-baseline.md)
+26. [Pads regression checklist](25-pads-regression-checklist.md)
 
 ## Recovery snapshot
 

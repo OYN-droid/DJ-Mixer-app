@@ -418,23 +418,55 @@
         </section>
 
         <section id="sampler" class="view" aria-labelledby="samplerTitle">
-          <div class="section-heading">
+          <div class="section-heading pads-toolbar">
             <div>
               <h2 id="samplerTitle">Sampler Pads</h2>
-              <p>Load one-shots, grab mic samples, chop loops, and trigger them quantized or free.</p>
+              <p>Drop a sound onto a pad and start playing.</p>
             </div>
             <div class="sampler-actions">
+              <label>Mode <select id="padWorkspaceMode"><option value="simple">Simple</option><option value="advanced">Advanced</option></select></label>
+              <label>Bank <select id="padBank"><option>A</option><option>B</option><option>C</option><option>D</option></select></label>
+              <label>Scene <select id="padScene"><option>Intro</option><option>Verse</option><option>Hook</option><option>Transition</option><option>Breakdown</option><option>Outro</option></select></label>
+              <label>Quantize <select id="padQuantize"><option value="off">Off</option><option value="beat">Next Beat</option><option value="bar">Next Bar</option></select></label>
+              <label>Swing <input id="padSwing" type="range" min="0" max="65" value="0"></label>
+              <button id="padRecord" class="secondary-button">Record</button>
+              <button id="padOverdub" class="secondary-button">Overdub</button>
+              <button id="padUndoTake" class="secondary-button">Undo Take</button>
               <label class="file-button">
                 Add Sample
                 <input id="sampleFile" type="file" accept="audio/*">
               </label>
-              <button id="micSample" class="secondary-button">Mic Sample</button>
-              <button id="tabSample" class="secondary-button">Tab Audio</button>
               <button id="stopPads" class="secondary-button">Stop Pads</button>
-              <button id="stopPadLoops" class="secondary-button">Stop Loops</button>
+              <button id="openAiPadBuilder" class="ai-button">AI Pad Builder</button>
             </div>
           </div>
-          <div class="pad-editor" aria-label="Pad sample editor">
+          <div class="pads-workspace">
+            <aside class="pad-browser" aria-label="Sample browser">
+              <label for="padSearch">Sample browser</label>
+              <input id="padSearch" type="search" placeholder="Search name, category, tag">
+              <div id="padCategories" class="pad-category-list"></div>
+              <div class="pad-browser-actions">
+                <button id="loadStarterBank" class="secondary-button">Load Starter Bank</button>
+                <button id="micSample" class="secondary-button">Mic Sample</button>
+                <button id="tabSample" class="secondary-button">Tab Audio</button>
+              </div>
+              <p class="fine-print">Drag local audio or playable DITC items directly onto any pad.</p>
+            </aside>
+            <div class="pad-stage">
+              <div class="pad-local-transport" aria-label="Pad local transport">
+                <button id="stopPadsLocal" class="secondary-button">Stop Pads</button>
+                <button id="stopPadLoops" class="secondary-button">Stop Loops</button>
+                <button id="releaseHeldPads" class="secondary-button">Release Held</button>
+                <button id="panicPads" class="danger-button">Panic</button>
+              </div>
+              <div id="padEmptyState" class="pad-empty-state">
+                <strong>Drop a sound onto a pad and start playing.</strong>
+                <span>Add a local sample, drag from DITC, build a plan, or load a starter bank.</span>
+              </div>
+              <div id="pads" class="pad-grid" aria-label="Sample pads"></div>
+              <p id="padKeyboardHint" class="fine-print">Keyboard: 1 2 3 4 / Q W E R / A S D F / Z X C V</p>
+            </div>
+          <div class="pad-editor" aria-label="Selected pad inspector">
             <div class="pad-editor-header">
               <div>
                 <p class="eyebrow">Selected Pad</p>
@@ -443,32 +475,53 @@
               </div>
               <div class="pad-editor-actions">
                 <button id="previewPadRegion" class="secondary-button">Preview</button>
-                <button id="slicePadToPads" class="primary-button">Slice To Pads</button>
+                <button id="slicePadToPads" class="primary-button advanced-pad-control">Slice To Pads</button>
                 <button id="padClipToCrate" class="secondary-button">Save Clip</button>
+                <button id="clearSelectedPad" class="danger-button">Clear Pad</button>
               </div>
             </div>
-            <canvas id="padWaveform" class="pad-waveform" width="900" height="130"></canvas>
+            <canvas id="padWaveform" class="pad-waveform advanced-pad-control" width="900" height="130"></canvas>
             <div class="pad-edit-controls">
-              <label>Start <input id="padStart" type="range" min="0" max="1000" value="0"></label>
-              <label>End <input id="padEnd" type="range" min="0" max="1000" value="1000"></label>
+              <label class="advanced-pad-control">Start <input id="padStart" type="range" min="0" max="1000" value="0"></label>
+              <label class="advanced-pad-control">End <input id="padEnd" type="range" min="0" max="1000" value="1000"></label>
               <label>Mode
                 <select id="padMode">
-                  <option value="trigger">Trigger</option>
+                  <option value="trigger">One Shot</option>
+                  <option value="hold">Hold</option>
+                  <option value="gate">Gate</option>
+                  <option value="toggle">Toggle</option>
                   <option value="loop">Loop</option>
+                  <option value="repeat">Repeat</option>
+                  <option value="roll">Roll</option>
+                  <option disabled>Beat Repeat (Coming Soon)</option>
+                  <option disabled>Momentary FX (Coming Soon)</option>
+                  <option disabled>Scratch Trigger (Coming Soon)</option>
+                  <option value="dj-drop">DJ Drop</option>
                 </select>
               </label>
-              <label>Quantize
-                <select id="padQuantize">
-                  <option value="off">Off</option>
-                  <option value="beat">Next Beat</option>
-                  <option value="bar">Next Bar</option>
-                </select>
-              </label>
-              <label>Slices <input id="padSliceCount" type="number" min="2" max="16" value="8"></label>
+              <label>Volume <input id="padGain" type="range" min="0" max="1.25" step="0.01" value="0.9"></label>
+              <label class="advanced-pad-control">Pan <input id="padPan" type="range" min="-1" max="1" step="0.05" value="0"></label>
+              <label class="advanced-pad-control">Pitch <input id="padPitch" type="range" min="-12" max="12" step="1" value="0"></label>
+              <label class="advanced-pad-control">Filter <input id="padFilter" type="range" min="200" max="20000" step="100" value="20000"></label>
+              <label class="advanced-pad-control">Category <select id="padCategory"><option>DJ Drops</option><option>Vocals</option><option>Movie Quotes</option><option>Sports</option><option>Loops</option><option>FX</option><option>Scratches</option><option>User-created</option></select></label>
+              <label class="advanced-pad-control">Choke <select id="padChoke"><option value="0">None</option><option value="1">Group 1</option><option value="2">Group 2</option><option value="3">Group 3</option><option value="4">Group 4</option></select></label>
+              <label class="advanced-pad-control">Slice method <select id="padSliceMethod"><option value="equal">Equal</option><option disabled>Transients (Coming Soon)</option><option disabled>Beats (Coming Soon)</option><option disabled>Bars (Coming Soon)</option><option disabled>Phrase (Coming Soon)</option><option disabled>Silence (Coming Soon)</option></select></label>
+              <label class="advanced-pad-control">Slices <select id="padSliceCount"><option>4</option><option selected>8</option><option>16</option></select></label>
+              <label class="advanced-pad-control">Macro <select id="padMacro"><option value="trigger">Trigger selected pad</option><option value="transition">Stop pad loops, trigger selected</option></select></label>
             </div>
+            <div class="pad-editor-actions advanced-pad-control"><button id="previewPadMacro" class="secondary-button">Preview Macro</button><button id="runPadMacro" class="primary-button">Run Macro</button><button id="cancelPadMacro" class="secondary-button">Cancel Macro</button></div>
             <p id="padEditorStatus" class="fine-print">Click a pad to select it. Use Start/End to trim, Loop for long beds, and Slice To Pads for chops.</p>
           </div>
-          <div id="pads" class="pad-grid" aria-label="Sample pads"></div>
+          </div>
+          <dialog id="aiPadBuilder" class="pad-builder-dialog">
+            <form method="dialog"><button class="dialog-close" aria-label="Close">×</button></form>
+            <h3>AI Pad Builder</h3>
+            <p class="fine-print">Local prompt planning uses loaded audio only. It does not generate or extract new audio.</p>
+            <textarea id="aiPadPrompt" rows="3" placeholder="Build a 16-pad NYC mixtape bank with DJ drops, scratches, crowd noise, and movie quotes."></textarea>
+            <div class="ai-actions"><button id="previewAiPadPlan" class="ai-button">Preview Plan</button><button id="applyAiPadPlan" class="primary-button" disabled>Apply</button><button id="saveAiPadPrompt" class="secondary-button">Save Prompt</button></div>
+            <pre id="aiPadPlan">No plan yet.</pre>
+          </dialog>
+          <details id="padDiagnostics" hidden><summary>Pad diagnostics</summary><pre id="padDiagnosticsOutput"></pre></details>
         </section>
 
         <section id="drums" class="view" aria-labelledby="drumsTitle">
