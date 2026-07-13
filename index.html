@@ -19,7 +19,7 @@
         <nav class="rail-tabs" aria-label="Sections">
           <button class="tab-button is-active" data-target="decks" title="Decks">Decks</button>
           <button class="tab-button" data-target="sampler" title="Sampler">Pads</button>
-          <button class="tab-button" data-target="drums" title="Drums">Drums</button>
+          <button class="tab-button" data-target="drums" title="Beat Forge drum machine">Beat Forge</button>
           <button class="tab-button" data-target="keys" title="Keys">Keys</button>
           <button class="tab-button" data-target="stems" title="Stems">Stems</button>
           <button class="tab-button" data-target="editor" title="Editor">Editor</button>
@@ -527,29 +527,88 @@
         <section id="drums" class="view" aria-labelledby="drumsTitle">
           <div class="section-heading">
             <div>
-              <h2 id="drumsTitle">Drum Machine</h2>
-              <p>Step-sequence synthesized kicks, snares, hats, claps, and sub hits into the mix.</p>
+              <p class="eyebrow">Drum Machine and AI Rhythm Studio</p>
+              <h2 id="drumsTitle">Beat Forge</h2>
+              <p>Finger-drum, sequence, shape a groove, and build multi-bar rhythm ideas.</p>
             </div>
-            <div class="transport">
-              <button id="drumPlay" class="primary-button">Start Drums</button>
-              <button id="drumPause" class="secondary-button">Pause</button>
-              <button id="drumRestart" class="secondary-button">Restart</button>
-              <button id="drumClear" class="secondary-button">Clear</button>
-            </div>
+            <label>Workspace <select id="beatForgeMode"><option value="simple">Simple</option><option value="advanced">Advanced</option></select></label>
           </div>
-          <div class="preset-panel">
-            <div>
-              <label for="drumMachine">Machine model</label>
-              <select id="drumMachine"></select>
-            </div>
-            <div>
-              <label for="drumPreset">Producer-era preset</label>
-              <select id="drumPreset"></select>
-            </div>
-            <button id="applyPreset" class="primary-button">Load Preset</button>
-            <p id="presetNotes"></p>
+          <div class="beat-transport" aria-label="Beat Forge local transport">
+            <button id="drumPlay" class="primary-button">Play</button>
+            <button id="drumPause" class="secondary-button">Pause</button>
+            <button id="drumStop" class="secondary-button">Stop</button>
+            <button id="drumRestart" class="secondary-button">Restart</button>
+            <button id="beatRecord" class="secondary-button">Record</button>
+            <button id="beatOverdub" class="secondary-button">Overdub</button>
+            <button id="beatMetronome" class="secondary-button" aria-pressed="false">Metronome</button>
+            <button id="beatLoop" class="secondary-button is-active" aria-pressed="true">Loop</button>
+            <strong id="beatTransportPattern">A1 Verse</strong>
+            <span id="beatPosition">Bar 1 · Beat 1</span>
           </div>
-          <div id="sequencer" class="sequencer" aria-label="Drum sequencer"></div>
+          <div class="beat-forge-layout">
+            <aside class="kit-browser" aria-label="Kit browser">
+              <h3>Kit Browser</h3>
+              <input id="kitSearch" type="search" placeholder="Search kits">
+              <div id="kitCategories" class="kit-categories"></div>
+              <div id="kitResults" class="kit-results"></div>
+              <div class="kit-actions"><button id="kitPrevious" class="secondary-button">Previous</button><button id="kitPreview" class="secondary-button">Preview</button><button id="kitStopPreview" class="secondary-button">Stop Preview</button><button id="kitNext" class="secondary-button">Next</button><button id="loadDrumKit" class="primary-button">Load Kit</button><button id="loadDrumKitPattern" class="secondary-button">Load Kit + Recommended Pattern</button><button id="favoriteDrumKit" class="secondary-button">Favorite</button></div>
+            </aside>
+            <div class="beat-center">
+              <div class="beat-config" id="beatConfigSummary"></div>
+              <div class="preset-panel">
+                <div><label for="drumMachine">Current kit</label><select id="drumMachine"></select></div>
+                <div><label for="drumPreset">Complete preset</label><select id="drumPreset"></select></div>
+                <button id="applyPreset" class="primary-button">Load Preset</button>
+                <button id="saveBeatPattern" class="secondary-button">Save Pattern</button>
+                <button id="drumClear" class="secondary-button">Clear Pattern</button>
+                <p id="presetNotes"></p>
+              </div>
+              <div id="drumPerformancePads" class="drum-performance-pads" aria-label="Beat Forge performance pads"></div>
+              <div class="beat-view-tabs advanced-beat-control" role="tablist">
+                <button class="secondary-button is-active" data-beat-view="steps">Step Sequencer</button>
+                <button class="secondary-button" data-beat-view="piano">Piano Roll</button>
+                <button class="secondary-button" data-beat-view="velocity">Velocity</button>
+                <button class="secondary-button" data-beat-view="automation">Automation</button>
+              </div>
+              <div class="sequencer-toolbar">
+                <label>Bars <select id="beatBars"><option>1</option><option>2</option><option>4</option><option>8</option></select></label>
+                <button id="beatPreviousBar" class="secondary-button">Previous Bar</button><span id="beatBarLabel">Bar 1 of 1</span><button id="beatNextBar" class="secondary-button">Next Bar</button>
+              </div>
+              <div id="sequencer" class="sequencer" aria-label="Beat Forge editor"></div>
+              <div class="beat-actions"><button id="sendBeatArrangement" class="secondary-button">Send to Arrangement</button><button id="sendBeatPads" class="secondary-button">Send Pattern to Pads</button><button id="sendBeatLanePads" class="secondary-button advanced-beat-control">Send Selected Lane</button><button id="beatUndo" class="secondary-button">Undo</button><button id="exportBeatPattern" class="secondary-button advanced-beat-control">Export</button><label class="file-button advanced-beat-control">Import<input id="importBeatPattern" type="file" accept="application/json"></label></div>
+            </div>
+            <aside class="beat-inspector advanced-beat-control" aria-label="Lane inspector">
+              <h3>Lane Inspector</h3>
+              <p id="beatLaneName">Kick</p>
+              <label>Volume <input id="beatLaneVolume" type="range" min="0" max="1.5" step="0.01" value="1"></label>
+              <label>Pan <input id="beatLanePan" type="range" min="-1" max="1" step="0.05" value="0"></label>
+              <label>Filter <input id="beatLaneFilter" type="range" min="300" max="20000" step="100" value="16000"></label>
+              <label>Pitch <input id="beatLanePitch" type="range" min="-12" max="12" step="1" value="0"></label>
+              <label>Step velocity <input id="beatStepVelocity" type="range" min="0.05" max="1" step="0.01" value="0.85"></label>
+              <label>Step probability <input id="beatStepProbability" type="range" min="0" max="1" step="0.01" value="1"></label>
+              <label>Timing offset <input id="beatStepTiming" type="range" min="-40" max="40" step="1" value="0"></label>
+              <label>Choke group <select id="beatLaneChoke"><option value="0">None</option><option value="1">Group 1</option><option value="2">Group 2</option></select></label>
+              <label><input id="beatLaneMute" type="checkbox"> Mute lane</label><label><input id="beatLaneSolo" type="checkbox"> Solo lane</label>
+              <div class="ai-actions"><button id="accentBeatVelocity" class="secondary-button">Accent</button><button id="randomizeBeatVelocity" class="secondary-button">Randomize</button><button id="resetBeatVelocity" class="secondary-button">Reset Velocity</button><button id="resetBeatAutomation" class="secondary-button">Reset Automation</button></div>
+              <p class="fine-print">Lane layering, custom sample assignment, and MIDI mapping are Coming Soon because this build uses synthesized voices.</p>
+            </aside>
+          </div>
+          <section class="groove-panel advanced-beat-control">
+            <div><h3>Groove Engine</h3><p id="grooveDescription"></p><p id="grooveDifference" class="fine-print">Select a groove to build a safe comparison.</p></div>
+            <label>Groove <select id="beatGroove"></select></label>
+            <label>Intensity <input id="grooveIntensity" type="range" min="0" max="100" value="60"><span id="grooveIntensityLabel">Medium · 60%</span></label>
+            <details class="groove-locks"><summary>Preserve Elements</summary><label><input type="checkbox" data-groove-lock="kick"> Kick</label><label><input type="checkbox" data-groove-lock="snare"> Snare</label><label><input type="checkbox" data-groove-lock="hats"> Hats</label><label><input type="checkbox" data-groove-lock="percussion"> Clap/Sub</label><label><input type="checkbox" data-groove-lock="velocity"> Velocity</label><label><input type="checkbox" data-groove-lock="timing"> Timing</label></details>
+            <div class="groove-actions"><button id="previewOriginalGroove" class="secondary-button">Preview Original</button><button id="previewCandidateGroove" class="secondary-button">Preview Groove</button><button id="alternateGroovePreview" class="secondary-button">Alternate A/B</button><button id="applyGroove" class="primary-button">Apply</button><button id="cancelGroove" class="secondary-button">Cancel</button><button id="undoGroove" class="secondary-button">Undo Groove</button><button id="reapplyGroove" class="secondary-button">Reapply</button><button id="resetGroove" class="secondary-button">Reset Straight</button></div>
+          </section>
+          <section class="ai-beat-studio">
+            <div><p class="eyebrow">AI Beat Producer</p><h3>AI Drum Prompt Studio</h3><p id="aiBeatProducerMessage">Describe a groove or use a direct generation action. Plans update real sequencer data only after preview and apply.</p></div>
+            <textarea id="beatPrompt" rows="3" placeholder="Create a dusty 1990s NYC boom-bap verse at 92 BPM with swung hats, ghost snares, and a hard kick pocket."></textarea>
+            <div class="ai-actions"><button id="generateBeat" class="ai-button">Generate Beat</button><button id="generateBeatVariation" class="ai-button">Variation</button><button id="simplifyBeat" class="secondary-button">Simplify</button><button id="busierBeat" class="secondary-button">Make Busier</button><button id="fillBeat" class="secondary-button">Add Fill</button><button id="humanizeBeat" class="secondary-button">Humanize</button><button id="swingBeat" class="secondary-button">More Swing</button><button id="straightBeat" class="secondary-button">More Straight</button></div>
+            <div class="ai-actions"><label>Convert section <select id="beatSection"><option>Intro</option><option selected>Verse</option><option>Hook</option><option>Breakdown</option><option>Transition</option><option>Outro</option></select></label><button id="previewBeatPlan" class="secondary-button" disabled>Preview Audio</button><button id="stopBeatPlanPreview" class="secondary-button">Stop Preview</button><button id="applyBeatPlan" class="primary-button" disabled>Apply</button><button id="generateAnotherBeat" class="secondary-button">Generate Another</button><button id="refineBeatPrompt" class="secondary-button">Refine Prompt</button><button id="saveBeatPrompt" class="secondary-button">Save Prompt</button><label>History <select id="beatPromptHistory"><option value="">Saved prompts</option></select></label><button id="clearBeatPrompt" class="secondary-button">Clear</button></div>
+            <pre id="beatPromptPlan">No generated plan yet.</pre>
+          </section>
+          <section class="beat-match-panel advanced-beat-control"><h3>AI Beat Match</h3><p id="beatMatchSuggestion">Load a deck to receive a project-aware rhythm suggestion.</p><div class="ai-actions"><button id="previewBeatMatch" class="secondary-button">Preview</button><button id="applyBeatMatch" class="primary-button">Apply</button><button id="rejectBeatMatch" class="secondary-button">Reject</button><button id="explainBeatMatch" class="secondary-button">Explain</button></div></section>
+          <details id="beatDiagnostics" hidden><summary>Beat Forge diagnostics</summary><pre id="beatDiagnosticsOutput"></pre></details>
         </section>
 
         <section id="keys" class="view" aria-labelledby="keysTitle">

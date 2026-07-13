@@ -30,6 +30,8 @@ This directory is the DeckForge v2 recovery and design baseline. It records obse
 24. [Tempo safety regression checklist](23-tempo-safety-regression-checklist.md)
 25. [Working Pads baseline](24-working-pads-baseline.md)
 26. [Pads regression checklist](25-pads-regression-checklist.md)
+27. [Working Beat Forge baseline](26-working-beat-forge-baseline.md)
+28. [Beat Forge regression checklist](27-beat-forge-regression-checklist.md)
 
 ## Recovery snapshot
 

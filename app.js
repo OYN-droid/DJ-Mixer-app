@@ -327,10 +327,46 @@ const drums = {
   playing: false,
   paused: false,
   step: 0,
+  cycle: 0,
   timer: null,
+  schedulerVersion: 0,
+  voices: [],
   rows: ["Kick", "Snare", "Hat", "Clap", "Sub"],
+  patternId: "A1",
+  name: "A1 Verse",
+  bars: 1,
+  stepsPerBar: 16,
+  currentBar: 0,
+  section: "Verse",
+  version: 1,
+  source: "Preset",
+  seed: 9201,
   preset: "boomBapCuts",
   machine: "analog808",
+  groove: "boom-bap",
+  grooveIntensity: 60,
+  grooveCandidate: null,
+  grooveCandidateIntensity: null,
+  grooveAnchor: null,
+  lastAppliedGroove: null,
+  grooveLocks: { kick: false, snare: false, hats: false, percussion: false, velocity: false, timing: false },
+  grooveMetrics: null,
+  schedulerLoadedVersion: 0,
+  view: "steps",
+  selectedLane: 0,
+  selectedStep: 0,
+  metronome: false,
+  loop: true,
+  recording: false,
+  overdub: false,
+  liveEvents: [],
+  undoStack: [],
+  patterns: [],
+  promptHistory: [],
+  pendingPlan: null,
+  lastGeneration: "None",
+  lastPrompt: "None",
+  lastError: "None",
   kit: {
     kick: { start: 120, end: 42, decay: 0.26, gain: 0.9 },
     sub: { start: 62, end: 34, decay: 0.28, gain: 0.7 },
@@ -345,8 +381,34 @@ const drums = {
     [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0],
     [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0],
     [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
-  ]
+  ],
+  velocities: Array.from({ length: 5 }, () => Array(16).fill(0.85)),
+  probabilities: Array.from({ length: 5 }, () => Array(16).fill(1)),
+  timingOffsets: Array.from({ length: 5 }, () => Array(16).fill(0)),
+  automation: Array.from({ length: 5 }, () => Array(16).fill(1)),
+  lanes: ["Kick", "Snare", "Hat", "Clap", "Sub"].map((name) => ({ name, volume: 1, pan: 0, filter: 16000, pitch: 0, choke: 0, muted: false, solo: false, sample: "Synthesized voice", layers: [] }))
 };
+
+const drumGrooves = [
+  { id: "straight", name: "Straight", description: "Even sixteenths with consistent accents.", swing: 0, timing: 0, velocity: 0 },
+  { id: "boom-bap", name: "Boom Bap", description: "Late hats and a firm backbeat pocket.", swing: 0.12, timing: 0.012, velocity: 0.08 },
+  { id: "loose-pocket", name: "Loose Pocket", description: "Push-pull timing with softer ghost accents.", swing: 0.18, timing: 0.02, velocity: 0.14 },
+  { id: "dilla", name: "Dilla-Inspired", description: "Intentionally uneven, non-copying soulful pocket.", swing: 0.24, timing: 0.028, velocity: 0.18 },
+  { id: "pete-rock", name: "Pete Rock-Inspired", description: "Relaxed soulful swing, soft hats, and a delayed layered backbeat.", swing: 0.19, timing: 0.019, velocity: 0.13 },
+  { id: "premier", name: "Premier-Inspired", description: "Tight kick/snare pocket, crisp accents, and deliberate vocal space.", swing: 0.1, timing: 0.01, velocity: 0.11 },
+  { id: "mpc", name: "MPC Feel", description: "Classic shuffled sixteenth-note feel.", swing: 0.16, timing: 0.01, velocity: 0.1 },
+  { id: "sp", name: "SP Feel", description: "Sparse, slightly late sample-style drums with strong accents.", swing: 0.14, timing: 0.017, velocity: 0.15 },
+  { id: "house", name: "House Swing", description: "Steady kick with lightly swung percussion.", swing: 0.08, timing: 0.006, velocity: 0.05 },
+  { id: "shuffle", name: "Shuffle", description: "Pronounced alternating subdivision swing.", swing: 0.28, timing: 0.012, velocity: 0.1 },
+  { id: "jersey", name: "Jersey Bounce", description: "Fast syncopated club bounce.", swing: 0.05, timing: 0.008, velocity: 0.12 },
+  { id: "garage", name: "UK Garage", description: "Shuffled hats around syncopated kicks.", swing: 0.2, timing: 0.014, velocity: 0.1 },
+  { id: "breakbeat", name: "Breakbeat", description: "Chopped syncopation and energetic ghost notes.", swing: 0.06, timing: 0.012, velocity: 0.15 },
+  { id: "rnb", name: "R&B Pocket", description: "Soft, late percussion around a stable backbeat.", swing: 0.17, timing: 0.018, velocity: 0.12 },
+  { id: "humanize", name: "Humanize", description: "Seeded timing and velocity variation.", swing: 0.08, timing: 0.024, velocity: 0.18 },
+  { id: "cinematic-trap", name: "Cinematic Trap", description: "Half-time backbeat, strategic silence, and dramatic rolls.", swing: 0.04, timing: 0.006, velocity: 0.16 }
+];
+
+const beatStyles = ["Boom Bap", "Loose Soulful Groove", "Trap", "Cinematic Trap", "Drill", "House", "Deep House", "Garage", "Jersey Club", "Breakbeat", "R&B", "Neo-Soul", "Lo-Fi"];
 
 const drumMachines = [
   {
@@ -2629,7 +2691,7 @@ function editorTrackIndexFromY(clientY) {
 
 async function addEditorClipFromSource(source, trackIndex, start) {
   const performanceEvents = source.sourceKind === "drums"
-    ? createDrumPatternEvents(source.duration || editorSecondsPerBar() * 4)
+    ? createDrumPatternEvents(source.duration || editorSecondsPerBar() * 4, source.patternSnapshot)
     : source.sourceKind === "keys"
       ? createKeysSketchEvents(source.duration || editorSecondsPerBar() * 4)
       : null;
@@ -2960,26 +3022,32 @@ function inferPerformanceClipType(events) {
   return "fx";
 }
 
-function createDrumPatternEvents(duration) {
+function createDrumPatternEvents(duration, snapshot = null) {
   const bpm = Number(document.querySelector("#globalBpm")?.value) || 124;
   const stepSeconds = 60 / bpm / 4;
-  const patternLength = stepSeconds * 16;
+  const model = snapshot || serializeBeatPattern();
+  const patternSteps = model.bars * model.stepsPerBar;
+  const patternLength = stepSeconds * patternSteps;
   const events = [];
   for (let base = 0; base < duration; base += patternLength) {
-    drums.rows.forEach((row, rowIndex) => {
-      drums.pattern[rowIndex].forEach((enabled, step) => {
+    model.rows.forEach((row, rowIndex) => {
+      model.pattern[rowIndex].forEach((enabled, step) => {
         if (!enabled) return;
-        const time = base + step * stepSeconds;
+        const time = base + step * stepSeconds + (model.timingOffsets?.[rowIndex]?.[step] || 0) / 1000;
         if (time >= duration) return;
         const tone = row === "Kick" ? drums.kit.kick : row === "Sub" ? drums.kit.sub : row === "Hat" ? drums.kit.hat : row === "Clap" ? drums.kit.clap : drums.kit.snare;
         events.push({
           kind: "drum",
           name: row,
           time,
-          velocity: 1,
+          velocity: (model.velocities?.[rowIndex]?.[step] || 0.85) * (model.automation?.[rowIndex]?.[step] || 1),
           duration: tone.decay || 0.12,
-          kit: drums.machine,
-          preset: drums.preset
+          kit: model.kit,
+          preset: model.preset,
+          probability: model.probabilities?.[rowIndex]?.[step] ?? 1,
+          timingOffset: model.timingOffsets?.[rowIndex]?.[step] || 0,
+          groove: model.groove,
+          patternVersion: model.version
         });
       });
     });
@@ -6493,7 +6561,7 @@ function initializePlaybackRegistry() {
   }));
   registry.register({ id: "ditc-preview", type: "preview", displayName: "DITC Preview", preview: true, stop: stopDitcPreview, getState: () => ({ playing: Boolean(ditcState.previewTrackId && stemState.previewSource), metadata: { name: sourceFiles.find((item) => item.id === ditcState.previewTrackId)?.title || "DITC track", elapsed: 0 } }) });
   registry.register({ id: "pads", type: "performance", displayName: "Pads", overlapAllowed: true, stop: stopAllPads, getState: () => { const active = sampler.active.map((source, index) => source ? index : -1).filter((index) => index >= 0); const loops = active.filter((index) => sampler.active[index]?.source.loop); const held = active.filter((index) => sampler.held.has(index)); const latest = active.at(-1); return { playing: active.length > 0, looping: loops.length > 0, recording: Boolean(editorState.recording), metadata: { name: active.length ? `Pads, ${active.length} active${loops.length ? `, ${loops.length} loops` : ""}${held.length ? `, ${held.length} held` : ""}${latest !== undefined ? ` · Pad ${latest + 1}, ${sampler.names[latest]}` : ""}` : "Pads idle", elapsed: 0, activePads: active, loopingPads: loops, heldPads: held, chokeGroups: sampler.chokes } }; } });
-  registry.register({ id: "drums", type: "performance", displayName: "Drums", overlapAllowed: true, stop: stopDrums, pause: pauseDrums, resume: startDrums, restart: () => { stopDrums(); drums.step = 0; startDrums(); }, getState: () => ({ playing: drums.playing, paused: drums.paused, looping: drums.playing, metadata: { name: drumPresets.find((item) => item.id === drums.preset)?.name || "Drum pattern", elapsed: 0 } }) });
+  registry.register({ id: "drums", type: "performance", displayName: "Beat Forge", overlapAllowed: true, stop: () => { stopDrums(); stopBeatPreview(); }, pause: pauseDrums, resume: startDrums, restart: () => { stopDrums(); drums.step = 0; startDrums(); }, getState: () => ({ playing: drums.playing || drums.previewing, paused: drums.paused, looping: drums.playing && drums.loop, recording: drums.recording, preview: drums.previewing, metadata: { name: drums.previewing ? "Beat Forge preview" : drums.recording ? `Beat Forge, recording · ${drums.name}` : `Beat Forge, ${drums.name}`, elapsed: drums.step * (60 / (Number(document.querySelector("#globalBpm")?.value) || 124) / 4), pattern: drums.patternId, schedulerActive: Boolean(drums.timer), patternVersion: drums.version } }) });
   registry.register({ id: "keys", type: "performance", displayName: "Keys", overlapAllowed: true, stop: stopAllInstrumentVoices, getState: () => ({ playing: instrument.activeVoices.length > 0, metadata: { name: `${instrument.activeVoices.length} live voices`, elapsed: 0 } }) });
   registry.register({ id: "stems-preview", type: "preview", displayName: "Stem Preview", preview: true, stop: stopStemPreview, getState: () => ({ playing: Boolean(stemState.previewSource && !ditcState.previewTrackId), metadata: { name: stemState.sourceName || "Stem preview", elapsed: 0 } }) });
   registry.register({ id: "arrangement", type: "timeline", displayName: "Arrangement", stop: stopEditorArrangement, pause: pauseEditorArrangement, resume: playEditorArrangement, restart: () => { stopEditorArrangement(); editorState.playhead = 0; playEditorArrangement(); }, getState: () => ({ playing: editorState.playing, paused: editorState.paused, metadata: { name: `Arrangement at ${formatTime(editorState.playhead)}`, elapsed: editorState.playhead } }) });
@@ -6978,28 +7046,86 @@ function writeAscii(view, offset, text) {
   }
 }
 
+function drumStepCount() {
+  return drums.bars * drums.stepsPerBar;
+}
+
+function normalizeDrumPatternModel(stepCount = drumStepCount()) {
+  const resize = (row, fill) => Array.from({ length: stepCount }, (_, index) => row?.[index] ?? fill);
+  drums.pattern = drums.rows.map((_, index) => resize(drums.pattern[index], 0));
+  drums.velocities = drums.rows.map((_, index) => resize(drums.velocities[index], 0.85));
+  drums.probabilities = drums.rows.map((_, index) => resize(drums.probabilities[index], 1));
+  drums.timingOffsets = drums.rows.map((_, index) => resize(drums.timingOffsets[index], 0));
+  drums.automation = drums.rows.map((_, index) => resize(drums.automation[index], 1));
+  drums.lanes = drums.rows.map((name, index) => ({ name, volume: 1, pan: 0, filter: 16000, pitch: 0, choke: 0, muted: false, solo: false, sample: "Synthesized voice", layers: [], ...(drums.lanes[index] || {}) }));
+  drums.currentBar = Math.min(drums.currentBar, drums.bars - 1);
+  drums.step %= stepCount;
+}
+
+function snapshotDrumPattern(label = "Edit") {
+  drums.undoStack.push({ label, pattern: drums.pattern.map((row) => [...row]), velocities: drums.velocities.map((row) => [...row]), probabilities: drums.probabilities.map((row) => [...row]), timingOffsets: drums.timingOffsets.map((row) => [...row]), automation: drums.automation.map((row) => [...row]), groove: drums.groove, grooveIntensity: drums.grooveIntensity, bars: drums.bars, section: drums.section, name: drums.name, seed: drums.seed, version: drums.version });
+  if (drums.undoStack.length > 30) drums.undoStack.shift();
+}
+
+function touchDrumPattern(source = "User Edited") {
+  drums.version += 1;
+  drums.source = source;
+  if (!source.startsWith("Groove")) { drums.grooveAnchor = null; drums.grooveCandidate = null; drums.grooveCandidateIntensity = null; drums.grooveMetrics = null; }
+  saveBeatForgeState();
+  renderBeatForgeSummary();
+  renderBeatDiagnostics();
+}
+
+function visibleDrumStep(localStep) {
+  return drums.currentBar * drums.stepsPerBar + localStep;
+}
+
 function renderSequencer() {
   const sequencer = document.querySelector("#sequencer");
+  if (!sequencer) return;
+  normalizeDrumPatternModel();
   sequencer.innerHTML = "";
   drums.rows.forEach((row, rowIndex) => {
     const rowEl = document.createElement("div");
-    rowEl.className = "seq-row";
-    const label = document.createElement("div");
-    label.className = "seq-label";
-    label.textContent = row;
+    rowEl.className = "beat-editor-row";
+    const label = document.createElement("button");
+    label.type = "button";
+    label.className = `beat-lane-label${drums.selectedLane === rowIndex ? " is-selected" : ""}`;
+    label.innerHTML = `<strong>${row}</strong><small>${drums.lanes[rowIndex].muted ? "Muted" : drums.lanes[rowIndex].solo ? "Solo" : drums.lanes[rowIndex].sample}</small>`;
+    label.addEventListener("click", () => { drums.selectedLane = rowIndex; renderSequencer(); renderBeatInspector(); });
     rowEl.appendChild(label);
-    for (let step = 0; step < 16; step += 1) {
+    for (let localStep = 0; localStep < drums.stepsPerBar; localStep += 1) {
+      const step = visibleDrumStep(localStep);
+      if (drums.view === "velocity" || drums.view === "automation") {
+        const input = document.createElement("input");
+        input.type = "range"; input.min = 0; input.max = 1; input.step = 0.01;
+        input.className = drums.view === "velocity" ? "velocity-cell" : "automation-cell";
+        input.value = drums.view === "velocity" ? drums.velocities[rowIndex][step] : drums.automation[rowIndex][step];
+        input.disabled = drums.view === "velocity" && !drums.pattern[rowIndex][step];
+        input.ariaLabel = `${row} step ${step + 1} ${drums.view}`;
+        input.addEventListener("pointerdown", () => snapshotDrumPattern(`${drums.view} edit`), { once: true });
+        input.addEventListener("input", () => { (drums.view === "velocity" ? drums.velocities : drums.automation)[rowIndex][step] = Number(input.value); drums.selectedLane = rowIndex; drums.selectedStep = step; touchDrumPattern(); });
+        rowEl.appendChild(input);
+        continue;
+      }
       const button = document.createElement("button");
-      button.className = `step${drums.pattern[rowIndex][step] ? " is-on" : ""}`;
-      button.ariaLabel = `${row} step ${step + 1}`;
+      button.type = "button";
+      const piano = drums.view === "piano";
+      button.className = `${piano ? "piano-note" : "step beat-step-meta"}${drums.pattern[rowIndex][step] ? " is-on" : ""}`;
+      button.dataset.globalStep = step;
+      button.dataset.velocity = drums.pattern[rowIndex][step] ? Math.round(drums.velocities[rowIndex][step] * 100) : "";
+      button.style.setProperty("--step-probability", drums.probabilities[rowIndex][step]);
+      button.ariaLabel = `${row} bar ${drums.currentBar + 1} step ${localStep + 1}, ${drums.pattern[rowIndex][step] ? "on" : "off"}, velocity ${Math.round(drums.velocities[rowIndex][step] * 100)}, probability ${Math.round(drums.probabilities[rowIndex][step] * 100)} percent`;
       button.addEventListener("click", () => {
-        drums.pattern[rowIndex][step] = drums.pattern[rowIndex][step] ? 0 : 1;
-        button.classList.toggle("is-on", Boolean(drums.pattern[rowIndex][step]));
+        snapshotDrumPattern("Toggle step"); drums.pattern[rowIndex][step] = drums.pattern[rowIndex][step] ? 0 : 1; drums.selectedLane = rowIndex; drums.selectedStep = step; touchDrumPattern(); renderSequencer(); renderBeatInspector();
       });
       rowEl.appendChild(button);
     }
     sequencer.appendChild(rowEl);
   });
+  document.querySelector("#beatBarLabel").textContent = `Bar ${drums.currentBar + 1} of ${drums.bars}`;
+  document.querySelector("#beatBars").value = drums.bars;
+  renderBeatInspector();
 }
 
 function renderPresetOptions() {
@@ -7036,6 +7162,8 @@ function applyDrumPreset(id) {
   if (!preset) return;
   drums.preset = preset.id;
   drums.machine = machine.id;
+  snapshotDrumPattern("Load preset");
+  drums.bars = 1;
   drums.pattern = (machine.pattern || preset.pattern).map((row) => [...row]);
   drums.kit = {
     ...preset.kit,
@@ -7043,10 +7171,17 @@ function applyDrumPreset(id) {
     swing: Math.max(machine.kit.swing || 0, preset.swing)
   };
   drums.step = 0;
+  drums.currentBar = 0;
+  drums.name = `${preset.name} Pattern`;
+  drums.section = "Verse";
+  drums.groove = preset.swing >= 0.2 ? "loose-pocket" : preset.swing >= 0.1 ? "boom-bap" : "straight";
+  normalizeDrumPatternModel(16);
   document.querySelector("#globalBpm").value = preset.bpm;
   document.querySelector("#drumPreset").value = preset.id;
   updatePresetNotes();
   renderSequencer();
+  touchDrumPattern("Preset");
+  renderBeatForge();
   if (drums.playing) {
     stopDrums();
     startDrums();
@@ -7057,8 +7192,12 @@ function startDrums() {
   if (drums.playing || drums.timer) return;
   drums.playing = true;
   drums.paused = false;
-  document.querySelector("#drumPlay").textContent = "Stop Drums";
-  tickDrums();
+  drums.schedulerVersion += 1;
+  drums.schedulerLoadedVersion = drums.version;
+  if (DECKFORGE_DEVELOPMENT) console.debug("[DeckForge][Groove] scheduler loaded pattern version", drums.schedulerLoadedVersion);
+  document.querySelector("#drumPlay").textContent = "Playing";
+  tickDrums(drums.schedulerVersion);
+  renderBeatDiagnostics();
 }
 
 function stopDrums() {
@@ -7066,8 +7205,18 @@ function stopDrums() {
   drums.paused = false;
   clearTimeout(drums.timer);
   drums.timer = null;
-  document.querySelector("#drumPlay").textContent = "Start Drums";
+  drums.schedulerVersion += 1;
+  clearTimeout(drums.previewTimer);
+  drums.previewTimer = null;
+  drums.previewing = false;
+  drums.recording = false;
+  drums.overdub = false;
+  drums.voices.splice(0).forEach((voice) => { try { voice.stop(); } catch { /* Voice already ended. */ } });
+  document.querySelector("#drumPlay").textContent = "Play";
+  document.querySelector("#beatRecord")?.classList.remove("is-active");
+  document.querySelector("#beatOverdub")?.classList.remove("is-active");
   document.querySelectorAll(".step").forEach((step) => step.classList.remove("is-current"));
+  renderBeatDiagnostics();
 }
 
 function pauseDrums() {
@@ -7076,51 +7225,94 @@ function pauseDrums() {
   drums.paused = true;
   clearTimeout(drums.timer);
   drums.timer = null;
-  document.querySelector("#drumPlay").textContent = "Resume Drums";
+  drums.schedulerVersion += 1;
+  document.querySelector("#drumPlay").textContent = "Resume";
   document.querySelectorAll(".step").forEach((step) => step.classList.remove("is-current"));
 }
 
-function tickDrums() {
-  if (!drums.playing) return;
+function seededDrumValue(laneIndex, step, salt = 0) {
+  const value = Math.sin((drums.seed + laneIndex * 101 + step * 37 + salt * 17) * 12.9898) * 43758.5453;
+  return value - Math.floor(value);
+}
+
+function activeDrumGroove() {
+  return drumGrooves.find((groove) => groove.id === drums.groove) || drumGrooves[0];
+}
+
+function tickDrums(schedulerVersion = drums.schedulerVersion) {
+  if (!drums.playing || schedulerVersion !== drums.schedulerVersion) return;
+  if (drums.schedulerLoadedVersion !== drums.version) { drums.schedulerLoadedVersion = drums.version; if (DECKFORGE_DEVELOPMENT) console.debug("[DeckForge][Groove] scheduler loaded pattern version", drums.schedulerLoadedVersion); }
   document.querySelectorAll(".step").forEach((step) => step.classList.remove("is-current"));
+  const totalSteps = drumStepCount();
+  const step = drums.step % totalSteps;
+  const bar = Math.floor(step / drums.stepsPerBar);
+  const localStep = step % drums.stepsPerBar;
+  drums.currentBar = bar;
+  const soloActive = drums.lanes.some((lane) => lane.solo);
   drums.rows.forEach((row, rowIndex) => {
-    const cell = document.querySelector(`.seq-row:nth-child(${rowIndex + 1}) .step:nth-child(${drums.step + 2})`);
+    const cell = document.querySelector(`.beat-editor-row:nth-child(${rowIndex + 1}) [data-global-step="${step}"]`);
     if (cell) cell.classList.add("is-current");
-    if (drums.pattern[rowIndex][drums.step]) playDrum(row);
+    const lane = drums.lanes[rowIndex];
+    const allowed = !lane.muted && (!soloActive || lane.solo) && seededDrumValue(rowIndex, step, drums.version + drums.cycle * 13) <= drums.probabilities[rowIndex][step];
+    if (drums.pattern[rowIndex][step] && allowed) playDrum(row, rowIndex, step);
   });
-  drums.step = (drums.step + 1) % 16;
+  if (drums.metronome && localStep % 4 === 0) playDrumVoice("Hat", AudioEngine.context.currentTime, localStep === 0 ? 0.35 : 0.2, { laneIndex: 2, filter: 12000 });
+  document.querySelector("#beatPosition").textContent = `Bar ${bar + 1} · Beat ${Math.floor(localStep / 4) + 1}`;
+  if (localStep === 0) renderSequencer();
+  drums.step = (step + 1) % totalSteps;
+  if (drums.step === 0) drums.cycle += 1;
+  if (!drums.loop && drums.step === 0) { stopDrums(); return; }
   const bpm = Number(document.querySelector("#globalBpm").value) || 124;
   const baseInterval = (60 / bpm / 4) * 1000;
-  const swingOffset = drums.step % 2 === 0 ? drums.kit.swing * baseInterval : -drums.kit.swing * baseInterval;
-  drums.timer = setTimeout(tickDrums, Math.max(30, baseInterval + swingOffset));
+  const groove = activeDrumGroove();
+  const intensity = drums.grooveIntensity / 100;
+  const swing = (groove.swing * intensity + (drums.kit.swing || 0) * 0.35) * baseInterval;
+  const swingOffset = drums.step % 2 === 0 ? swing : -swing;
+  drums.timer = setTimeout(() => tickDrums(schedulerVersion), Math.max(30, baseInterval + swingOffset));
+  renderBeatDiagnostics();
 }
 
-function playDrum(name) {
+function playDrum(name, laneIndex = drums.rows.indexOf(name), step = drums.step) {
   if (!AudioEngine.context) return;
   const kit = drums.kit;
   const tone = name === "Kick" ? kit.kick : name === "Sub" ? kit.sub : name === "Hat" ? kit.hat : name === "Clap" ? kit.clap : kit.snare;
-  recordEditorPerformanceEvent({ kind: "drum", name, velocity: 1, duration: tone.decay || 0.12, kit: drums.machine, preset: drums.preset });
-  playDrumVoice(name, AudioEngine.context.currentTime, 1);
+  const groove = activeDrumGroove();
+  const humanVelocity = 1 + (seededDrumValue(laneIndex, step, 2) - 0.5) * groove.velocity * (drums.grooveIntensity / 100);
+  const velocity = drums.velocities[laneIndex]?.[step] ?? 0.85;
+  const automation = drums.automation[laneIndex]?.[step] ?? 1;
+  const timing = (drums.timingOffsets[laneIndex]?.[step] || 0) / 1000 + (seededDrumValue(laneIndex, step, 3) - 0.5) * groove.timing * (drums.grooveIntensity / 100);
+  const schedulerLookahead = 0.045;
+  const when = Math.max(AudioEngine.context.currentTime, AudioEngine.context.currentTime + schedulerLookahead + timing);
+  recordEditorPerformanceEvent({ kind: "drum", name, velocity, duration: tone.decay || 0.12, kit: drums.machine, preset: drums.preset, timingOffset: timing, patternId: drums.patternId, patternVersion: drums.version });
+  playDrumVoice(name, when, velocity * humanVelocity * automation, { laneIndex });
 }
 
-function playDrumVoice(name, when, velocityScale = 1) {
+function playDrumVoice(name, when, velocityScale = 1, options = {}) {
   if (!AudioEngine.context) return;
   const ctx = AudioEngine.context;
   const gain = ctx.createGain();
-  gain.connect(AudioEngine.masterAnalyser);
+  const lane = drums.lanes[options.laneIndex ?? drums.rows.indexOf(name)] || {};
+  if (lane.choke) drums.voices.filter((voice) => voice._beatChoke === lane.choke).forEach((voice) => { try { voice.stop(when); } catch { /* Choked voice already ended. */ } });
+  const filterOut = ctx.createBiquadFilter();
+  const pan = typeof ctx.createStereoPanner === "function" ? ctx.createStereoPanner() : null;
+  filterOut.type = "lowpass"; filterOut.frequency.value = options.filter || lane.filter || 16000;
+  gain.connect(filterOut);
+  if (pan) { filterOut.connect(pan); pan.pan.value = lane.pan || 0; pan.connect(AudioEngine.masterAnalyser); } else filterOut.connect(AudioEngine.masterAnalyser);
   const kit = drums.kit;
 
   if (name === "Kick" || name === "Sub") {
     const tone = name === "Kick" ? kit.kick : kit.sub;
     const osc = ctx.createOscillator();
     osc.type = "sine";
-    osc.frequency.setValueAtTime(tone.start, when);
-    osc.frequency.exponentialRampToValueAtTime(tone.end, when + tone.decay * 0.85);
-    gain.gain.setValueAtTime(tone.gain * velocityScale, when);
+    const pitch = 2 ** ((lane.pitch || 0) / 12);
+    osc.frequency.setValueAtTime(tone.start * pitch, when);
+    osc.frequency.exponentialRampToValueAtTime(tone.end * pitch, when + tone.decay * 0.85);
+    gain.gain.setValueAtTime(Math.max(0.001, tone.gain * velocityScale * (lane.volume ?? 1)), when);
     gain.gain.exponentialRampToValueAtTime(0.001, when + tone.decay);
     osc.connect(gain);
     osc.start(when);
     osc.stop(when + tone.decay + 0.02);
+    osc._beatChoke = lane.choke || 0; drums.voices.push(osc); osc.onended = () => { drums.voices = drums.voices.filter((voice) => voice !== osc); };
     return;
   }
 
@@ -7133,13 +7325,409 @@ function playDrumVoice(name, when, velocityScale = 1) {
   noise.buffer = noiseBuffer;
   filter.type = name === "Hat" ? "highpass" : "bandpass";
   filter.frequency.value = tone.frequency;
-  gain.gain.setValueAtTime(tone.gain * velocityScale, when);
+  gain.gain.setValueAtTime(Math.max(0.001, tone.gain * velocityScale * (lane.volume ?? 1)), when);
   gain.gain.exponentialRampToValueAtTime(0.001, when + tone.decay);
   noise.connect(filter);
   filter.connect(gain);
   noise.start(when);
   noise.stop(when + Math.max(0.05, tone.decay + 0.04));
+  noise._beatChoke = lane.choke || 0; drums.voices.push(noise); noise.onended = () => { drums.voices = drums.voices.filter((voice) => voice !== noise); };
 }
+
+function renderBeatForge() {
+  document.querySelector("#drums")?.setAttribute("data-beat-mode", drums.workspaceMode || "simple");
+  const mode = document.querySelector("#beatForgeMode"); if (mode) mode.value = drums.workspaceMode || "simple";
+  renderBeatForgeSummary(); renderDrumPerformancePads(); renderKitBrowser(); renderBeatGrooves(); renderBeatPromptHistory(); renderSequencer(); renderBeatMatch(); renderBeatDiagnostics();
+}
+
+function renderBeatPromptHistory() { const select = document.querySelector("#beatPromptHistory"); if (!select) return; select.innerHTML = `<option value="">Saved prompts</option>${drums.promptHistory.slice().reverse().map((prompt, index) => `<option value="${index}">${escapeHtml(prompt)}</option>`).join("")}`; }
+
+function renderBeatForgeSummary() {
+  const machine = drumMachines.find((item) => item.id === drums.machine);
+  const groove = activeDrumGroove();
+  const bpm = Number(document.querySelector("#globalBpm")?.value) || 124;
+  const summary = document.querySelector("#beatConfigSummary");
+  if (summary) summary.textContent = `Pattern: ${drums.name} · Kit: ${machine?.name || drums.machine} · Groove: ${groove.name} · Section: ${drums.section} · BPM: ${bpm} · Length: ${drums.bars} bar${drums.bars === 1 ? "" : "s"}`;
+  const name = document.querySelector("#beatTransportPattern"); if (name) name.textContent = drums.name;
+  const section = document.querySelector("#beatSection"); if (section) section.value = drums.section;
+}
+
+function renderDrumPerformancePads() {
+  const grid = document.querySelector("#drumPerformancePads"); if (!grid) return;
+  const labels = ["Kick", "Snare", "Hat", "Clap", "Sub", "Kick Accent", "Snare Accent", "Hat Accent", "Clap Accent", "Sub Accent", "Kick Soft", "Snare Soft", "Hat Soft", "Clap Soft", "Sub Soft", "Hat Ghost"];
+  const keys = ["1", "2", "3", "4", "q", "w", "e", "r", "a", "s", "d", "f", "z", "x", "c", "v"];
+  grid.innerHTML = labels.map((label, index) => `<button type="button" class="drum-performance-pad" data-drum-pad="${index}" aria-label="${label}, keyboard ${keys[index].toUpperCase()}">${label}<small>${keys[index].toUpperCase()}</small></button>`).join("");
+}
+
+function triggerDrumPerformancePad(index, velocity = 0.9) {
+  const laneIndex = index % drums.rows.length;
+  const laneName = drums.rows[laneIndex];
+  const accent = index >= 5 && index < 10 ? 1 : index >= 10 ? -0.2 : 0;
+  const adjusted = Math.max(0.15, Math.min(1, velocity + accent * 0.2));
+  playDrumVoice(laneName, AudioEngine.context.currentTime, adjusted, { laneIndex });
+  recordEditorPerformanceEvent({ kind: "drum", name: laneName, velocity: adjusted, duration: drums.kit[laneName.toLowerCase()]?.decay || 0.12, kit: drums.machine, preset: drums.preset });
+  if (drums.recording) {
+    const bpm = Number(document.querySelector("#globalBpm")?.value) || 124;
+    const stepSeconds = 60 / bpm / 4;
+    const step = drums.loop ? Math.round((AudioEngine.context.currentTime - drums.recordStartedAt) / stepSeconds) % drumStepCount() : Math.min(drumStepCount() - 1, Math.round((AudioEngine.context.currentTime - drums.recordStartedAt) / stepSeconds));
+    if (!drums.overdub && !drums.liveEvents.length) snapshotDrumPattern("Live recording");
+    drums.pattern[laneIndex][step] = 1; drums.velocities[laneIndex][step] = adjusted; drums.liveEvents.push({ laneIndex, step, velocity: adjusted, time: AudioEngine.context.currentTime - drums.recordStartedAt }); touchDrumPattern("Live Recording"); renderSequencer();
+  }
+}
+
+function renderKitBrowser() {
+  const categories = document.querySelector("#kitCategories"); const results = document.querySelector("#kitResults"); if (!categories || !results) return;
+  const names = ["All", "808", "909", "Boom Bap", "House", "Breakbeat", "Custom Kits", "Favorites", "Recently Used", "Generated Kits"];
+  drums.kitCategory ||= "All";
+  drums.kitIndex ||= 0;
+  categories.innerHTML = names.map((name) => `<button type="button" class="secondary-button kit-category${drums.kitCategory === name ? " is-active" : ""}" data-kit-category="${name}">${name}</button>`).join("");
+  const query = document.querySelector("#kitSearch")?.value.trim().toLowerCase() || "";
+  const favorites = new Set(JSON.parse(localStorage.getItem("deckforge-beat-kit-favorites") || "[]"));
+  const filtered = drumMachines.filter((machine) => { const haystack = `${machine.name} ${machine.notes}`.toLowerCase(); const category = drums.kitCategory; const matchesCategory = category === "All" || (category === "808" && haystack.includes("808")) || (category === "909" && haystack.includes("909")) || (category === "Boom Bap" && /boom|sampler|sp/.test(haystack)) || (category === "House" && /house|909/.test(haystack)) || (category === "Breakbeat" && /break|jungle/.test(haystack)) || (category === "Favorites" && favorites.has(machine.id)) || (["Custom Kits", "Generated Kits"].includes(category) ? false : category === "Recently Used" && machine.id === drums.machine); return matchesCategory && (!query || haystack.includes(query)); });
+  drums.filteredKits = filtered;
+  if (drums.kitIndex >= filtered.length) drums.kitIndex = 0;
+  results.innerHTML = filtered.length ? filtered.map((machine, index) => `<button type="button" class="kit-result${machine.id === drums.machine || index === drums.kitIndex ? " is-active" : ""}" data-kit-id="${machine.id}" data-kit-index="${index}"><strong>${machine.name}</strong><small>${favorites.has(machine.id) ? "Favorite · " : ""}${machine.notes}</small></button>`).join("") : `<p class="fine-print">No built-in kits match this category. Custom sample kits are Coming Soon.</p>`;
+}
+
+function loadSelectedDrumKit() {
+  const machine = drums.filteredKits?.[drums.kitIndex] || drumMachines.find((item) => item.id === drums.machine);
+  if (!machine) return;
+  const preservedPattern = drums.pattern.map((row) => [...row]);
+  drums.machine = machine.id; drums.kit = { ...drums.kit, ...machine.kit }; drums.pattern = preservedPattern;
+  document.querySelector("#drumMachine").value = machine.id; updatePresetNotes(); touchDrumPattern("Kit Changed"); renderKitBrowser();
+  document.querySelector("#presetNotes").textContent = `${machine.name} loaded. The active pattern was preserved.`;
+}
+
+function loadSelectedDrumKitAndPattern() {
+  const machine = drums.filteredKits?.[drums.kitIndex] || drumMachines.find((item) => item.id === drums.machine); if (!machine) return;
+  const recommended = machine.id === "house909" ? "stadiumSoul" : machine.id === "analog808" ? "atlantaDark808" : machine.id === "jungleBreaks" ? "jungleBreakbeat" : machine.id === "spBoomBap" ? "boomBapCuts" : drums.preset;
+  document.querySelector("#drumMachine").value = machine.id;
+  applyDrumPreset(drumPresets.some((preset) => preset.id === recommended) ? recommended : drums.preset);
+  document.querySelector("#presetNotes").textContent = `${machine.name} and its recommended complete pattern were loaded by explicit request.`;
+}
+
+async function previewSelectedDrumKit() {
+  await AudioEngine.init(); stopDrums(); stopBeatPreview();
+  const machine = drums.filteredKits?.[drums.kitIndex] || drumMachines.find((item) => item.id === drums.machine); if (!machine) return;
+  drums.previewing = true; const oldKit = drums.kit; drums.kit = { ...oldKit, ...machine.kit };
+  const demo = [[0, "Kick"], [2, "Hat"], [4, "Snare"], [6, "Hat"], [8, "Kick"], [10, "Hat"], [12, "Clap"], [14, "Hat"]];
+  const interval = 60 / (Number(document.querySelector("#globalBpm")?.value) || 124) / 4;
+  demo.forEach(([step, name]) => playDrumVoice(name, AudioEngine.context.currentTime + step * interval, 0.72, { laneIndex: drums.rows.indexOf(name) }));
+  drums.kit = oldKit; drums.previewTimer = setTimeout(stopBeatPreview, interval * 16 * 1000 + 100); renderBeatDiagnostics();
+}
+
+function stopBeatPreview() { clearTimeout(drums.previewTimer); drums.previewTimer = null; drums.previewing = false; drums.voices.splice(0).forEach((voice) => { try { voice.stop(); } catch { /* Voice already ended. */ } }); renderBeatDiagnostics(); }
+
+function renderBeatGrooves() {
+  const select = document.querySelector("#beatGroove"); if (!select) return;
+  select.innerHTML = drumGrooves.map((groove) => `<option value="${groove.id}">${groove.name}</option>`).join(""); select.value = drums.grooveCandidate?.groove || drums.groove;
+  const displayedIntensity = drums.grooveCandidateIntensity ?? drums.grooveIntensity;
+  document.querySelector("#grooveIntensity").value = displayedIntensity;
+  document.querySelector("#grooveDescription").textContent = (drumGrooves.find((groove) => groove.id === (drums.grooveCandidate?.groove || drums.groove)) || activeDrumGroove()).description;
+  document.querySelector("#grooveIntensityLabel").textContent = `${displayedIntensity < 34 ? "Subtle" : displayedIntensity < 67 ? "Medium" : "Strong"} · ${displayedIntensity}%`;
+  document.querySelectorAll("[data-groove-lock]").forEach((input) => { input.checked = Boolean(drums.grooveLocks[input.dataset.grooveLock]); });
+  const difference = document.querySelector("#grooveDifference");
+  if (difference) difference.textContent = drums.grooveMetrics ? `Candidate difference ${drums.grooveMetrics.score}/100 · ${drums.grooveMetrics.added} added · ${drums.grooveMetrics.removed} removed · timing ${drums.grooveMetrics.timingRange[0]} to ${drums.grooveMetrics.timingRange[1]} ms` : "Select a groove to build a safe comparison.";
+}
+
+function captureGrooveModel() {
+  return { pattern: drums.pattern.map((row) => [...row]), velocities: drums.velocities.map((row) => [...row]), probabilities: drums.probabilities.map((row) => [...row]), timingOffsets: drums.timingOffsets.map((row) => [...row]), automation: drums.automation.map((row) => [...row]), bars: drums.bars, stepsPerBar: drums.stepsPerBar, section: drums.section, groove: drums.groove, grooveIntensity: drums.grooveIntensity, kit: drums.machine, lanes: drums.lanes.map((lane) => ({ ...lane, layers: [...(lane.layers || [])] })), version: drums.version };
+}
+
+function cloneGrooveModel(model) {
+  return { ...model, pattern: model.pattern.map((row) => [...row]), velocities: model.velocities.map((row) => [...row]), probabilities: model.probabilities.map((row) => [...row]), timingOffsets: model.timingOffsets.map((row) => [...row]), automation: model.automation.map((row) => [...row]), lanes: model.lanes.map((lane) => ({ ...lane, layers: [...(lane.layers || [])] })) };
+}
+
+function grooveLaneLocked(lane) {
+  if (lane === 0) return drums.grooveLocks.kick;
+  if (lane === 1) return drums.grooveLocks.snare;
+  if (lane === 2) return drums.grooveLocks.hats;
+  return drums.grooveLocks.percussion;
+}
+
+function setGrooveHit(model, lane, step, active, velocity = null, probability = null) {
+  if (grooveLaneLocked(lane) || step < 0 || step >= model.pattern[lane].length) return;
+  model.pattern[lane][step] = active ? 1 : 0;
+  if (velocity !== null && !drums.grooveLocks.velocity) model.velocities[lane][step] = Math.max(0.05, Math.min(1, velocity));
+  if (probability !== null) model.probabilities[lane][step] = Math.max(0, Math.min(1, probability));
+}
+
+function setGrooveTiming(model, lane, step, milliseconds) {
+  if (grooveLaneLocked(lane) || drums.grooveLocks.timing || !model.pattern[lane][step]) return;
+  model.timingOffsets[lane][step] = Math.max(-40, Math.min(40, Math.round(milliseconds)));
+}
+
+function setGrooveVelocity(model, lane, step, velocity) {
+  if (grooveLaneLocked(lane) || drums.grooveLocks.velocity || !model.pattern[lane][step]) return;
+  model.velocities[lane][step] = Math.max(0.05, Math.min(1, velocity));
+}
+
+function buildGrooveCandidate(grooveId = document.querySelector("#beatGroove")?.value || drums.groove) {
+  drums.grooveAnchor ||= captureGrooveModel();
+  drums.grooveCandidateIntensity ??= drums.grooveIntensity;
+  const original = drums.grooveAnchor;
+  const model = cloneGrooveModel(original);
+  const profile = drumGrooves.find((groove) => groove.id === grooveId) || drumGrooves[0];
+  const amount = Math.max(0, Math.min(1, drums.grooveCandidateIntensity / 100));
+  const strength = amount;
+  const random = createSeededGenerator(drums.seed + grooveId.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0));
+  const total = model.bars * model.stepsPerBar;
+  model.groove = grooveId; model.grooveIntensity = drums.grooveCandidateIntensity;
+
+  if (grooveId === "straight") {
+    for (let lane = 0; lane < drums.rows.length; lane += 1) for (let step = 0; step < total; step += 1) if (model.pattern[lane][step]) { setGrooveTiming(model, lane, step, 0); setGrooveVelocity(model, lane, step, step % 4 === 0 ? .92 : .74); model.probabilities[lane][step] = 1; }
+  } else {
+    for (let bar = 0; bar < model.bars; bar += 1) {
+      const offset = bar * model.stepsPerBar;
+      for (let local = 0; local < model.stepsPerBar; local += 1) {
+        const step = offset + local; const odd = local % 2 === 1; const beat = local % 4 === 0; const barShape = (bar % 2 === 0 ? -1 : 1) * amount;
+        for (let lane = 0; lane < drums.rows.length; lane += 1) {
+          if (!model.pattern[lane][step]) continue;
+          let timing = 0; let velocity = model.velocities[lane][step];
+          if (grooveId === "boom-bap") { timing = lane === 1 ? 18 * strength : lane === 2 && odd ? 25 * strength : lane === 0 ? (local % 8 === 3 ? -9 : 5) * strength : 10 * strength; velocity = lane === 1 && (local === 4 || local === 12) ? .98 : lane === 2 ? (odd ? .48 : .86) : beat ? .92 : .68; }
+          if (grooveId === "loose-pocket") { timing = ((random() - .48) * (lane === 1 ? 36 : 28) + (lane === 1 ? 13 : 0) + barShape * 4) * strength; velocity = .48 + random() * .5; }
+          if (grooveId === "dilla") { timing = (lane === 1 ? 26 + bar * 3 : lane === 0 ? (local % 8 < 4 ? -13 : 11) : odd ? 31 : -6) * strength; velocity = lane === 2 ? (local % 4 === 0 ? .9 : .38 + random() * .3) : .5 + random() * .48; }
+          if (grooveId === "pete-rock") { timing = (lane === 1 || lane === 3 ? 20 : odd ? 18 : 3) * strength; velocity = lane === 2 ? (odd ? .42 : .7) : lane === 1 ? .9 : .62 + (beat ? .2 : 0); }
+          if (grooveId === "premier") { timing = (lane === 1 ? 7 : lane === 2 && odd ? 12 : 0) * strength; velocity = lane === 1 ? .98 : lane === 2 ? (local % 4 === 2 ? .9 : .5) : beat ? .92 : .7; }
+          if (grooveId === "mpc") { timing = (odd ? 18 : 0) * strength; velocity = local % 4 === 0 ? .95 : local % 4 === 2 ? .72 : .52; }
+          if (grooveId === "sp") { timing = (lane === 2 ? 12 : 18 + barShape * 3) * strength; velocity = beat ? .96 : lane === 2 ? .42 : .66; }
+          if (grooveId === "house") { timing = lane === 0 ? 0 : lane === 2 && odd ? 13 * strength : 3 * strength; velocity = lane === 0 ? .95 : lane === 2 ? (local % 4 === 2 ? .92 : .55) : .82; }
+          if (grooveId === "shuffle") { timing = (local % 4 === 1 ? 28 : local % 4 === 2 ? -10 : local % 4 === 3 ? 20 : 0) * strength; velocity = local % 4 === 0 ? .94 : local % 4 === 2 ? .78 : .46; }
+          if (grooveId === "jersey") { timing = (local % 3 === 1 ? 16 : local % 3 === 2 ? -8 : 0) * strength; velocity = local % 3 === 0 ? .96 : .62; }
+          if (grooveId === "garage") { timing = lane === 0 ? (local === 6 || local === 14 ? -10 : 0) : lane === 2 ? (odd ? 24 : -4) * strength : 9 * strength; velocity = lane === 2 ? (odd ? .88 : .48) : .72 + (beat ? .18 : 0); }
+          if (grooveId === "breakbeat") { timing = ((lane === 1 ? 10 : lane === 0 ? -5 : odd ? 17 : 0) + barShape * 3) * strength; velocity = .5 + random() * .48; }
+          if (grooveId === "rnb") { timing = (lane === 1 ? 19 : lane === 2 && odd ? 15 : 5) * strength; velocity = lane === 1 ? .78 : lane === 2 ? .42 + (beat ? .22 : 0) : .62; }
+          if (grooveId === "humanize") { timing = (random() - .5) * 34 * strength; velocity = Math.max(.35, Math.min(1, velocity + (random() - .5) * .38 * strength)); }
+          if (grooveId === "cinematic-trap") { timing = lane === 1 ? 6 : lane === 2 && odd ? 9 * strength : 0; velocity = lane === 1 ? .98 : lane === 2 ? (local >= 12 ? .55 + (local - 12) * .11 : odd ? .4 : .72) : beat ? .95 : .65; }
+          velocity = original.velocities[lane][step] + (velocity - original.velocities[lane][step]) * strength;
+          setGrooveTiming(model, lane, step, timing); setGrooveVelocity(model, lane, step, velocity);
+        }
+      }
+
+      if (amount > .22 && grooveId === "boom-bap") { setGrooveHit(model, 1, offset + 11, true, .28 + amount * .15, .65); setGrooveHit(model, 2, offset + 6, true, .58, .9); }
+      if (amount > .22 && grooveId === "dilla") { setGrooveHit(model, 1, offset + (bar % 2 ? 10 : 3), true, .24 + amount * .16, .72); if (bar % 2) setGrooveHit(model, 2, offset + 15, false); }
+      if (amount > .22 && grooveId === "pete-rock") { setGrooveHit(model, 3, offset + 4, true, .42, .9); setGrooveHit(model, 3, offset + 12, true, .46, .9); }
+      if (amount > .22 && grooveId === "premier") { if (bar === model.bars - 1) setGrooveHit(model, 1, offset + 15, true, .48, .8); }
+      if (amount > .22 && grooveId === "sp") { [1, 3, 5, 7, 9, 11, 13, 15].forEach((local) => { if (random() < .5 * strength) setGrooveHit(model, 2, offset + local, false); }); }
+      if (amount > .22 && grooveId === "house") { [0, 4, 8, 12].forEach((local) => setGrooveHit(model, 0, offset + local, true, .94, 1)); [4, 12].forEach((local) => setGrooveHit(model, 3, offset + local, true, .86, 1)); [2, 6, 10, 14].forEach((local) => setGrooveHit(model, 2, offset + local, true, .9, 1)); }
+      if (amount > .22 && grooveId === "shuffle") { [2, 6, 10, 14].forEach((local) => setGrooveHit(model, 2, offset + local, true, .88, 1)); [3, 7, 11, 15].forEach((local) => setGrooveHit(model, 2, offset + local, amount > .45, .42, .78)); }
+      if (amount > .22 && grooveId === "jersey") { [0, 3, 6, 10, 11].forEach((local) => setGrooveHit(model, 0, offset + local, true, local === 0 ? .98 : .78, 1)); [4, 12].forEach((local) => setGrooveHit(model, 3, offset + local, true, .92, 1)); }
+      if (amount > .22 && grooveId === "garage") { [0, 6, 10].forEach((local) => setGrooveHit(model, 0, offset + local, true, .9, 1)); if (amount > .5) setGrooveHit(model, 0, offset + 8, false); [4, 12].forEach((local) => setGrooveHit(model, 1, offset + local, true, .9, 1)); [1, 3, 6, 9, 11, 14].forEach((local) => setGrooveHit(model, 2, offset + local, true, local % 3 === 0 ? .82 : .52, .9)); }
+      if (amount > .22 && grooveId === "breakbeat") { setGrooveHit(model, 0, offset + 3, true, .72, .9); setGrooveHit(model, 1, offset + 10, true, .36, .7); setGrooveHit(model, 1, offset + 15, bar === model.bars - 1, .55, .85); }
+      if (amount > .22 && grooveId === "rnb") { [1, 3, 5, 7, 9, 11, 13, 15].forEach((local) => { if (amount > .45) setGrooveHit(model, 2, offset + local, false); }); setGrooveHit(model, 1, offset + 11, true, .24, .55); }
+      if (amount > .22 && grooveId === "cinematic-trap") { [4, 12].forEach((local) => setGrooveHit(model, 1, offset + local, false)); setGrooveHit(model, 1, offset + 8, true, .98, 1); if (!drums.grooveLocks.kick) [4, 12].forEach((local) => { if (amount > .35) setGrooveHit(model, 0, offset + local, false); }); [12, 13, 14, 15].forEach((local, index) => setGrooveHit(model, 2, offset + local, true, .48 + index * .13, .95)); }
+    }
+  }
+
+  drums.grooveCandidate = model;
+  drums.grooveMetrics = measureGrooveDifference(original, model);
+  if (DECKFORGE_DEVELOPMENT) {
+    console.debug(`[DeckForge][Groove] selected: ${profile.name}`);
+    console.debug("[DeckForge][Groove] pattern version before", original.version);
+    console.debug("[DeckForge][Groove] changed step count", drums.grooveMetrics.changedNotes);
+    console.debug("[DeckForge][Groove] velocity changes", drums.grooveMetrics.velocityChanges);
+    console.debug("[DeckForge][Groove] timing offset range", drums.grooveMetrics.timingRange);
+    console.debug("[DeckForge][Groove] probability changes", drums.grooveMetrics.probabilityChanges);
+  }
+  renderBeatGrooves(); renderBeatDiagnostics();
+  return model;
+}
+
+function measureGrooveDifference(original, candidate) {
+  let changedNotes = 0; let added = 0; let removed = 0; let velocityChanges = 0; let velocityDifference = 0; let probabilityChanges = 0; let timingSum = 0; let timingCount = 0; let ghostNotes = 0;
+  const timing = []; let originalHats = 0; let candidateHats = 0;
+  original.pattern.forEach((row, lane) => row.forEach((active, step) => { const next = candidate.pattern[lane][step]; if (active !== next) { changedNotes += 1; if (next) added += 1; else removed += 1; } if (next) { const difference = Math.abs((candidate.velocities[lane][step] || 0) - (original.velocities[lane][step] || 0)); if (difference > .01) velocityChanges += 1; velocityDifference += difference; const offset = candidate.timingOffsets[lane][step] || 0; timing.push(offset); timingSum += offset; timingCount += 1; if (!active && candidate.velocities[lane][step] < .5) ghostNotes += 1; } if (Math.abs((candidate.probabilities[lane][step] || 0) - (original.probabilities[lane][step] || 0)) > .01) probabilityChanges += 1; if (lane === 2) { originalHats += active; candidateHats += next; } }));
+  const timingRange = timing.length ? [Math.min(...timing), Math.max(...timing)] : [0, 0]; const meanVelocityDifference = velocityDifference / Math.max(1, candidate.pattern.flat().filter(Boolean).length); const score = Math.min(100, Math.round(changedNotes * 2.2 + velocityChanges * .55 + (timingRange[1] - timingRange[0]) * .65 + probabilityChanges + Math.abs(candidateHats - originalHats) * 2));
+  return { changedNotes, added, removed, velocityChanges, probabilityChanges, meanTiming: timingSum / Math.max(1, timingCount), timingRange, meanVelocityDifference, swingAmount: (drumGrooves.find((item) => item.id === candidate.groove)?.swing || 0) * candidate.grooveIntensity, ghostNotes, hatDensityDifference: candidateHats - originalHats, patternVersionChange: 1, score };
+}
+
+function assignGrooveModel(model) {
+  drums.pattern = model.pattern.map((row) => [...row]); drums.velocities = model.velocities.map((row) => [...row]); drums.probabilities = model.probabilities.map((row) => [...row]); drums.timingOffsets = model.timingOffsets.map((row) => [...row]); drums.automation = model.automation.map((row) => [...row]); drums.groove = model.groove; drums.grooveIntensity = model.grooveIntensity; normalizeDrumPatternModel();
+}
+
+function applyGrooveCandidate() {
+  if (!drums.grooveCandidate) buildGrooveCandidate();
+  if (!drums.grooveCandidate) return;
+  drums.lastGrooveUndo = captureGrooveModel();
+  drums.lastAppliedGroove = cloneGrooveModel(drums.grooveCandidate);
+  snapshotDrumPattern(`Apply ${drums.grooveCandidate.groove} groove`);
+  assignGrooveModel(drums.grooveCandidate);
+  drums.grooveCandidate = null;
+  drums.grooveCandidateIntensity = null;
+  touchDrumPattern("Groove Applied");
+  if (drums.lastAppliedGroove) drums.lastAppliedGroove.version = drums.version;
+  renderBeatForge();
+  document.querySelector("#grooveDifference").textContent = `Applied ${activeDrumGroove().name} at ${drums.grooveIntensity}%. Scheduler will read pattern version ${drums.version}.`;
+}
+
+function cancelGrooveCandidate() {
+  stopBeatPreview(); drums.grooveCandidate = null; drums.grooveCandidateIntensity = null; drums.grooveMetrics = null; drums.grooveAnchor = null; renderBeatGrooves();
+}
+
+function undoLastGroove() {
+  if (!drums.lastGrooveUndo) { document.querySelector("#grooveDifference").textContent = "No applied groove to undo."; return; }
+  const current = captureGrooveModel(); assignGrooveModel(drums.lastGrooveUndo); drums.lastAppliedGroove = current; drums.lastGrooveUndo = null; drums.grooveCandidate = null; drums.grooveCandidateIntensity = null; drums.grooveMetrics = null; drums.grooveAnchor = null; touchDrumPattern("Groove Undo"); renderBeatForge();
+}
+
+function reapplyLastGroove() {
+  if (!drums.lastAppliedGroove) { document.querySelector("#grooveDifference").textContent = "No previous groove transformation to reapply."; return; }
+  drums.grooveAnchor = captureGrooveModel(); drums.grooveCandidate = cloneGrooveModel(drums.lastAppliedGroove); drums.grooveMetrics = measureGrooveDifference(drums.grooveAnchor, drums.grooveCandidate); applyGrooveCandidate();
+}
+
+async function previewGrooveModel(model, label = "Groove") {
+  if (!model) return; await AudioEngine.init(); stopDrums(); stopBeatPreview(); drums.previewing = true;
+  const bpm = Number(document.querySelector("#globalBpm")?.value) || 124; const interval = 60 / bpm / 4; const steps = Math.min(model.stepsPerBar || 16, model.pattern[0].length);
+  for (let step = 0; step < steps; step += 1) drums.rows.forEach((name, lane) => { if (!model.pattern[lane][step]) return; if (seededDrumValue(lane, step, model.version || 0) > (model.probabilities[lane][step] ?? 1)) return; const timing = (model.timingOffsets[lane][step] || 0) / 1000; playDrumVoice(name, Math.max(AudioEngine.context.currentTime, AudioEngine.context.currentTime + step * interval + timing), (model.velocities[lane][step] || .85) * (model.automation[lane][step] || 1) * .78, { laneIndex: lane }); });
+  drums.previewLabel = label; drums.previewTimer = setTimeout(stopBeatPreview, steps * interval * 1000 + 150); renderBeatDiagnostics();
+}
+
+async function alternateGroovePreview() {
+  if (!drums.grooveCandidate) buildGrooveCandidate(); const original = drums.grooveAnchor; const candidate = drums.grooveCandidate; if (!original || !candidate) return;
+  await AudioEngine.init(); stopDrums(); stopBeatPreview(); drums.previewing = true; const bpm = Number(document.querySelector("#globalBpm")?.value) || 124; const interval = 60 / bpm / 4; const steps = Math.min(16, original.pattern[0].length);
+  [original, candidate].forEach((model, pass) => { for (let step = 0; step < steps; step += 1) drums.rows.forEach((name, lane) => { if (!model.pattern[lane][step]) return; const when = AudioEngine.context.currentTime + (pass * steps + step) * interval + (model.timingOffsets[lane][step] || 0) / 1000; playDrumVoice(name, Math.max(AudioEngine.context.currentTime, when), (model.velocities[lane][step] || .85) * .72, { laneIndex: lane }); }); });
+  drums.previewLabel = "Original A then Groove B"; drums.previewTimer = setTimeout(stopBeatPreview, steps * 2 * interval * 1000 + 150); renderBeatDiagnostics();
+}
+
+function renderBeatInspector() {
+  const lane = drums.lanes[drums.selectedLane]; if (!lane) return;
+  document.querySelector("#beatLaneName").textContent = `${lane.name} · Step ${(drums.selectedStep % drums.stepsPerBar) + 1}`;
+  const values = { beatLaneVolume: lane.volume, beatLanePan: lane.pan, beatLaneFilter: lane.filter, beatLanePitch: lane.pitch, beatStepVelocity: drums.velocities[drums.selectedLane][drums.selectedStep], beatStepProbability: drums.probabilities[drums.selectedLane][drums.selectedStep], beatStepTiming: drums.timingOffsets[drums.selectedLane][drums.selectedStep], beatLaneChoke: lane.choke };
+  Object.entries(values).forEach(([id, value]) => { const input = document.querySelector(`#${id}`); if (input) input.value = value; });
+  document.querySelector("#beatLaneMute").checked = lane.muted; document.querySelector("#beatLaneSolo").checked = lane.solo;
+}
+
+function setBeatBars(value) {
+  snapshotDrumPattern("Change pattern length"); const previous = drumStepCount(); drums.bars = Number(value); normalizeDrumPatternModel();
+  if (drumStepCount() > previous) drums.rows.forEach((_, lane) => { for (let step = previous; step < drumStepCount(); step += 1) { const source = step % previous; drums.pattern[lane][step] = drums.pattern[lane][source]; drums.velocities[lane][step] = drums.velocities[lane][source]; } });
+  touchDrumPattern(); renderSequencer();
+}
+
+function undoBeatEdit() {
+  const previous = drums.undoStack.pop(); if (!previous) { document.querySelector("#aiBeatProducerMessage").textContent = "Nothing to undo."; return; }
+  Object.assign(drums, previous); normalizeDrumPatternModel(); touchDrumPattern("Undo"); renderBeatForge();
+}
+
+function createSeededGenerator(seed) { let state = seed >>> 0; return () => { state = (state * 1664525 + 1013904223) >>> 0; return state / 4294967296; }; }
+
+function inferBeatPrompt(prompt) {
+  const lower = prompt.toLowerCase();
+  const style = beatStyles.find((item) => lower.includes(item.toLowerCase().replace("-", " "))) || (lower.includes("cinematic") ? "Cinematic Trap" : lower.includes("trap") ? "Trap" : lower.includes("house") ? "House" : lower.includes("garage") ? "Garage" : lower.includes("break") ? "Breakbeat" : lower.includes("r&b") ? "R&B" : "Boom Bap");
+  const bpmMatch = lower.match(/\b(\d{2,3})\s*bpm\b/); const section = ["intro", "verse", "hook", "breakdown", "transition", "outro"].find((item) => lower.includes(item)) || drums.section.toLowerCase();
+  return { style, bpm: bpmMatch ? Math.max(60, Math.min(190, Number(bpmMatch[1]))) : Number(document.querySelector("#globalBpm")?.value) || 124, section: section[0].toUpperCase() + section.slice(1), bars: lower.includes("eight-bar") || lower.includes("8 bar") ? 8 : lower.includes("four-bar") || lower.includes("4 bar") ? 4 : Math.max(2, drums.bars), preserveKick: /keep|preserve/.test(lower) && lower.includes("kick"), preserveSnare: /keep|preserve/.test(lower) && lower.includes("snare"), hatsOnly: /hat/.test(lower) && /(only|regenerate)/.test(lower), preserveBars12: /preserve bars? 1( and| &) 2/.test(lower), keepKit: lower.includes("keep") && lower.includes("kit"), keepGroove: lower.includes("keep") && lower.includes("groove") };
+}
+
+function generateBeatPattern(style, bars, seed, density = 1) {
+  const random = createSeededGenerator(seed); const steps = bars * 16; const pattern = drums.rows.map(() => Array(steps).fill(0)); const velocities = drums.rows.map(() => Array(steps).fill(0.82));
+  const house = /House|Garage|Jersey/.test(style); const trap = /Trap|Drill/.test(style); const breakbeat = style === "Breakbeat"; const soulful = /Boom|Soul|R&B|Neo|Lo-Fi/.test(style);
+  for (let bar = 0; bar < bars; bar += 1) {
+    const offset = bar * 16;
+    for (let step = 0; step < 16; step += 1) {
+      const beat = step % 4 === 0; const backbeat = step === 4 || step === 12;
+      if (house ? beat : (step === 0 || step === 8 || random() < (trap ? .12 : breakbeat ? .22 : .18) * density)) pattern[0][offset + step] = 1;
+      if ((trap && step === 8) || (!trap && backbeat) || (breakbeat && random() < .16)) pattern[1][offset + step] = 1;
+      if ((trap ? step % 2 === 0 : house ? step % 2 === 0 : step % 4 === 2) || random() < .06 * density) pattern[2][offset + step] = 1;
+      if ((house && backbeat) || (soulful && backbeat && random() > .45)) pattern[3][offset + step] = 1;
+      if ((trap && (step === 0 || step === 10 || random() < .08)) || (!trap && step === 0 && random() > .45)) pattern[4][offset + step] = 1;
+      drums.rows.forEach((_, lane) => { velocities[lane][offset + step] = Math.max(.25, Math.min(1, .68 + random() * .3 + (beat ? .08 : 0))); });
+    }
+    if (bar === bars - 1) { pattern[1][offset + 14] = 1; pattern[2][offset + 13] = 1; pattern[2][offset + 14] = 1; pattern[2][offset + 15] = 1; }
+    if (bar % 2 === 1) pattern[0][offset + (trap ? 11 : 15)] = 1;
+  }
+  return { pattern, velocities };
+}
+
+function buildBeatPromptPlan(kind = "new") {
+  const prompt = document.querySelector("#beatPrompt").value.trim() || `${drums.section} ${activeDrumGroove().name}`; const intent = inferBeatPrompt(prompt); const seed = Math.floor(Date.now() % 1000000) + drums.version + (kind === "variation" ? 97 : 0); const generated = generateBeatPattern(intent.style, intent.bars, seed, kind === "busier" ? 1.35 : kind === "simplify" ? .6 : 1);
+  if (intent.preserveKick || intent.hatsOnly) generated.pattern[0] = Array.from({ length: intent.bars * 16 }, (_, index) => drums.pattern[0][index % drumStepCount()]);
+  if (intent.preserveSnare || intent.hatsOnly) generated.pattern[1] = Array.from({ length: intent.bars * 16 }, (_, index) => drums.pattern[1][index % drumStepCount()]);
+  if (intent.hatsOnly) [3, 4].forEach((lane) => { generated.pattern[lane] = Array.from({ length: intent.bars * 16 }, (_, index) => drums.pattern[lane][index % drumStepCount()]); });
+  if (intent.preserveBars12 && intent.bars >= 2) drums.rows.forEach((_, lane) => { for (let step = 0; step < 32; step += 1) generated.pattern[lane][step] = drums.pattern[lane][step % drumStepCount()]; });
+  const groove = intent.keepGroove ? drums.groove : /Trap/.test(intent.style) ? "cinematic-trap" : /House/.test(intent.style) ? "house" : /Garage/.test(intent.style) ? "garage" : /Break/.test(intent.style) ? "breakbeat" : "boom-bap";
+  drums.pendingPlan = { id: `beat-${seed}`, kind, prompt, style: intent.style, bpm: intent.bpm, section: intent.section, bars: intent.bars, groove, kit: intent.keepKit ? drums.machine : (/House/.test(intent.style) ? "house909" : /Trap/.test(intent.style) ? "analog808" : "spBoomBap"), pattern: generated.pattern, velocities: generated.velocities, probabilities: generated.pattern.map((row) => row.map(() => 1)), timingOffsets: generated.pattern.map((row) => row.map(() => 0)), automation: generated.pattern.map((row) => row.map(() => 1)), preserved: [intent.preserveKick && "Kick", intent.preserveSnare && "Snare", intent.hatsOnly && "All except Hats", intent.preserveBars12 && "Bars 1 and 2", intent.keepKit && "Kit", intent.keepGroove && "Groove"].filter(Boolean), seed, confidence: prompt ? "High" : "Medium" };
+  drums.lastPrompt = prompt; drums.lastGeneration = `${kind} · ${intent.style} · seed ${seed}`; renderBeatPromptPlan(); renderBeatDiagnostics();
+}
+
+function renderBeatPromptPlan() {
+  const plan = drums.pendingPlan; const output = document.querySelector("#beatPromptPlan"); if (!output) return;
+  if (!plan) { output.textContent = "No generated plan yet."; return; }
+  output.textContent = JSON.stringify({ style: plan.style, bpm: plan.bpm, section: plan.section, patternLength: `${plan.bars} bars`, groove: drumGrooves.find((item) => item.id === plan.groove)?.name, kit: drumMachines.find((item) => item.id === plan.kit)?.name, activeLanes: drums.rows.filter((_, lane) => plan.pattern[lane].some(Boolean)), summaryOfChanges: `${plan.kind} pattern with ${plan.pattern.flat().filter(Boolean).length} active steps`, preservedElements: plan.preserved.length ? plan.preserved : ["None"], seed: plan.seed, confidence: plan.confidence }, null, 2);
+  document.querySelector("#previewBeatPlan").disabled = false; document.querySelector("#applyBeatPlan").disabled = false;
+}
+
+async function previewGeneratedBeat() {
+  if (!drums.pendingPlan) return; await AudioEngine.init(); stopDrums(); stopBeatPreview(); drums.previewing = true;
+  const plan = drums.pendingPlan; const interval = 60 / plan.bpm / 4; const previewSteps = Math.min(32, plan.bars * 16);
+  for (let step = 0; step < previewSteps; step += 1) drums.rows.forEach((name, lane) => { if (plan.pattern[lane][step]) playDrumVoice(name, AudioEngine.context.currentTime + step * interval, plan.velocities[lane][step] * .75, { laneIndex: lane }); });
+  drums.previewTimer = setTimeout(stopBeatPreview, previewSteps * interval * 1000 + 100); renderBeatDiagnostics();
+}
+
+function applyBeatPromptPlan() {
+  const plan = drums.pendingPlan; if (!plan) return;
+  snapshotDrumPattern("Apply AI plan"); drums.bars = plan.bars; drums.pattern = plan.pattern.map((row) => [...row]); drums.velocities = plan.velocities.map((row) => [...row]); drums.probabilities = plan.probabilities.map((row) => [...row]); drums.timingOffsets = plan.timingOffsets.map((row) => [...row]); drums.automation = plan.automation.map((row) => [...row]); drums.groove = plan.groove; drums.section = plan.section; drums.name = `${plan.style} ${plan.section}`; drums.seed = plan.seed; drums.source = "AI Prompt Plan"; drums.step = 0; drums.currentBar = 0;
+  document.querySelector("#globalBpm").value = plan.bpm; if (plan.kit !== drums.machine) { drums.machine = plan.kit; drums.kit = { ...drums.kit, ...drumMachines.find((item) => item.id === plan.kit)?.kit }; document.querySelector("#drumMachine").value = drums.machine; }
+  touchDrumPattern("AI Applied"); renderBeatForge(); document.querySelector("#aiBeatProducerMessage").textContent = `Applied ${plan.style} ${plan.section}. Undo remains available.`;
+}
+
+function transformCurrentBeat(action) {
+  snapshotDrumPattern(action); const random = createSeededGenerator(drums.seed + drums.version * 31); const end = drumStepCount();
+  if (action === "simplify") drums.pattern.forEach((row) => row.forEach((active, step) => { if (active && step % 4 !== 0 && random() < .42) row[step] = 0; }));
+  if (action === "busier") drums.pattern.forEach((row, lane) => row.forEach((active, step) => { if (!active && random() < (lane === 2 ? .2 : .07)) row[step] = 1; }));
+  if (action === "fill") { for (let step = Math.max(0, end - 4); step < end; step += 1) { drums.pattern[1][step] = step % 2 === 0 ? 1 : drums.pattern[1][step]; drums.pattern[2][step] = 1; } }
+  if (action === "humanize") drums.rows.forEach((_, lane) => drums.pattern[lane].forEach((active, step) => { if (active) { drums.velocities[lane][step] = .55 + random() * .45; drums.timingOffsets[lane][step] = Math.round((random() - .5) * 30); } }));
+  if (action === "swing") drums.grooveIntensity = Math.min(100, drums.grooveIntensity + 15);
+  if (action === "straight") drums.grooveIntensity = Math.max(0, drums.grooveIntensity - 15);
+  touchDrumPattern(`AI ${action}`); renderBeatForge();
+}
+
+function convertBeatSection(section) {
+  snapshotDrumPattern(`Convert to ${section}`); drums.section = section; drums.name = `${drums.patternId} ${section}`; const random = createSeededGenerator(drums.seed + section.length * 71);
+  if (["Intro", "Breakdown", "Outro"].includes(section)) drums.pattern.forEach((row, lane) => row.forEach((active, step) => { if (active && lane !== 2 && step % 4 !== 0 && random() < (section === "Breakdown" ? .65 : .45)) row[step] = 0; }));
+  if (section === "Hook") drums.pattern.forEach((row, lane) => row.forEach((active, step) => { if (!active && (lane === 2 ? step % 2 === 0 : random() < .09)) row[step] = 1; }));
+  if (section === "Transition") { const end = drumStepCount(); for (let step = Math.max(0, end - 8); step < end; step += 1) { drums.pattern[2][step] = 1; if (step % 2 === 0) drums.pattern[1][step] = 1; } }
+  touchDrumPattern(`Section ${section}`); renderBeatForge();
+}
+
+function toggleBeatRecording(overdub = false) {
+  if (drums.recording) { drums.recording = false; drums.overdub = false; document.querySelector("#beatRecord").classList.remove("is-active"); document.querySelector("#beatOverdub").classList.remove("is-active"); renderBeatDiagnostics(); return; }
+  drums.recording = true; drums.overdub = overdub; drums.liveEvents = []; drums.recordStartedAt = AudioEngine.context.currentTime; if (!overdub) snapshotDrumPattern("Record take");
+  document.querySelector(overdub ? "#beatOverdub" : "#beatRecord").classList.add("is-active"); renderBeatDiagnostics();
+}
+
+function sendBeatToArrangement() {
+  const bpm = Number(document.querySelector("#globalBpm")?.value) || 124; const duration = drums.bars * 4 * 60 / bpm;
+  const source = { id: `beat-${drums.patternId}-${drums.version}`, label: drums.name, sourceKind: "drums", type: "drums", duration, patternSnapshot: serializeBeatPattern() };
+  addEditorClipFromSource(source, 0, editorState.playhead); editorStatus(`Sent ${drums.name} to Arrangement with Beat Forge pattern metadata.`);
+}
+
+function renderBeatPatternBuffer(laneOnly = null) {
+  if (!AudioEngine.context) return null; const sampleRate = AudioEngine.context.sampleRate; const bpm = Number(document.querySelector("#globalBpm")?.value) || 124; const stepSeconds = 60 / bpm / 4; const duration = drumStepCount() * stepSeconds; const buffer = AudioEngine.context.createBuffer(1, Math.ceil(duration * sampleRate), sampleRate); const data = buffer.getChannelData(0);
+  drums.rows.forEach((name, lane) => { if (laneOnly !== null && lane !== laneOnly) return; drums.pattern[lane].forEach((active, step) => { if (!active) return; const start = Math.floor(step * stepSeconds * sampleRate); const length = Math.min(data.length - start, Math.floor(sampleRate * (name === "Sub" ? .4 : .12))); const frequency = name === "Kick" ? 70 : name === "Sub" ? 45 : name === "Hat" ? 7200 : name === "Clap" ? 1400 : 1800; const amp = (drums.velocities[lane][step] || .8) * .28; for (let i = 0; i < length; i += 1) { const envelope = 1 - i / length; const sample = name === "Kick" || name === "Sub" ? Math.sin(2 * Math.PI * frequency * i / sampleRate) : (seededDrumValue(lane, start + i, 9) * 2 - 1); data[start + i] += sample * envelope * amp; } }); }); return buffer;
+}
+
+function sendBeatToPads(laneOnly = null) {
+  const empty = sampler.buffers.findIndex((buffer) => !buffer); if (empty < 0) { setPadEditorStatus("All pads in the current bank are occupied. Switch banks or clear a pad first; Beat Forge will not overwrite them silently."); return; }
+  const buffer = renderBeatPatternBuffer(laneOnly); if (!buffer) return; const label = laneOnly === null ? drums.name : `${drums.name} ${drums.rows[laneOnly]}`; setPadBuffer(empty, buffer, label, { mode: "loop", category: "Loops", source: "Rendered from Beat Forge" }); setPadEditorStatus(`Sent ${label} to Pad ${empty + 1} without changing occupied pads.`);
+}
+
+function serializeBeatPattern() { return { patternId: drums.patternId, name: drums.name, bars: drums.bars, stepsPerBar: drums.stepsPerBar, rows: drums.rows, pattern: drums.pattern, velocities: drums.velocities, probabilities: drums.probabilities, timingOffsets: drums.timingOffsets, automation: drums.automation, groove: drums.groove, grooveIntensity: drums.grooveIntensity, grooveLocks: drums.grooveLocks, kit: drums.machine, preset: drums.preset, section: drums.section, seed: drums.seed, version: drums.version, source: drums.source, lanes: drums.lanes }; }
+
+function saveBeatPattern() { const saved = { ...serializeBeatPattern(), savedAt: new Date().toISOString() }; drums.patterns = [...drums.patterns.filter((pattern) => pattern.name !== saved.name), saved]; saveBeatForgeState(); document.querySelector("#aiBeatProducerMessage").textContent = `Saved ${saved.name} locally.`; }
+
+function saveBeatForgeState() { try { localStorage.setItem("deckforge-beat-forge", JSON.stringify({ active: serializeBeatPattern(), patterns: drums.patterns.slice(-30), promptHistory: drums.promptHistory.slice(-30), workspaceMode: drums.workspaceMode || "simple" })); } catch (error) { drums.lastError = `Persistence: ${error.message}`; } }
+
+function restoreBeatForgeState() { try { const saved = JSON.parse(localStorage.getItem("deckforge-beat-forge") || "null"); if (!saved?.active) return; const active = saved.active; Object.assign(drums, active, { patterns: saved.patterns || [], promptHistory: saved.promptHistory || [], workspaceMode: saved.workspaceMode || "simple", playing: false, paused: false, timer: null, voices: [], undoStack: [], previewing: false, restored: true }); const machine = drumMachines.find((item) => item.id === drums.machine); if (machine) drums.kit = { ...drums.kit, ...machine.kit }; normalizeDrumPatternModel(); } catch (error) { drums.lastError = `Restore: ${error.message}`; } }
+
+function exportBeatPattern() { const blob = new Blob([JSON.stringify(serializeBeatPattern(), null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = `${drums.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.beatforge.json`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+
+async function importBeatPattern(file) { try { const data = JSON.parse(await file.text()); if (!Array.isArray(data.pattern) || !data.bars) throw new Error("Not a Beat Forge pattern file"); snapshotDrumPattern("Import"); Object.assign(drums, data); normalizeDrumPatternModel(); touchDrumPattern("Imported"); renderBeatForge(); } catch (error) { drums.lastError = error.message; document.querySelector("#aiBeatProducerMessage").textContent = `Import failed: ${error.message}`; } }
+
+function renderBeatMatch() { const deck = deckState.a.buffer ? deckState.a : deckState.b.buffer ? deckState.b : null; const output = document.querySelector("#beatMatchSuggestion"); if (!output) return; if (!deck) { output.textContent = "Load a deck to receive a project-aware rhythm suggestion."; return; } const bpm = deck.analysis?.bpm || Number(document.querySelector("#globalBpm")?.value) || 124; drums.beatMatch = bpm >= 120 ? { action: "house", text: `Deck ${deck.id.toUpperCase()} is near ${Math.round(bpm)} BPM. Try lighter house hats and reduce kick density during the transition.` } : { action: "boom-bap", text: `Deck ${deck.id.toUpperCase()} is near ${Math.round(bpm)} BPM. A loose boom-bap pocket with sparse percussion should leave room for the vocal.` }; output.textContent = drums.beatMatch.text; }
+
+function applyBeatMatch() { if (!drums.beatMatch) return; snapshotDrumPattern("AI Beat Match"); drums.groove = drums.beatMatch.action; if (drums.beatMatch.action === "house") drums.pattern[2].forEach((_, step) => { if (step % 2 === 0) drums.pattern[2][step] = 1; }); else drums.pattern[0].forEach((_, step) => { if (step % 4 !== 0 && step % 8 !== 3) drums.pattern[0][step] = 0; }); touchDrumPattern("AI Beat Match"); renderBeatForge(); }
+
+async function previewBeatMatch() { if (!drums.beatMatch) return; const field = document.querySelector("#beatPrompt"); const previous = field.value; field.value = drums.beatMatch.action === "house" ? "Create a light house transition with sparse kicks and active hats" : "Create a light boom bap verse with sparse percussion and room for vocals"; buildBeatPromptPlan("variation"); field.value = previous; await previewGeneratedBeat(); }
+
+function renderBeatDiagnostics() { const details = document.querySelector("#beatDiagnostics"); if (details) details.hidden = !DECKFORGE_DEVELOPMENT; const output = document.querySelector("#beatDiagnosticsOutput"); if (!output || !DECKFORGE_DEVELOPMENT) return; const activeVelocities = drums.velocities.flatMap((row, lane) => row.filter((_, step) => drums.pattern[lane][step])); const timings = drums.timingOffsets.flat(); const probabilities = drums.probabilities.flat(); output.textContent = JSON.stringify({ pattern: drums.name, patternVersion: drums.version, seed: drums.seed, groove: drums.groove, grooveIntensity: drums.grooveIntensity, grooveCandidate: drums.grooveCandidate?.groove || null, grooveDifference: drums.grooveMetrics, kit: drums.machine, scheduler: { playing: drums.playing, paused: drums.paused, timerActive: Boolean(drums.timer), version: drums.schedulerVersion, loadedPatternVersion: drums.schedulerLoadedVersion }, activeSteps: drums.pattern.flat().filter(Boolean).length, averageVelocity: activeVelocities.length ? activeVelocities.reduce((sum, value) => sum + value, 0) / activeVelocities.length : 0, timingRange: [Math.min(...timings), Math.max(...timings)], probabilityRange: [Math.min(...probabilities), Math.max(...probabilities)], currentBar: drums.currentBar + 1, recording: drums.recording, previewing: drums.previewing, previewLabel: drums.previewLabel || null, lastAiGeneration: drums.lastGeneration, lastPrompt: drums.lastPrompt, lastError: drums.lastError }, null, 2); }
 
 async function recordMicSample() {
   await AudioEngine.init();
@@ -7979,14 +8567,82 @@ function setupEvents() {
   document.querySelector("#padRecord").addEventListener("click", async () => { await AudioEngine.init(); editorState.recording ? stopEditorPerformanceRecording() : startEditorPerformanceRecording(false); document.querySelector("#padRecord").classList.toggle("is-active", Boolean(editorState.recording)); renderPadDiagnostics(); });
   document.querySelector("#padOverdub").addEventListener("click", async () => { await AudioEngine.init(); editorState.recording ? stopEditorPerformanceRecording() : startEditorPerformanceRecording(true); document.querySelector("#padOverdub").classList.toggle("is-active", Boolean(editorState.recording)); renderPadDiagnostics(); });
   document.querySelector("#padUndoTake").addEventListener("click", () => { const index = [...editorState.clips].map((clip) => clip.type).lastIndexOf("pad"); if (index < 0) { setPadEditorStatus("No saved pad take to undo."); return; } sampler.takeHistory.push(editorState.clips.splice(index, 1)[0]); renderEditor(); setPadEditorStatus("Removed the latest pad performance clip. Arrangement Undo can restore broader edits."); });
-  document.querySelector("#drumMachine").addEventListener("change", () => {
-    updatePresetNotes();
-    applyDrumPreset(document.querySelector("#drumPreset").value);
-  });
+  document.querySelector("#drumMachine").addEventListener("change", (event) => { const index = drumMachines.findIndex((machine) => machine.id === event.target.value); drums.filteredKits = drumMachines; drums.kitIndex = Math.max(0, index); loadSelectedDrumKit(); });
   document.querySelector("#drumPreset").addEventListener("change", updatePresetNotes);
   document.querySelector("#applyPreset").addEventListener("click", () => {
     applyDrumPreset(document.querySelector("#drumPreset").value);
   });
+  document.querySelector("#beatForgeMode").addEventListener("change", (event) => { drums.workspaceMode = event.target.value; saveBeatForgeState(); renderBeatForge(); });
+  document.querySelector("#drumStop").addEventListener("click", stopDrums);
+  document.querySelector("#beatMetronome").addEventListener("click", (event) => { drums.metronome = !drums.metronome; event.currentTarget.classList.toggle("is-active", drums.metronome); event.currentTarget.setAttribute("aria-pressed", String(drums.metronome)); });
+  document.querySelector("#beatLoop").addEventListener("click", (event) => { drums.loop = !drums.loop; event.currentTarget.classList.toggle("is-active", drums.loop); event.currentTarget.setAttribute("aria-pressed", String(drums.loop)); });
+  document.querySelector("#beatBars").addEventListener("change", (event) => setBeatBars(event.target.value));
+  document.querySelector("#beatPreviousBar").addEventListener("click", () => { drums.currentBar = (drums.currentBar - 1 + drums.bars) % drums.bars; renderSequencer(); });
+  document.querySelector("#beatNextBar").addEventListener("click", () => { drums.currentBar = (drums.currentBar + 1) % drums.bars; renderSequencer(); });
+  document.querySelectorAll("[data-beat-view]").forEach((button) => button.addEventListener("click", () => { drums.view = button.dataset.beatView; document.querySelectorAll("[data-beat-view]").forEach((item) => item.classList.toggle("is-active", item === button)); renderSequencer(); }));
+  document.querySelector("#drumPerformancePads").addEventListener("pointerdown", async (event) => { const button = event.target.closest("[data-drum-pad]"); if (!button) return; await AudioEngine.init(); button.classList.add("is-hit"); triggerDrumPerformancePad(Number(button.dataset.drumPad), event.pressure || .85); });
+  document.querySelector("#drumPerformancePads").addEventListener("pointerup", (event) => event.target.closest("[data-drum-pad]")?.classList.remove("is-hit"));
+  document.querySelector("#kitCategories").addEventListener("click", (event) => { const button = event.target.closest("[data-kit-category]"); if (!button) return; drums.kitCategory = button.dataset.kitCategory; drums.kitIndex = 0; renderKitBrowser(); });
+  document.querySelector("#kitResults").addEventListener("click", (event) => { const button = event.target.closest("[data-kit-index]"); if (!button) return; drums.kitIndex = Number(button.dataset.kitIndex); renderKitBrowser(); });
+  document.querySelector("#kitSearch").addEventListener("input", renderKitBrowser);
+  document.querySelector("#kitPrevious").addEventListener("click", () => { const count = drums.filteredKits?.length || 1; drums.kitIndex = (drums.kitIndex - 1 + count) % count; renderKitBrowser(); });
+  document.querySelector("#kitNext").addEventListener("click", () => { const count = drums.filteredKits?.length || 1; drums.kitIndex = (drums.kitIndex + 1) % count; renderKitBrowser(); });
+  document.querySelector("#kitPreview").addEventListener("click", previewSelectedDrumKit);
+  document.querySelector("#kitStopPreview").addEventListener("click", stopBeatPreview);
+  document.querySelector("#loadDrumKit").addEventListener("click", loadSelectedDrumKit);
+  document.querySelector("#loadDrumKitPattern").addEventListener("click", loadSelectedDrumKitAndPattern);
+  document.querySelector("#favoriteDrumKit").addEventListener("click", () => { const machine = drums.filteredKits?.[drums.kitIndex]; if (!machine) return; const favorites = new Set(JSON.parse(localStorage.getItem("deckforge-beat-kit-favorites") || "[]")); favorites.has(machine.id) ? favorites.delete(machine.id) : favorites.add(machine.id); localStorage.setItem("deckforge-beat-kit-favorites", JSON.stringify([...favorites])); renderKitBrowser(); });
+  document.querySelector("#beatGroove").addEventListener("change", (event) => buildGrooveCandidate(event.target.value));
+  document.querySelector("#grooveIntensity").addEventListener("input", (event) => { drums.grooveCandidateIntensity = Number(event.target.value); buildGrooveCandidate(document.querySelector("#beatGroove").value); });
+  document.querySelectorAll("[data-groove-lock]").forEach((input) => input.addEventListener("change", () => { drums.grooveLocks[input.dataset.grooveLock] = input.checked; buildGrooveCandidate(document.querySelector("#beatGroove").value); }));
+  document.querySelector("#previewOriginalGroove").addEventListener("click", () => previewGrooveModel(drums.grooveAnchor || captureGrooveModel(), "Original A"));
+  document.querySelector("#previewCandidateGroove").addEventListener("click", () => previewGrooveModel(drums.grooveCandidate || buildGrooveCandidate(), "Groove B"));
+  document.querySelector("#alternateGroovePreview").addEventListener("click", alternateGroovePreview);
+  document.querySelector("#applyGroove").addEventListener("click", applyGrooveCandidate);
+  document.querySelector("#cancelGroove").addEventListener("click", cancelGrooveCandidate);
+  document.querySelector("#undoGroove").addEventListener("click", undoLastGroove);
+  document.querySelector("#reapplyGroove").addEventListener("click", reapplyLastGroove);
+  document.querySelector("#resetGroove").addEventListener("click", () => { drums.grooveCandidateIntensity = 60; buildGrooveCandidate("straight"); applyGrooveCandidate(); });
+  [["beatLaneVolume", "volume"], ["beatLanePan", "pan"], ["beatLaneFilter", "filter"], ["beatLanePitch", "pitch"], ["beatLaneChoke", "choke"]].forEach(([id, key]) => document.querySelector(`#${id}`).addEventListener("input", (event) => { drums.lanes[drums.selectedLane][key] = Number(event.target.value); touchDrumPattern(); }));
+  document.querySelector("#beatStepVelocity").addEventListener("input", (event) => { drums.velocities[drums.selectedLane][drums.selectedStep] = Number(event.target.value); touchDrumPattern(); renderSequencer(); });
+  document.querySelector("#beatStepProbability").addEventListener("input", (event) => { drums.probabilities[drums.selectedLane][drums.selectedStep] = Number(event.target.value); touchDrumPattern(); renderSequencer(); });
+  document.querySelector("#beatStepTiming").addEventListener("input", (event) => { drums.timingOffsets[drums.selectedLane][drums.selectedStep] = Number(event.target.value); touchDrumPattern(); });
+  document.querySelector("#beatLaneMute").addEventListener("change", (event) => { drums.lanes[drums.selectedLane].muted = event.target.checked; touchDrumPattern(); renderSequencer(); });
+  document.querySelector("#beatLaneSolo").addEventListener("change", (event) => { drums.lanes[drums.selectedLane].solo = event.target.checked; touchDrumPattern(); renderSequencer(); });
+  document.querySelector("#accentBeatVelocity").addEventListener("click", () => { snapshotDrumPattern("Accent velocity"); drums.velocities[drums.selectedLane] = drums.velocities[drums.selectedLane].map((value, step) => drums.pattern[drums.selectedLane][step] ? (step % 4 === 0 ? 1 : Math.min(value, .68)) : value); touchDrumPattern(); renderSequencer(); });
+  document.querySelector("#randomizeBeatVelocity").addEventListener("click", () => { snapshotDrumPattern("Randomize velocity"); const random = createSeededGenerator(drums.seed + drums.version); drums.velocities[drums.selectedLane] = drums.velocities[drums.selectedLane].map((value, step) => drums.pattern[drums.selectedLane][step] ? .5 + random() * .5 : value); touchDrumPattern(); renderSequencer(); });
+  document.querySelector("#resetBeatVelocity").addEventListener("click", () => { snapshotDrumPattern("Reset velocity"); drums.velocities[drums.selectedLane].fill(.85); touchDrumPattern(); renderSequencer(); });
+  document.querySelector("#resetBeatAutomation").addEventListener("click", () => { snapshotDrumPattern("Reset automation"); drums.automation[drums.selectedLane].fill(1); touchDrumPattern(); renderSequencer(); });
+  document.querySelector("#generateBeat").addEventListener("click", () => buildBeatPromptPlan("new"));
+  document.querySelector("#generateBeatVariation").addEventListener("click", () => buildBeatPromptPlan("variation"));
+  document.querySelector("#generateAnotherBeat").addEventListener("click", () => buildBeatPromptPlan("variation"));
+  document.querySelector("#simplifyBeat").addEventListener("click", () => transformCurrentBeat("simplify"));
+  document.querySelector("#busierBeat").addEventListener("click", () => transformCurrentBeat("busier"));
+  document.querySelector("#fillBeat").addEventListener("click", () => transformCurrentBeat("fill"));
+  document.querySelector("#humanizeBeat").addEventListener("click", () => transformCurrentBeat("humanize"));
+  document.querySelector("#swingBeat").addEventListener("click", () => transformCurrentBeat("swing"));
+  document.querySelector("#straightBeat").addEventListener("click", () => transformCurrentBeat("straight"));
+  document.querySelector("#beatSection").addEventListener("change", (event) => convertBeatSection(event.target.value));
+  document.querySelector("#previewBeatPlan").addEventListener("click", previewGeneratedBeat);
+  document.querySelector("#stopBeatPlanPreview").addEventListener("click", stopBeatPreview);
+  document.querySelector("#applyBeatPlan").addEventListener("click", applyBeatPromptPlan);
+  document.querySelector("#refineBeatPrompt").addEventListener("click", () => { const field = document.querySelector("#beatPrompt"); field.value = `${field.value.trim()} ${field.value.trim() ? "" : "Create a groove. "}Keep the strongest pocket, add purposeful variation across bars, and leave space for vocals.`; field.focus(); });
+  document.querySelector("#saveBeatPrompt").addEventListener("click", () => { const prompt = document.querySelector("#beatPrompt").value.trim(); if (prompt) { drums.promptHistory.push(prompt); saveBeatForgeState(); renderBeatPromptHistory(); document.querySelector("#aiBeatProducerMessage").textContent = "Prompt saved locally."; } });
+  document.querySelector("#beatPromptHistory").addEventListener("change", (event) => { if (event.target.value === "") return; document.querySelector("#beatPrompt").value = drums.promptHistory.slice().reverse()[Number(event.target.value)] || ""; });
+  document.querySelector("#clearBeatPrompt").addEventListener("click", () => { document.querySelector("#beatPrompt").value = ""; drums.pendingPlan = null; renderBeatPromptPlan(); document.querySelector("#previewBeatPlan").disabled = true; document.querySelector("#applyBeatPlan").disabled = true; });
+  document.querySelector("#beatRecord").addEventListener("click", async () => { await AudioEngine.init(); toggleBeatRecording(false); });
+  document.querySelector("#beatOverdub").addEventListener("click", async () => { await AudioEngine.init(); toggleBeatRecording(true); });
+  document.querySelector("#beatUndo").addEventListener("click", undoBeatEdit);
+  document.querySelector("#saveBeatPattern").addEventListener("click", saveBeatPattern);
+  document.querySelector("#sendBeatArrangement").addEventListener("click", sendBeatToArrangement);
+  document.querySelector("#sendBeatPads").addEventListener("click", async () => { await AudioEngine.init(); sendBeatToPads(null); });
+  document.querySelector("#sendBeatLanePads").addEventListener("click", async () => { await AudioEngine.init(); sendBeatToPads(drums.selectedLane); });
+  document.querySelector("#exportBeatPattern").addEventListener("click", exportBeatPattern);
+  document.querySelector("#importBeatPattern").addEventListener("change", (event) => { if (event.target.files[0]) importBeatPattern(event.target.files[0]); });
+  document.querySelector("#previewBeatMatch").addEventListener("click", previewBeatMatch);
+  document.querySelector("#applyBeatMatch").addEventListener("click", applyBeatMatch);
+  document.querySelector("#rejectBeatMatch").addEventListener("click", () => { drums.beatMatch = null; document.querySelector("#beatMatchSuggestion").textContent = "Suggestion rejected. Load or change a deck to refresh context."; });
+  document.querySelector("#explainBeatMatch").addEventListener("click", () => { document.querySelector("#beatMatchSuggestion").textContent = drums.beatMatch ? `${drums.beatMatch.text} This is inferred from deck BPM and keeps the current project pattern editable.` : "No active suggestion to explain."; });
   document.querySelector("#synthMachine").addEventListener("change", (event) => {
     instrument.machine = event.target.value;
     updateInstrumentNotes();
@@ -8027,6 +8683,11 @@ function setupEvents() {
       return;
     }
     const padIndex = PAD_KEYS.indexOf(event.key.toLowerCase());
+    if (padIndex >= 0 && document.querySelector("#drums")?.classList.contains("is-active")) {
+      event.preventDefault();
+      AudioEngine.init().then(() => { triggerDrumPerformancePad(padIndex, 0.85); document.querySelector(`[data-drum-pad="${padIndex}"]`)?.classList.add("is-hit"); });
+      return;
+    }
     if (padIndex >= 0 && document.querySelector("#sampler")?.classList.contains("is-active")) {
       event.preventDefault();
       AudioEngine.init().then(() => triggerPad(padIndex, { held: true }));
@@ -8040,21 +8701,19 @@ function setupEvents() {
   });
   document.addEventListener("keyup", (event) => {
     const padIndex = PAD_KEYS.indexOf(event.key.toLowerCase());
+    if (padIndex >= 0) document.querySelector(`[data-drum-pad="${padIndex}"]`)?.classList.remove("is-hit");
     if (padIndex >= 0) releasePad(padIndex);
   });
-  document.querySelector("#drumPlay").addEventListener("click", async () => {
-    await AudioEngine.init();
-    drums.playing ? stopDrums() : startDrums();
-  });
+  document.querySelector("#drumPlay").addEventListener("click", async () => { await AudioEngine.init(); startDrums(); });
   document.querySelector("#drumPause").addEventListener("click", pauseDrums);
-  document.querySelector("#drumRestart").addEventListener("click", () => {
+  document.querySelector("#drumRestart").addEventListener("click", async () => {
+    await AudioEngine.init();
     stopDrums();
     drums.step = 0;
     startDrums();
   });
   document.querySelector("#drumClear").addEventListener("click", () => {
-    drums.pattern = drums.pattern.map((row) => row.map(() => 0));
-    renderSequencer();
+    snapshotDrumPattern("Clear pattern"); drums.pattern = drums.pattern.map((row) => row.map(() => 0)); touchDrumPattern(); renderSequencer();
   });
   document.querySelector("#recordMix").addEventListener("click", async () => {
     await AudioEngine.init();
@@ -9137,6 +9796,7 @@ function detectPlatform(url) {
 }
 
 restorePadWorkspace();
+restoreBeatForgeState();
 initializePlaybackRegistry();
 readSmartPromptStorage();
 setupEvents();
@@ -9146,7 +9806,7 @@ renderPadWorkspaceControls();
 renderInstrumentOptions();
 renderKeyboard();
 renderPresetOptions();
-applyDrumPreset(drums.preset);
+if (drums.restored) renderBeatForge(); else applyDrumPreset(drums.preset);
 renderSources();
 renderAiContext();
 renderEditor();
