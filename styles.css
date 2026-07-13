@@ -2087,6 +2087,16 @@ input[type="range"] {
 .smart-prompt-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .smart-prompt-chips button, .smart-prompt-library button, .bpm-recovery-actions button { min-height: 28px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 999px; background: rgba(255, 255, 255, 0.045); color: var(--muted); padding: 4px 9px; font-size: 0.7rem; }
 .smart-prompt-chips button:hover { border-color: rgba(168, 113, 255, 0.55); color: var(--ink); }
+.quick-transition-custom { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 8px; padding: 10px; border: 1px solid rgba(38, 214, 199, 0.24); border-radius: 8px; background: rgba(38, 214, 199, 0.035); }
+.quick-transition-custom[hidden] { display: none; }
+.quick-transition-custom > div { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; }
+.quick-transition-custom label { display: grid; gap: 5px; color: var(--muted); font-size: 0.7rem; }
+.quick-transition-custom select, .quick-transition-custom input[type="text"] { min-height: 34px; border: 1px solid var(--line); border-radius: 6px; background: #090d12; color: var(--ink); padding: 0 8px; }
+.quick-transition-custom label:has(input[type="checkbox"]) { display: flex; align-items: center; gap: 6px; }
+.deck-ai-transition { margin-top: 8px; color: var(--muted); font-size: 0.72rem; }
+.deck-ai-transition summary { width: fit-content; cursor: pointer; color: #c7a8ff; font-weight: 800; }
+.deck-ai-transition > div { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.deck-ai-transition button { min-height: 29px; border: 1px solid rgba(168, 113, 255, 0.28); border-radius: 5px; background: rgba(168, 113, 255, 0.06); color: var(--ink); padding: 3px 7px; font-size: 0.68rem; }
 .smart-prompt-clarification { padding: 9px 11px; border-left: 3px solid var(--amber); background: rgba(247, 180, 75, 0.08); color: var(--amber); font-size: 0.82rem; }
 
 .smart-prompt-plan {
@@ -2104,7 +2114,30 @@ input[type="range"] {
 .smart-prompt-plan dt { color: var(--muted); font-size: 0.62rem; text-transform: uppercase; }
 .smart-prompt-plan dd { margin: 3px 0 0; overflow: hidden; color: var(--ink); font-size: 0.78rem; text-overflow: ellipsis; white-space: nowrap; }
 .smart-prompt-warnings { margin: 0; color: var(--amber); font-size: 0.78rem; }
+.tempo-safety-details { display: grid; gap: 8px; padding: 10px; border: 1px solid rgba(247, 180, 75, 0.4); border-radius: 7px; background: rgba(247, 180, 75, 0.065); }
+.tempo-safety-details[hidden], .safer-transition-plans[hidden] { display: none; }
+.tempo-safety-details > strong { color: var(--amber); }
+.tempo-safety-details dl { display: grid; grid-template-columns: repeat(3, minmax(100px, 1fr)); gap: 6px; margin: 0; }
+.tempo-safety-details dl div { padding: 6px; border-radius: 5px; background: rgba(0, 0, 0, 0.16); }
+.tempo-safety-details dt { color: var(--muted); font-size: 0.6rem; text-transform: uppercase; }
+.tempo-safety-details dd { margin: 3px 0 0; color: var(--ink); font-size: 0.76rem; }
+.tempo-safety-details p { margin: 0; color: var(--muted); font-size: 0.75rem; }
+.safer-transition-plans { display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr)); gap: 8px; }
+.safer-plan-card { display: grid; align-content: start; gap: 7px; padding: 9px; border: 1px solid rgba(38, 214, 199, 0.22); border-radius: 7px; background: rgba(38, 214, 199, 0.035); }
+.safer-plan-card.is-recommended { border-color: rgba(104, 229, 154, 0.48); }
+.safer-plan-card small { color: var(--green); font-weight: 800; text-transform: uppercase; }
+.safer-plan-card p { margin: 0; color: var(--muted); font-size: 0.7rem; line-height: 1.35; }
+.safer-plan-card div { display: flex; flex-wrap: wrap; gap: 5px; }
+.safer-plan-card button { min-height: 29px; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 5px; background: rgba(255, 255, 255, 0.05); color: var(--ink); padding: 3px 7px; font-size: 0.68rem; }
+.tempo-safety-preferences { color: var(--muted); font-size: 0.72rem; }
+.tempo-safety-preferences > div { display: grid; grid-template-columns: repeat(3, minmax(135px, 1fr)); gap: 8px; margin-top: 8px; }
+.tempo-safety-preferences label { display: flex; align-items: center; gap: 5px; }
+.tempo-safety-preferences input[type="number"], .tempo-safety-preferences select { min-width: 0; min-height: 31px; border: 1px solid var(--line); border-radius: 5px; background: #090d12; color: var(--ink); padding: 0 6px; }
 .smart-prompt-explanation { margin: 0; color: var(--muted); font-size: 0.82rem; line-height: 1.4; }
+.smart-prompt-error { display: grid; gap: 7px; padding: 10px; border: 1px solid rgba(255, 63, 110, 0.45); border-radius: 7px; background: rgba(255, 63, 110, 0.08); color: #ff9ab8; font-size: 0.78rem; }
+.smart-prompt-error[hidden] { display: none; }
+.smart-prompt-error > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.smart-prompt-error button { min-height: 28px; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 5px; background: rgba(0, 0, 0, 0.2); color: var(--ink); padding: 3px 8px; }
 .smart-prompt-plan-actions, .bpm-recovery-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .smart-prompt-advanced { display: grid; grid-template-columns: repeat(3, minmax(130px, 1fr)); gap: 8px; }
 .smart-prompt-advanced label { display: grid; gap: 5px; color: var(--muted); font-size: 0.72rem; }

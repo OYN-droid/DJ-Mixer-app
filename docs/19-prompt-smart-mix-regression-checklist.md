@@ -8,6 +8,9 @@ Browser: __________  Date: __________  Commit: __________
 | Phrase language displays an honest beat-grid fallback warning | [ ] | [ ] | |
 | Conflicting section and bar instructions request clarification | [ ] | [ ] | |
 | Applying a plan preserves the active deck without restart | [ ] | [ ] | |
+| Apply advances through Validating, Preparing and Waiting for Trigger | [ ] | [ ] | |
+| Repeated Apply clicks create only one transition scheduler | [ ] | [ ] | |
+| Validation failures show retry, edit, load, source and cancel actions | [ ] | [ ] | |
 | An already loaded opposite deck is not replaced | [ ] | [ ] | |
 | Explicit DITC selection keeps the active deck playing | [ ] | [ ] | |
 | No qualifying DITC track reports why and produces no dead air | [ ] | [ ] | |

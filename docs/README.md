@@ -24,6 +24,10 @@ This directory is the DeckForge v2 recovery and design baseline. It records obse
 18. [Performance deck regression checklist](17-performance-deck-regression-checklist.md)
 19. [Prompt-directed Smart Mix architecture](18-prompt-smart-mix.md)
 20. [Prompt-directed Smart Mix regression checklist](19-prompt-smart-mix-regression-checklist.md)
+21. [Authoritative transition controller](20-authoritative-transition-controller.md)
+22. [Authoritative transition regression checklist](21-authoritative-transition-regression-checklist.md)
+23. [Intelligent tempo safety](22-intelligent-tempo-safety.md)
+24. [Tempo safety regression checklist](23-tempo-safety-regression-checklist.md)
 
 ## Recovery snapshot
 

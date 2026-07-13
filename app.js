@@ -239,6 +239,12 @@ const smartPromptState = {
   plan: null,
   state: "Prompt Idle",
   clarification: "",
+  executionInProgress: false,
+  executionToken: 0,
+  executionError: "",
+  lastExecutionPlanId: null,
+  saferPlans: [],
+  selectedSaferPlanId: null,
   lastError: "None",
   history: [],
   recipes: []
@@ -263,6 +269,36 @@ const bpmRecoveryState = {
   delayTimer: null,
   plan: null,
   lastError: "None"
+};
+
+const transitionController = {
+  activePlan: null,
+  version: 0,
+  pollTimer: null,
+  schedulerActive: false,
+  transitionStarted: false,
+  crossfaderAutomationActive: false,
+  lastPlaybackTime: null,
+  secondsRemaining: null,
+  previousCancellationResult: "None",
+  lastFailure: "None"
+};
+
+const quickTransitionState = { deckId: "a" };
+
+const TEMPO_SAFETY_PREFERENCES_KEY = "deckforge-tempo-safety-preferences";
+const tempoSafetyPreferences = {
+  preferredShift: 4,
+  warningThreshold: 8,
+  absoluteMaximumShift: 12,
+  automaticallySuggest: true,
+  automaticallyExecute: false,
+  askBeforeReplacing: true,
+  allowHalfDouble: true,
+  allowBridgeSuggestions: true,
+  preserveIncomingBpm: true,
+  largeMismatchTransition: "filter-sweep",
+  transitionPreference: "smooth"
 };
 
 const drums = {
@@ -4247,11 +4283,71 @@ async function loadSelectedCrateToDecks() {
 function readSmartPromptStorage() {
   try { smartPromptState.history = JSON.parse(localStorage.getItem(SMART_PROMPT_HISTORY_KEY) || "[]"); } catch { smartPromptState.history = []; }
   try { smartPromptState.recipes = JSON.parse(localStorage.getItem(SMART_PROMPT_RECIPES_KEY) || "[]"); } catch { smartPromptState.recipes = []; }
+  try { Object.assign(tempoSafetyPreferences, JSON.parse(localStorage.getItem(TEMPO_SAFETY_PREFERENCES_KEY) || "{}")); } catch { /* Use safe defaults. */ }
 }
 
 function writeSmartPromptStorage() {
   localStorage.setItem(SMART_PROMPT_HISTORY_KEY, JSON.stringify(smartPromptState.history.slice(0, 12)));
   localStorage.setItem(SMART_PROMPT_RECIPES_KEY, JSON.stringify(smartPromptState.recipes.slice(0, 12)));
+}
+
+function writeTempoSafetyPreferences() {
+  localStorage.setItem(TEMPO_SAFETY_PREFERENCES_KEY, JSON.stringify(tempoSafetyPreferences));
+}
+
+function renderTempoSafetyPreferences() {
+  const values = {
+    safetyPreferredShift: tempoSafetyPreferences.preferredShift,
+    safetyWarningThreshold: tempoSafetyPreferences.warningThreshold,
+    safetyAbsoluteMaximum: tempoSafetyPreferences.absoluteMaximumShift,
+    safetyLargeTransition: tempoSafetyPreferences.largeMismatchTransition,
+    safetyTransitionPreference: tempoSafetyPreferences.transitionPreference
+  };
+  Object.entries(values).forEach(([id, value]) => { const element = document.querySelector(`#${id}`); if (element) element.value = value; });
+  const checks = {
+    safetyAutoSuggest: tempoSafetyPreferences.automaticallySuggest,
+    safetyAutoExecute: tempoSafetyPreferences.automaticallyExecute,
+    safetyAskReplace: tempoSafetyPreferences.askBeforeReplacing,
+    safetyHalfDouble: tempoSafetyPreferences.allowHalfDouble,
+    safetyBridgeSuggestions: tempoSafetyPreferences.allowBridgeSuggestions,
+    safetyPreserveIncoming: tempoSafetyPreferences.preserveIncomingBpm
+  };
+  Object.entries(checks).forEach(([id, value]) => { const element = document.querySelector(`#${id}`); if (element) element.checked = value; });
+  const promptMaximum = document.querySelector("#promptMaxShift");
+  if (promptMaximum) {
+    const value = String(tempoSafetyPreferences.absoluteMaximumShift);
+    if (![...promptMaximum.options].some((option) => option.value === value)) promptMaximum.add(new Option(`${value}%`, value));
+    promptMaximum.value = value;
+  }
+}
+
+function analyzeTempoRelationship(outgoingBpm, incomingBpm, outgoingAnalysis = {}, incomingAnalysis = {}) {
+  const outgoing = Number(outgoingBpm || 0);
+  const incoming = Number(incomingBpm || 0);
+  if (!outgoing || !incoming || !tempoSafetyPreferences.allowHalfDouble) return { supported: false, effectiveIncomingBpm: incoming, label: "No subdivision interpretation" };
+  const lower = Math.min(outgoing, incoming);
+  const higher = Math.max(outgoing, incoming);
+  const doubleTolerance = Math.abs(higher / 2 - lower) / lower;
+  const rhythmicEnough = outgoingAnalysis.percussionIntensity !== "Low" && incomingAnalysis.percussionIntensity !== "Low";
+  if (lower >= 60 && lower <= 100 && higher >= 120 && higher <= 190 && doubleTolerance <= 0.035 && rhythmicEnough) {
+    const effectiveIncomingBpm = incoming > outgoing ? incoming / 2 : incoming * 2;
+    return { supported: true, effectiveIncomingBpm, label: incoming > outgoing ? `Halftime interpretation: ${incoming.toFixed(1)} BPM treated as ${(incoming / 2).toFixed(1)} BPM` : `Double-time interpretation: ${incoming.toFixed(1)} BPM treated as ${(incoming * 2).toFixed(1)} BPM`, tolerancePercent: doubleTolerance * 100 };
+  }
+  return { supported: false, effectiveIncomingBpm: incoming, label: "No musically reliable halftime or double-time relationship" };
+}
+
+function evaluateTempoSafety(plan) {
+  const outgoing = deckState[plan.activeDeck];
+  const incoming = deckState[plan.incomingDeck];
+  const outgoingBpm = Number(outgoing?.analysis?.bpm || plan.temporaryIncomingBpm || 0) * Number(document.querySelector(`#pitch-${plan.activeDeck}`)?.value || 1);
+  const incomingBpm = Number(incoming?.analysis?.bpm || plan.originalIncomingBpm || 0);
+  const relationship = analyzeTempoRelationship(outgoingBpm, incomingBpm, outgoing?.analysis, incoming?.analysis);
+  const effectiveIncoming = relationship.supported ? relationship.effectiveIncomingBpm : incomingBpm;
+  const requiredPlaybackShift = effectiveIncoming ? Math.abs((outgoingBpm / effectiveIncoming - 1) * 100) : 0;
+  const absoluteDifference = Math.abs(incomingBpm - outgoingBpm);
+  const bpmDifferencePercent = outgoingBpm ? absoluteDifference / outgoingBpm * 100 : 0;
+  const level = requiredPlaybackShift > tempoSafetyPreferences.absoluteMaximumShift ? "extreme" : requiredPlaybackShift > tempoSafetyPreferences.warningThreshold ? "large" : requiredPlaybackShift > tempoSafetyPreferences.preferredShift ? "moderate" : "safe";
+  return { outgoingBpm, incomingBpm, effectiveIncomingBpm: effectiveIncoming, requiredPlaybackShift, absoluteDifference, bpmDifferencePercent, relationship, level, configuredLimit: tempoSafetyPreferences.absoluteMaximumShift };
 }
 
 function supportedPromptStyle(text) {
@@ -4263,20 +4359,84 @@ function supportedPromptStyle(text) {
   return { style: "smooth-crossfade", label: "Smooth blend" };
 }
 
+function parseClockTimestamp(value) {
+  const parts = String(value || "").split(":").map(Number);
+  if (parts.some((part) => !Number.isFinite(part)) || parts.length < 2 || parts.length > 3) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] * 3600 + parts[1] * 60 + parts[2];
+}
+
+function parsePromptTiming(text, activeDeck, activeBpm) {
+  const deck = deckState[activeDeck];
+  const currentTime = deck.buffer ? currentDeckTime(activeDeck) : 0;
+  const duration = deck.buffer?.duration || 0;
+  const cueMatch = text.match(/deck\s*([ab])(?:'s)?\s+(\d{1,2}:\d{2})\s+cue/);
+  const incomingCueTime = cueMatch ? parseClockTimestamp(cueMatch[2]) : null;
+  const relativeEnd = text.match(/(\d+)\s*seconds?\s+before\s+(?:deck\s*[ab]|this\s+(?:track|song)|(?:the\s+)?(?:track|song))?\s*ends?/);
+  const beforeClock = text.match(/(?:begin\s+fading|transition|start\s+fading)\s+(\d+)\s*seconds?\s+before\s+(\d{1,2}(?::\d{2}){1,2})/);
+  const clockMatches = [...text.matchAll(/\b(\d{1,2}(?::\d{2}){1,2})\b/g)].filter((match) => !cueMatch || match[0] !== cueMatch[2]);
+  const natural = text.match(/(\d+)\s*minutes?(?:\s*(?:and\s*)?(\d+)\s*seconds?)?/);
+  const relativeSeconds = text.match(/(?:in|after)\s+(\d+)\s*seconds?/);
+  const secondMark = text.match(/(?:at\s+(?:the\s+)?|reaches?\s+)(\d+)\s*(?:-|\s)seconds?(?:\s+mark)?/);
+  let targetPlaybackTime = null;
+  let triggerType = "bars";
+  let timestampBasis = "active-deck-playback";
+  let interpretation = "Using the requested bar estimate on the active deck.";
+  let parsedTimestamp = null;
+  if (relativeEnd && duration) {
+    targetPlaybackTime = Math.max(0, duration - Number(relativeEnd[1]));
+    triggerType = "before-end";
+    parsedTimestamp = targetPlaybackTime;
+    interpretation = `Begin transitioning ${relativeEnd[1]} seconds before Deck ${activeDeck.toUpperCase()} ends.`;
+  } else if (beforeClock) {
+    const base = parseClockTimestamp(beforeClock[2]);
+    targetPlaybackTime = Math.max(0, base - Number(beforeClock[1]));
+    triggerType = "absolute-timestamp";
+    parsedTimestamp = base;
+    interpretation = `Begin fading ${beforeClock[1]} seconds before Deck ${activeDeck.toUpperCase()} reaches ${formatTime(base)}.`;
+  } else if (relativeSeconds) {
+    targetPlaybackTime = currentTime + Number(relativeSeconds[1]);
+    triggerType = "relative-seconds";
+    timestampBasis = "delay-from-now";
+    interpretation = `Begin transitioning ${relativeSeconds[1]} seconds from the current Deck ${activeDeck.toUpperCase()} position.`;
+  } else if (clockMatches.length) {
+    targetPlaybackTime = parseClockTimestamp(clockMatches[0][1]);
+    triggerType = "absolute-timestamp";
+    parsedTimestamp = targetPlaybackTime;
+    interpretation = `Begin transitioning when Deck ${activeDeck.toUpperCase()} reaches ${formatTime(targetPlaybackTime)}.`;
+  } else if (natural) {
+    targetPlaybackTime = Number(natural[1]) * 60 + Number(natural[2] || 0);
+    triggerType = "absolute-timestamp";
+    parsedTimestamp = targetPlaybackTime;
+    interpretation = `Begin transitioning when Deck ${activeDeck.toUpperCase()} reaches ${formatTime(targetPlaybackTime)}.`;
+  } else if (secondMark) {
+    targetPlaybackTime = Number(secondMark[1]);
+    triggerType = "absolute-timestamp";
+    parsedTimestamp = targetPlaybackTime;
+    interpretation = `Begin transitioning when Deck ${activeDeck.toUpperCase()} reaches ${formatTime(targetPlaybackTime)}.`;
+  }
+  const secondsRemaining = targetPlaybackTime === null ? phraseLengthSeconds(activeBpm, 16) : targetPlaybackTime - currentTime;
+  return { triggerType, timestampBasis, targetPlaybackTime, currentPlaybackTime: currentTime, secondsRemaining, interpretation, parsedTimestamp, incomingCueTime, duration, relativeDelaySeconds: relativeSeconds ? Number(relativeSeconds[1]) : null };
+}
+
 function parseSmartMixPrompt(rawPrompt) {
   const prompt = String(rawPrompt || "").trim();
   const text = prompt.toLowerCase();
-  const activeDeck = detectActiveDeck() || "a";
-  const requestedDeck = text.match(/(?:into|use|bring in)\s+deck\s*([ab])/i)?.[1]?.toLowerCase();
+  const explicitOutgoingDeck = text.match(/deck\s*([ab])\s+(?:reaches|ends|is playing)/)?.[1]?.toLowerCase();
+  const activeDeck = explicitOutgoingDeck || detectActiveDeck() || "a";
+  const requestedDeck = text.match(/(?:into|to|use|bring in|start)\s+deck\s*([ab])/i)?.[1]?.toLowerCase();
   const incomingDeck = requestedDeck || (activeDeck === "a" ? "b" : "a");
   const active = deckState[activeDeck];
   const incoming = deckState[incomingDeck];
   const activeRatio = Number(document.querySelector(`#pitch-${activeDeck}`)?.value || 1);
   const activeBpm = Number(active.analysis?.bpm || document.querySelector("#globalBpm")?.value || 120) * activeRatio;
   const originalIncomingBpm = Number(incoming.analysis?.bpm || 0);
-  const normalizedIncomingBpm = originalIncomingBpm ? normalizeBpmForMix(originalIncomingBpm, activeBpm) : 0;
+  const tempoRelationship = analyzeTempoRelationship(activeBpm, originalIncomingBpm, active.analysis, incoming.analysis);
+  const normalizedIncomingBpm = originalIncomingBpm ? tempoRelationship.effectiveIncomingBpm : 0;
   const rawShift = normalizedIncomingBpm ? (activeBpm / normalizedIncomingBpm - 1) * 100 : 0;
   const shiftPercent = Math.abs(rawShift);
+  const absoluteBpmDifference = Math.abs(originalIncomingBpm - activeBpm);
+  const bpmDifferencePercent = activeBpm ? absoluteBpmDifference / activeBpm * 100 : 0;
   const explicitBars = Number(text.match(/(?:in|wait|after)\s+(4|8|16|32)\s*bars?/)?.[1] || 0);
   let barsUntilTransition = explicitBars || 16;
   let transitionTrigger = explicitBars ? `In ${explicitBars} bars` : "Next estimated 16-bar boundary";
@@ -4308,6 +4468,18 @@ function parseSmartMixPrompt(rawPrompt) {
   if (/keep.*vocal.*over|vocal.*over.*intro/.test(text)) { unsupported.push("Outgoing vocal overlays require independent stem routing"); warnings.push("Vocal overlay routing is unavailable, using a full-mix blend."); }
   if (/loop transition/.test(text)) unsupported.push("Automated loop transitions are not available yet");
   const blendBars = Number(text.match(/(4|8|16|32)[- ]bar\s+(?:blend|transition|mix)/)?.[1] || (/quick|cut/.test(text) ? 4 : /long|slow/.test(text) ? 16 : 8));
+  const timing = parsePromptTiming(text, activeDeck, activeBpm);
+  if (timing.targetPlaybackTime !== null) {
+    const blendSeconds = phraseLengthSeconds(activeBpm, blendBars);
+    if (/complete\s+(?:the\s+)?transition\s+by/.test(text)) {
+      timing.targetPlaybackTime = Math.max(0, timing.targetPlaybackTime - blendSeconds);
+      timing.secondsRemaining = timing.targetPlaybackTime - timing.currentPlaybackTime;
+      timing.interpretation = `Begin the blend early enough to complete it by ${formatTime(timing.parsedTimestamp)} on Deck ${activeDeck.toUpperCase()}.`;
+    }
+    transitionTrigger = timing.interpretation;
+    targetSection = "Concrete playback timestamp";
+    barsUntilTransition = Math.max(1, Math.round(Math.max(0, timing.secondsRemaining) / phraseLengthSeconds(activeBpm, 1)));
+  }
   const recoveryRequested = /return|original bpm|natural tempo|bpm recovery/.test(text) || !/keep incoming.*tempo|no bpm recovery/.test(text);
   const recoveryBars = Number(text.match(/(?:return|recover|original bpm|natural tempo)[^.!]*?(?:over|in)\s+(2|4|8|16)\s*bars?/)?.[1] || 8);
   const recoveryStartBars = Number(text.match(/(?:after|wait)\s+(4|8|16)\s*bars?[^.!]*?(?:return|recover)/)?.[1] || 0);
@@ -4319,9 +4491,10 @@ function parseSmartMixPrompt(rawPrompt) {
   if (!incoming.buffer && !forceTrackSelection) warnings.push(`Deck ${incomingDeck.toUpperCase()} is empty. Smart Mix will select from ${incomingTrackSource}.`);
   if (!originalIncomingBpm && incoming.buffer) warnings.push("Incoming BPM is unavailable, so temporary BPM matching cannot be planned safely.");
   let safety = "Normal";
-  if (shiftPercent > 4) { safety = "Moderate"; warnings.push(`Temporary tempo shift is ${shiftPercent.toFixed(1)}%, which may be audible.`); }
-  if (shiftPercent > 8) { safety = "Large"; warnings.push("The BPM difference exceeds the recommended 8% automatic blend range. Use a safer quick transition or choose another track."); }
-  if (shiftPercent > 12) { safety = "Extreme"; warnings.push("Automatic beatmatched blending is blocked until a safer plan is selected."); }
+  if (tempoRelationship.supported) warnings.push(tempoRelationship.label);
+  if (shiftPercent > tempoSafetyPreferences.preferredShift) { safety = "Moderate"; warnings.push(`Temporary tempo shift is ${shiftPercent.toFixed(1)}%, above the preferred ${tempoSafetyPreferences.preferredShift}% range.`); }
+  if (shiftPercent > tempoSafetyPreferences.warningThreshold) { safety = "Large"; warnings.push(`The BPM difference exceeds the ${tempoSafetyPreferences.warningThreshold}% warning threshold. A safer transition is recommended.`); }
+  if (shiftPercent > tempoSafetyPreferences.absoluteMaximumShift) { safety = "Extreme"; warnings.push(`Automatic beatmatching above ${tempoSafetyPreferences.absoluteMaximumShift}% is blocked until a safer plan is selected.`); }
   if (/key lock/.test(text)) warnings.push("Key lock is not supported by the current Web Audio deck engine.");
   else if (shiftPercent > 0.5) warnings.push("Key lock is unavailable, so temporary tempo matching also changes pitch.");
   const activeTempoChangeRequested = !/do not change|don't change|keep.*tempo|preserve.*tempo/.test(text) && /(?:change|adjust).*(?:deck [ab]|active).*(?:bpm|tempo)/.test(text);
@@ -4330,22 +4503,26 @@ function parseSmartMixPrompt(rawPrompt) {
     ? "Which should control the transition, the requested section estimate or the explicit bar countdown?"
     : "";
   if (requestedDeck === activeDeck) clarification = `Deck ${activeDeck.toUpperCase()} is already active. Edit the prompt if you want Deck ${activeDeck === "a" ? "B" : "A"} as the incoming deck.`;
-  const estimatedTimeUntilTransition = phraseLengthSeconds(activeBpm, barsUntilTransition);
+  const estimatedTimeUntilTransition = timing.targetPlaybackTime === null ? phraseLengthSeconds(activeBpm, barsUntilTransition) : timing.secondsRemaining;
   const confidence = Math.max(35, Math.min(96, 94 - warnings.length * 6 - (shiftPercent > 8 ? 18 : 0) - (phraseRequest ? 8 : 0)));
   return {
     id: createId(), rawPrompt: prompt, activeDeck, incomingDeck, incomingTrackSource,
+    incomingWasLoaded: Boolean(incoming.buffer),
     transitionTrigger, barsUntilTransition, estimatedTimeUntilTransition, targetSection,
+    triggerType: timing.triggerType, timestampBasis: timing.timestampBasis, targetPlaybackTime: timing.targetPlaybackTime,
+    currentPlaybackTime: timing.currentPlaybackTime, secondsRemainingUntilTrigger: timing.secondsRemaining,
+    parsedTimestamp: timing.parsedTimestamp, incomingCueTime: timing.incomingCueTime, interpretation: timing.interpretation, relativeDelaySeconds: timing.relativeDelaySeconds,
     transitionStyle: style.style, transitionStyleLabel: style.label, blendLengthBars: blendBars,
     avoidVocalOverlap, preserveActiveDeckTempo: true,
     temporaryIncomingBpm: originalIncomingBpm ? activeBpm : null, originalIncomingBpm: originalIncomingBpm || null,
     tempoAssistRatio: normalizedIncomingBpm ? clamp(activeBpm / normalizedIncomingBpm, 0.88, 1.12) : 1,
-    tempoShiftPercent: shiftPercent, tempoSafety: safety, bpmRecoveryEnabled: recoveryRequested,
+    tempoShiftPercent: shiftPercent, absoluteBpmDifference, bpmDifferencePercent, tempoRelationship: tempoRelationship.label, tempoSafety: safety, bpmRecoveryEnabled: recoveryRequested,
     bpmRecoveryStart: recoveryStartBars ? `After ${recoveryStartBars} bars` : "Immediately after transition",
     bpmRecoveryStartBars: recoveryStartBars, bpmRecoveryDurationBars: recoveryBars, bpmRecoveryCurve: curve,
     keyLockEnabled: false, stemInstructions: avoidVocalOverlap ? "Prefer low-vocal estimate" : "Full mix",
     loopInstructions: /loop/.test(text) ? "Requested, unavailable for automation" : "None",
     padInstructions: "None", confidence, warnings, unsupported, clarification,
-    forceTrackSelection, requiresSaferPlan: shiftPercent > 12,
+    forceTrackSelection, requiresSaferPlan: shiftPercent > tempoSafetyPreferences.absoluteMaximumShift,
     explanation: `Deck ${incomingDeck.toUpperCase()} will ${originalIncomingBpm ? `temporarily match ${activeBpm.toFixed(1)} BPM` : "use its available tempo"} while Deck ${activeDeck.toUpperCase()} remains uninterrupted. ${recoveryRequested && originalIncomingBpm ? `After the blend, it will return toward ${originalIncomingBpm} BPM over ${recoveryBars} bars using a ${curve.replace(/-/g, " ")} curve.` : "No automated BPM recovery is planned."}`
   };
 }
@@ -4358,8 +4535,16 @@ function renderSmartPromptPlan() {
   card.hidden = !plan;
   clarification.hidden = !smartPromptState.clarification;
   clarification.textContent = smartPromptState.clarification;
-  document.querySelector("#applySmartPrompt").disabled = !plan || Boolean(smartPromptState.clarification) || plan.requiresSaferPlan;
-  document.querySelector("#cancelSmartPrompt").disabled = !plan;
+  const applyButton = document.querySelector("#applySmartPrompt");
+  const promptExecutionActive = Boolean(autoMixState.running && autoMixState.promptPlan);
+  const samePlanActive = Boolean(promptExecutionActive && transitionController.activePlan?.id === plan?.id);
+  applyButton.disabled = !plan || Boolean(smartPromptState.clarification) || plan?.requiresSaferPlan || smartPromptState.executionInProgress || samePlanActive || transitionController.transitionStarted;
+  applyButton.textContent = smartPromptState.executionInProgress ? "Validating…" : samePlanActive ? "Plan Active" : promptExecutionActive ? "Replace Plan" : "Apply Plan";
+  document.querySelector("#cancelSmartPrompt").disabled = !plan && !promptExecutionActive;
+  const errorBox = document.querySelector("#smartPromptExecutionError");
+  if (errorBox) errorBox.hidden = !smartPromptState.executionError;
+  const errorMessage = document.querySelector("#smartPromptExecutionErrorMessage");
+  if (errorMessage) errorMessage.textContent = smartPromptState.executionError;
   if (!plan) return;
   document.querySelector("#smartPromptPlanState").textContent = smartPromptState.state;
   document.querySelector("#smartPromptConfidence").textContent = `${plan.confidence}%`;
@@ -4371,9 +4556,28 @@ function renderSmartPromptPlan() {
     ["BPM recovery", plan.bpmRecoveryEnabled ? `${plan.bpmRecoveryDurationBars} bars, ${plan.bpmRecoveryCurve}` : "Off"],
     ["Safety", `${plan.tempoSafety}${plan.tempoShiftPercent ? ` · ${plan.tempoShiftPercent.toFixed(1)}%` : ""}`], ["Key lock", "Unavailable"]
   ];
+  if (Number.isFinite(plan.targetPlaybackTime)) details.push(["Target time", formatTime(plan.targetPlaybackTime)], ["Interpretation", plan.interpretation || "Begin at active-deck timestamp"]);
   document.querySelector("#smartPromptPlanDetails").innerHTML = details.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("");
   const notices = [...plan.warnings, ...plan.unsupported.map((item) => `Unavailable: ${item}.`)];
   document.querySelector("#smartPromptWarnings").textContent = notices.length ? `Warnings: ${notices.join(" ")}` : "No plan warnings.";
+  const safety = evaluateTempoSafety(plan);
+  const safetyDetails = document.querySelector("#tempoSafetyDetails");
+  const showSafety = plan.requiresSaferPlan || Boolean(plan.parentUnsafePlanId) || safety.level !== "safe";
+  const saferButton = document.querySelector("#saferSmartPrompt");
+  if (saferButton) saferButton.disabled = !plan.requiresSaferPlan && safety.level === "safe";
+  safetyDetails.hidden = !showSafety;
+  if (showSafety) {
+    document.querySelector("#safetyOutgoingBpm").textContent = `Deck ${plan.activeDeck.toUpperCase()}: ${safety.outgoingBpm.toFixed(1)} BPM`;
+    document.querySelector("#safetyIncomingBpm").textContent = `Deck ${plan.incomingDeck.toUpperCase()}: ${safety.incomingBpm.toFixed(1)} BPM`;
+    document.querySelector("#safetyBpmDifference").textContent = `${safety.absoluteDifference.toFixed(1)} BPM · ${safety.bpmDifferencePercent.toFixed(1)}%`;
+    document.querySelector("#safetyRequiredShift").textContent = `${safety.requiredPlaybackShift.toFixed(1)}% playback-rate change`;
+    document.querySelector("#safetyConfiguredLimit").textContent = `${safety.configuredLimit}% absolute maximum`;
+    document.querySelector("#safetyRecommendation").textContent = plan.safetyStrategy || (safety.level === "moderate" ? "Short filtered blend" : "Natural-tempo quick handoff");
+    document.querySelector("#safetyInterpretation").textContent = `${safety.relationship.label}. A long beatmatched blend would cause excessive stretching, so DeckForge recommends a transition with little or no tempo matching.`;
+  }
+  const alternatives = document.querySelector("#saferTransitionPlans");
+  alternatives.hidden = !smartPromptState.saferPlans.length;
+  if (smartPromptState.saferPlans.length) alternatives.innerHTML = smartPromptState.saferPlans.map((item) => `<article class="safer-plan-card${item.recommended ? " is-recommended" : ""}"><small>${item.recommended ? "Recommended" : `Alternative ${item.rank}`} · ${item.safetyConfidence}% confidence</small><strong>${escapeHtml(item.safetyStrategy)}</strong><p>${escapeHtml(item.safetyWhy)}</p><p>Trigger: ${escapeHtml(item.transitionTrigger)} · ${item.blendLengthBars} bar${item.blendLengthBars === 1 ? "" : "s"} · ${item.bpmRecoveryEnabled ? "limited match and recovery" : "original BPM preserved"}</p><div><button type="button" data-safer-preview="${item.id}">Preview</button><button type="button" data-safer-apply="${item.id}">${item.bridgeCandidate ? "Use Bridge Track" : "Apply"}</button></div></article>`).join("");
   document.querySelector("#smartPromptExplanation").textContent = plan.explanation;
   document.querySelector("#promptRecoveryBars").value = String(plan.bpmRecoveryDurationBars);
   document.querySelector("#promptRecoveryCurve").value = plan.bpmRecoveryCurve;
@@ -4391,7 +4595,11 @@ function renderSmartPromptLibrary() {
 function planSmartPrompt() {
   const input = document.querySelector("#smartMixPrompt");
   const prompt = input.value.trim();
-  if (!prompt) return;
+  smartMixExecutionLog("prompt submitted");
+  if (!prompt) { showSmartPromptExecutionError("Enter a Smart Mix instruction before planning a transition."); return; }
+  clearSmartPromptExecutionError();
+  smartPromptState.saferPlans = [];
+  smartPromptState.selectedSaferPlanId = null;
   smartPromptState.state = "Parsing Prompt";
   smartPromptState.rawPrompt = prompt;
   try {
@@ -4400,8 +4608,13 @@ function planSmartPrompt() {
     smartPromptState.plan = plan;
     smartPromptState.clarification = plan.clarification;
     smartPromptState.state = plan.clarification || plan.requiresSaferPlan ? "Plan Needs Clarification" : "Plan Ready";
+    smartMixExecutionLog("plan parsed", { planId: plan.id, trigger: plan.transitionTrigger, style: plan.transitionStyle });
     smartPromptState.history = [{ prompt, favorite: false, createdAt: Date.now() }, ...smartPromptState.history.filter((item) => item.prompt !== prompt)].slice(0, 12);
     writeSmartPromptStorage();
+    if (plan.requiresSaferPlan && tempoSafetyPreferences.automaticallySuggest) {
+      const saferPlans = generateSaferTransitionPlans(plan);
+      if (tempoSafetyPreferences.automaticallyExecute && !tempoSafetyPreferences.askBeforeReplacing && saferPlans[0]) selectSaferTransitionPlan(saferPlans[0].id, true);
+    }
   } catch (error) {
     smartPromptState.state = "Error";
     smartPromptState.lastError = error.message || "Prompt parsing failed";
@@ -4413,13 +4626,18 @@ function applyPromptToTransition(transition, promptPlan) {
   if (!transition || !promptPlan) return transition;
   const activeBpm = Number(transition.from.analysis?.bpm || 120) * Number(document.querySelector(`#pitch-${promptPlan.activeDeck}`)?.value || 1);
   const originalIncomingBpm = Number(transition.to.analysis?.bpm || 0);
-  const normalizedIncomingBpm = normalizeBpmForMix(originalIncomingBpm, activeBpm);
-  const tempoAssistRatio = normalizedIncomingBpm ? activeBpm / normalizedIncomingBpm : 1;
+  const relationship = analyzeTempoRelationship(activeBpm, originalIncomingBpm, transition.from.analysis, transition.to.analysis);
+  const normalizedIncomingBpm = relationship.effectiveIncomingBpm || originalIncomingBpm;
+  const analyzedTempoAssistRatio = normalizedIncomingBpm ? activeBpm / normalizedIncomingBpm : 1;
+  const tempoAssistRatio = promptPlan.safetyStrategy ? Number(promptPlan.tempoAssistRatio || 1) : analyzedTempoAssistRatio;
   const shiftPercent = Math.abs((tempoAssistRatio - 1) * 100);
-  const maximumShift = Number(document.querySelector("#promptMaxShift")?.value || 8);
+  const maximumShift = tempoSafetyPreferences.absoluteMaximumShift;
   promptPlan.originalIncomingBpm = originalIncomingBpm || null;
-  promptPlan.temporaryIncomingBpm = originalIncomingBpm ? activeBpm : null;
+  promptPlan.temporaryIncomingBpm = originalIncomingBpm ? originalIncomingBpm * tempoAssistRatio : null;
   promptPlan.tempoShiftPercent = shiftPercent;
+  promptPlan.absoluteBpmDifference = Math.abs(originalIncomingBpm - activeBpm);
+  promptPlan.bpmDifferencePercent = activeBpm ? promptPlan.absoluteBpmDifference / activeBpm * 100 : 0;
+  promptPlan.tempoRelationship = relationship.label;
   promptPlan.tempoAssistRatio = clamp(tempoAssistRatio, 0.88, 1.12);
   if (shiftPercent > maximumShift) {
     promptPlan.requiresSaferPlan = true;
@@ -4431,7 +4649,9 @@ function applyPromptToTransition(transition, promptPlan) {
   const maxOverlap = Math.max(4, Math.min(transition.from.buffer.duration - 0.5, transition.to.buffer.duration - transition.nextCue - 0.5));
   transition.style = promptPlan.transitionStyle;
   transition.overlap = Math.max(2, Math.min(requestedOverlap, maxOverlap));
-  transition.startAt = Math.max(currentDeckTime(promptPlan.activeDeck) + 1, Math.min(transition.from.buffer.duration - transition.overlap - 0.5, currentDeckTime(promptPlan.activeDeck) + promptPlan.estimatedTimeUntilTransition));
+  const requestedStart = Number.isFinite(promptPlan.targetPlaybackTime) ? promptPlan.targetPlaybackTime : currentDeckTime(promptPlan.activeDeck) + promptPlan.estimatedTimeUntilTransition;
+  transition.startAt = Math.max(0, Math.min(transition.from.buffer.duration - transition.overlap - 0.5, requestedStart));
+  if (Number.isFinite(promptPlan.incomingCueTime)) transition.nextCue = Math.max(0, Math.min(transition.to.buffer.duration - 0.05, promptPlan.incomingCueTime));
   transition.tempoAssistRatio = promptPlan.tempoAssistRatio;
   transition.tempoRestoreSeconds = phraseLengthSeconds(promptPlan.temporaryIncomingBpm || transition.to.analysis?.bpm || 120, promptPlan.bpmRecoveryDurationBars);
   transition.filterSweep = /filter|bass|long|vocal|drop/.test(transition.style);
@@ -4447,49 +4667,273 @@ function promptCandidateMatches(item, promptPlan) {
   return !requestedTerms.length || requestedTerms.some((term) => searchable.includes(term.replace("high energy", "high").replace("low energy", "low")));
 }
 
+function cloneSaferPlan(plan, config) {
+  const safer = {
+    ...plan,
+    id: createId(),
+    parentUnsafePlanId: plan.id,
+    warnings: [...plan.warnings, config.warning],
+    unsupported: [...plan.unsupported],
+    transitionStyle: config.style,
+    transitionStyleLabel: config.label,
+    blendLengthBars: config.bars,
+    tempoAssistRatio: config.tempoAssistRatio ?? 1,
+    temporaryIncomingBpm: config.tempoAssistRatio && config.tempoAssistRatio !== 1 ? plan.originalIncomingBpm * config.tempoAssistRatio : plan.originalIncomingBpm,
+    bpmRecoveryEnabled: Boolean(config.tempoAssistRatio && config.tempoAssistRatio !== 1),
+    requiresSaferPlan: false,
+    tempoSafety: "Executable safer plan",
+    safetyStrategy: config.strategy,
+    safetyWhy: config.why,
+    safetyConfidence: config.confidence,
+    planSource: plan.planSource || "Prompt",
+    explanation: `${config.why} The original trigger remains ${plan.transitionTrigger.toLowerCase()}, and Deck ${plan.incomingDeck.toUpperCase()} ${config.tempoAssistRatio && config.tempoAssistRatio !== 1 ? "uses only a limited temporary adjustment" : "stays at its original BPM"}.`
+  };
+  if (!safer.bpmRecoveryEnabled) safer.bpmRecoveryStartBars = 0;
+  return safer;
+}
+
+function findTempoBridgeCandidate(plan) {
+  if (!tempoSafetyPreferences.allowBridgeSuggestions || !plan.originalIncomingBpm) return null;
+  const outgoingBpm = Number(deckState[plan.activeDeck]?.analysis?.bpm || 0);
+  const incomingBpm = Number(plan.originalIncomingBpm || 0);
+  if (!outgoingBpm || !incomingBpm) return null;
+  const low = Math.min(outgoingBpm, incomingBpm);
+  const high = Math.max(outgoingBpm, incomingBpm);
+  const midpoint = (outgoingBpm + incomingBpm) / 2;
+  return sourceFiles
+    .filter((source) => source.file && source.analysis?.bpm && source.analysis.bpm > low && source.analysis.bpm < high && source.name !== deckState[plan.activeDeck].trackName && source.name !== deckState[plan.incomingDeck].trackName)
+    .map((source) => {
+      const genrePenalty = source.analysis.genre && deckState[plan.activeDeck].analysis?.genre && source.analysis.genre !== deckState[plan.activeDeck].analysis.genre ? 5 : 0;
+      const energyPenalty = Math.abs(energyRank(source.analysis.energy) - energyRank(deckState[plan.activeDeck].analysis?.energy)) * 2;
+      return { source, score: Math.abs(source.analysis.bpm - midpoint) + genrePenalty + energyPenalty, firstShift: Math.abs(outgoingBpm / source.analysis.bpm - 1) * 100, secondShift: Math.abs(source.analysis.bpm / incomingBpm - 1) * 100 };
+    })
+    .filter((candidate) => candidate.firstShift < plan.tempoShiftPercent && candidate.secondShift < plan.tempoShiftPercent)
+    .sort((a, b) => a.score - b.score)[0] || null;
+}
+
+function generateSaferTransitionPlans(plan) {
+  if (!plan) return [];
+  smartPromptState.state = "Generating Safer Plans";
+  const safety = evaluateTempoSafety(plan);
+  const naturalWarning = "Extreme beatmatching was removed; incoming original BPM is preserved.";
+  const strategies = [];
+  if (safety.level === "moderate" && !tempoSafetyPreferences.preserveIncomingBpm) {
+    const direction = Number(plan.tempoAssistRatio || 1) >= 1 ? 1 : -1;
+    const limitedRatio = 1 + direction * tempoSafetyPreferences.preferredShift / 100;
+    strategies.push({ strategy: "Short filtered blend with limited tempo assist", style: "filter-sweep", label: "Short filtered blend", bars: 4, tempoAssistRatio: limitedRatio, confidence: 91, warning: "Tempo adjustment was limited to the preferred range.", why: "A four-bar filtered overlap reduces the time spent at a mismatched tempo." });
+  }
+  const preferred = tempoSafetyPreferences.transitionPreference === "fast" ? "quick-blend" : tempoSafetyPreferences.largeMismatchTransition;
+  const preferredLabel = preferred === "filter-sweep" ? "Filter fade and clean handoff" : preferred === "drop-mix" ? "Drop mix at original tempo" : "Quick cut at original tempo";
+  strategies.push({ strategy: preferredLabel, style: preferred, label: preferredLabel, bars: safety.level === "extreme" ? 1 : 2, tempoAssistRatio: 1, confidence: safety.level === "extreme" ? 95 : 93, warning: naturalWarning, why: "A short clean handoff avoids tempo stretching and keeps continuous output." });
+  strategies.push({ strategy: "Quick cut on the trigger", style: "quick-blend", label: "Quick cut", bars: 1, tempoAssistRatio: 1, confidence: safety.level === "extreme" ? 92 : 87, warning: naturalWarning, why: "The outgoing deck fades quickly while the incoming track starts at natural tempo." });
+  if (preferred !== "drop-mix") strategies.push({ strategy: "Incoming drop at original tempo", style: "drop-mix", label: "Drop mix", bars: 1, tempoAssistRatio: 1, confidence: 84, warning: naturalWarning, why: "A downbeat-focused drop avoids a long rhythmic overlap." });
+  const bridge = findTempoBridgeCandidate(plan);
+  const alternatives = strategies.slice(0, bridge ? 2 : 3).map((strategy, index) => ({ ...cloneSaferPlan(plan, strategy), rank: index + 1, recommended: index === 0 }));
+  if (bridge) {
+    const bridgePlan = cloneSaferPlan(plan, { strategy: `Tempo bridge via ${bridge.source.name}`, style: "filter-sweep", label: "Tempo bridge", bars: 4, tempoAssistRatio: 1, confidence: 80, warning: "Bridge track requires a two-stage transition.", why: `${bridge.source.name} at ${bridge.source.analysis.bpm} BPM moves toward the final ${plan.originalIncomingBpm} BPM destination.` });
+    bridgePlan.rank = alternatives.length + 1;
+    bridgePlan.bridgeCandidate = { id: bridge.source.id, name: bridge.source.name, bpm: bridge.source.analysis.bpm };
+    bridgePlan.preferredIncomingId = bridge.source.id;
+    bridgePlan.forceTrackSelection = true;
+    bridgePlan.bridgeFinalDestination = { name: deckState[plan.incomingDeck].trackName, buffer: deckState[plan.incomingDeck].buffer, analysis: deckState[plan.incomingDeck].analysis };
+    alternatives.push(bridgePlan);
+  }
+  smartPromptState.saferPlans = alternatives;
+  smartPromptState.state = "Safer Plan Ready";
+  return alternatives;
+}
+
+function selectSaferTransitionPlan(planId, execute = false) {
+  const plan = smartPromptState.saferPlans.find((item) => item.id === planId);
+  if (!plan) return false;
+  smartPromptState.plan = plan;
+  smartPromptState.parsedIntent = plan;
+  smartPromptState.selectedSaferPlanId = plan.id;
+  smartPromptState.clarification = "";
+  smartPromptState.executionError = "";
+  smartPromptState.saferPlans = [];
+  smartPromptState.state = execute ? "Safer Plan Applied" : "Awaiting User Selection";
+  renderSmartPromptPlan();
+  if (execute) executeSmartMixPlan(plan);
+  return true;
+}
+
 function useSaferSmartPrompt() {
   const plan = smartPromptState.plan;
   if (!plan) return;
-  plan.transitionStyle = "quick-blend";
-  plan.transitionStyleLabel = "Quick blend";
-  plan.blendLengthBars = 4;
-  plan.tempoAssistRatio = 1;
-  plan.temporaryIncomingBpm = plan.originalIncomingBpm;
-  plan.bpmRecoveryEnabled = false;
-  plan.requiresSaferPlan = false;
-  plan.tempoSafety = "Safer alternative";
-  plan.warnings.push("Beatmatched tempo assistance was removed because the requested shift exceeded the safe range.");
-  plan.explanation = `Deck ${plan.incomingDeck.toUpperCase()} will use a short transition at its natural tempo. Deck ${plan.activeDeck.toUpperCase()} remains uninterrupted until the handoff.`;
-  smartPromptState.clarification = "";
-  smartPromptState.state = "Plan Ready";
+  const alternatives = generateSaferTransitionPlans(plan);
+  if (!alternatives.length) { showSmartPromptExecutionError("No executable safer transition could be generated for the current decks."); return; }
   renderSmartPromptPlan();
+  if (tempoSafetyPreferences.automaticallyExecute && !tempoSafetyPreferences.askBeforeReplacing) selectSaferTransitionPlan(alternatives[0].id, true);
 }
 
 async function applySmartPromptPlan() {
   const plan = smartPromptState.plan;
-  if (!plan || smartPromptState.clarification || plan.requiresSaferPlan) return;
-  const maximumShift = Number(document.querySelector("#promptMaxShift")?.value || 8);
+  if (!plan) { showSmartPromptExecutionError("Create a transition plan before applying it."); return false; }
+  if (smartPromptState.clarification) { showSmartPromptExecutionError(smartPromptState.clarification); return false; }
+  if (plan.requiresSaferPlan) { useSaferSmartPrompt(); return false; }
+  const maximumShift = tempoSafetyPreferences.absoluteMaximumShift;
   if (plan.tempoShiftPercent > maximumShift && Math.abs(plan.tempoAssistRatio - 1) > 0.005) {
     plan.requiresSaferPlan = true;
     plan.warnings.push(`The planned ${plan.tempoShiftPercent.toFixed(1)}% shift exceeds the selected ${maximumShift}% safety limit.`);
     smartPromptState.state = "Plan Needs Clarification";
     renderSmartPromptPlan();
-    return;
+    showSmartPromptExecutionError(plan.warnings[plan.warnings.length - 1]);
+    return false;
   }
   plan.bpmRecoveryDurationBars = Number(document.querySelector("#promptRecoveryBars")?.value || plan.bpmRecoveryDurationBars);
   plan.bpmRecoveryCurve = document.querySelector("#promptRecoveryCurve")?.value || plan.bpmRecoveryCurve;
-  smartPromptState.state = "Plan Applied";
+  return executeSmartMixPlan(plan);
+}
+
+function smartMixExecutionLog(message, details = null) {
+  if (!DECKFORGE_DEVELOPMENT) return;
+  if (details) console.debug(`[DeckForge][SmartMixPrompt] ${message}`, details);
+  else console.debug(`[DeckForge][SmartMixPrompt] ${message}`);
+}
+
+function showSmartPromptExecutionError(message) {
+  const reason = String(message || "The transition scheduler did not initialize.");
+  smartPromptState.executionError = reason;
+  smartPromptState.lastError = reason;
+  smartPromptState.state = "Error";
+  smartPromptState.executionInProgress = false;
+  smartMixExecutionLog(`execution failed: ${reason}`);
   renderSmartPromptPlan();
-  const selectedSource = document.querySelector("#smartMixSource")?.value || "both";
-  await startSmartMix(document.querySelector("#smartMixMode")?.value || "club", plan.forceTrackSelection && selectedSource === "decks" ? "crate" : selectedSource, plan);
+  setSmartMixStatus(`Prompt plan error: ${reason}`);
+}
+
+function clearSmartPromptExecutionError() {
+  smartPromptState.executionError = "";
+  if (smartPromptState.lastError !== "None") smartPromptState.lastError = "None";
+}
+
+function validateSmartMixExecutionPlan(plan) {
+  if (!plan || !plan.id) throw new Error("The parsed transition plan is missing or stale.");
+  const activeDeck = deckState[plan.activeDeck]?.playing && deckState[plan.activeDeck]?.buffer ? plan.activeDeck : detectActiveDeck();
+  if (!activeDeck) throw new Error("No active deck is playing. Start Deck A or Deck B, then retry the plan.");
+  if (!deckState[activeDeck]?.buffer) throw new Error(`Deck ${activeDeck.toUpperCase()} has no playable track loaded.`);
+  const currentPlaybackTime = currentDeckTime(activeDeck);
+  if (plan.triggerType === "relative-seconds" && Number.isFinite(plan.relativeDelaySeconds)) plan.targetPlaybackTime = currentPlaybackTime + plan.relativeDelaySeconds;
+  if (plan.executeImmediately) plan.targetPlaybackTime = currentPlaybackTime;
+  if (Number.isFinite(plan.targetPlaybackTime)) {
+    if (plan.targetPlaybackTime > deckState[activeDeck].buffer.duration) throw new Error(`The target timestamp ${formatTime(plan.targetPlaybackTime)} exceeds Deck ${activeDeck.toUpperCase()}'s ${formatTime(deckState[activeDeck].buffer.duration)} duration.`);
+    if (plan.targetPlaybackTime < currentPlaybackTime - 0.1 && !plan.executeImmediately) throw new Error(`The target timestamp ${formatTime(plan.targetPlaybackTime)} has already passed on Deck ${activeDeck.toUpperCase()}. Choose Execute Now, Next Phrase, Delay From Now, or Cancel.`);
+    plan.currentPlaybackTime = currentPlaybackTime;
+    plan.secondsRemainingUntilTrigger = Math.max(0, plan.targetPlaybackTime - currentPlaybackTime);
+    plan.estimatedTimeUntilTransition = plan.secondsRemainingUntilTrigger;
+  }
+  const incomingDeck = activeDeck === "a" ? "b" : "a";
+  const sourceMode = document.querySelector("#smartMixSource")?.value || "both";
+  const hasLocalCandidate = sourceFiles.some((source) => source.file || source.buffer);
+  const hasSavedCandidate = (() => { try { return JSON.parse(localStorage.getItem("deckforge-sources") || "[]").length > 0; } catch { return false; } })();
+  if (!deckState[incomingDeck].buffer && sourceMode === "decks" && !plan.forceTrackSelection) throw new Error(`Deck ${incomingDeck.toUpperCase()} is empty and the Smart Mix source is limited to loaded decks.`);
+  if (!deckState[incomingDeck].buffer && !hasLocalCandidate && !hasSavedCandidate) throw new Error(`Deck ${incomingDeck.toUpperCase()} is empty and no playable Smart Mix source is available.`);
+  if (!deckState[incomingDeck].buffer && Number(plan.estimatedTimeUntilTransition || 0) < 5) throw new Error(`Deck ${incomingDeck.toUpperCase()} is empty and more preparation time is required before this deadline.`);
+  const supportedStyles = new Set(["smooth-crossfade", "quick-blend", "long-dissolve", "filter-sweep", "bass-swap-phrase", "drop-mix"]);
+  if (!supportedStyles.has(plan.transitionStyle)) throw new Error(`The transition style “${plan.transitionStyleLabel || plan.transitionStyle}” is not implemented.`);
+  if (!Number.isFinite(plan.barsUntilTransition) || plan.barsUntilTransition < 1 || !Number.isFinite(plan.estimatedTimeUntilTransition) || (plan.estimatedTimeUntilTransition <= 0 && !plan.executeImmediately)) throw new Error("The transition trigger could not be converted to a real bar or time estimate.");
+  const maximumShift = tempoSafetyPreferences.absoluteMaximumShift;
+  if (Number(plan.tempoShiftPercent || 0) > maximumShift && Math.abs(Number(plan.tempoAssistRatio || 1) - 1) > 0.005) throw new Error(`The planned tempo shift exceeds the selected ${maximumShift}% safety limit.`);
+  if (plan.bpmRecoveryEnabled && (!Number.isFinite(plan.bpmRecoveryDurationBars) || plan.bpmRecoveryDurationBars <= 0)) throw new Error("BPM recovery duration is invalid.");
+  return { activeDeck, incomingDeck, sourceMode };
+}
+
+function cancelSmartMixAutomationForReplacement(reason) {
+  const result = cancelScheduledTransition(reason);
+  autoMixState.timers.forEach((timer) => { clearTimeout(timer); cancelAnimationFrame(timer); });
+  autoMixState.timers = [];
+  autoMixState.running = false;
+  autoMixState.transition = null;
+  autoMixState.handoffArmed = false;
+  autoMixState.preparedDeck = null;
+  autoMixState.preparedIndex = null;
+  autoMixState.estimatedTransitionAt = null;
+  autoMixState.promptPlan = null;
+  for (const id of ["a", "b"]) setDeckStatus(id, deckState[id].playing ? "playing" : deckState[id].buffer ? "ready" : "empty", { smartMixControlled: false });
+  setSmartMixButtons(false);
+  return result;
+}
+
+async function executeSmartMixPlan(plan) {
+  smartMixExecutionLog("apply requested", { planId: plan?.id, state: smartPromptState.state });
+  if (smartPromptState.executionInProgress) {
+    smartPromptState.executionError = "This plan is already being validated. Wait or cancel before applying it again.";
+    renderSmartPromptPlan();
+    return false;
+  }
+  if (transitionController.transitionStarted || autoMixState.transition) {
+    showSmartPromptExecutionError("A crossfade is currently active. Wait for it to complete or take manual control before applying another plan.");
+    return false;
+  }
+  smartPromptState.executionInProgress = true;
+  const executionToken = ++smartPromptState.executionToken;
+  clearSmartPromptExecutionError();
+  smartPromptState.state = "Validating";
+  renderSmartPromptPlan();
+  try {
+    const resolved = validateSmartMixExecutionPlan(plan);
+    const incomingPriority = transitionPriority(plan.planSource || "Prompt");
+    if (transitionController.activePlan && transitionController.activePlan.priority > incomingPriority) throw new Error(`A higher-priority ${transitionController.activePlan.source} transition is already scheduled. Cancel it before applying this plan.`);
+    if (autoMixState.running || transitionController.activePlan) {
+      const replacementLabel = plan.planSource === "Deck Quick Action" ? "deck quick instruction" : "prompt instruction";
+      const replacementMessage = `Previous transition plan replaced by ${replacementLabel}.`;
+      const replacementResult = cancelSmartMixAutomationForReplacement(replacementMessage);
+      if (!plan.warnings.includes(replacementMessage)) plan.warnings.push(replacementMessage);
+      setSmartMixStatus(replacementMessage);
+      smartMixExecutionLog("previous plan replaced", { result: replacementResult });
+    }
+    smartMixExecutionLog("plan validated", { planId: plan.id, triggerSeconds: plan.estimatedTimeUntilTransition });
+    smartMixExecutionLog("active deck resolved", { deck: resolved.activeDeck });
+    smartMixExecutionLog("incoming deck resolved", { deck: resolved.incomingDeck, loaded: Boolean(deckState[resolved.incomingDeck].buffer) });
+    await AudioEngine.init();
+    if (executionToken !== smartPromptState.executionToken) return false;
+    if (AudioEngine.context?.state !== "running") throw new Error(`AudioContext is ${AudioEngine.context?.state || "not started"}. Press Start Audio and retry.`);
+    smartPromptState.state = "Preparing Incoming Deck";
+    renderSmartPromptPlan();
+    const selectedSource = plan.forceTrackSelection && resolved.sourceMode === "decks" ? "crate" : resolved.sourceMode;
+    const started = await startSmartMix(document.querySelector("#smartMixMode")?.value || "club", selectedSource, plan);
+    if (executionToken !== smartPromptState.executionToken) {
+      if (autoMixState.running && autoMixState.promptPlan === plan) stopAiMix({ keepDecks: true, silent: true });
+      return false;
+    }
+    if (!started && plan.requiresSaferPlan && smartPromptState.saferPlans.length) {
+      smartPromptState.executionInProgress = false;
+      smartPromptState.state = "Safer Plan Ready";
+      renderSmartPromptPlan();
+      return false;
+    }
+    if (!started) throw new Error(autoMixState.lastError !== "None" ? autoMixState.lastError : "No eligible incoming track found.");
+    if (!autoMixState.running || !autoMixState.handoffArmed || !Number.isFinite(autoMixState.estimatedTransitionAt)) throw new Error("Transition scheduler did not initialize.");
+    smartPromptState.executionInProgress = false;
+    smartPromptState.lastExecutionPlanId = plan.id;
+    smartPromptState.state = "Waiting for Trigger";
+    smartMixExecutionLog("transition scheduled", { planId: plan.id, estimatedTransitionAt: autoMixState.estimatedTransitionAt });
+    renderSmartPromptPlan();
+    return true;
+  } catch (error) {
+    if (autoMixState.running && autoMixState.promptPlan === plan) stopAiMix({ keepDecks: true, silent: true });
+    showSmartPromptExecutionError(error.message || "Unable to execute the transition plan.");
+    return false;
+  }
 }
 
 function cancelSmartPromptPlan() {
-  if (autoMixState.running && autoMixState.promptPlan) stopAiMix({ keepDecks: true });
+  if (autoMixState.running && autoMixState.promptPlan) {
+    if (transitionController.transitionStarted || autoMixState.transition) stopAiMix({ keepDecks: true });
+    else cancelSmartMixAutomationForReplacement("Cancelled by user");
+  } else if (transitionController.activePlan) cancelScheduledTransition("Cancelled by user");
+  if (bpmRecoveryState.plan) cancelBpmRecovery("Cancelled", false, true);
   smartPromptState.plan = null;
   smartPromptState.parsedIntent = null;
   smartPromptState.clarification = "";
+  smartPromptState.executionInProgress = false;
+  smartPromptState.executionToken += 1;
+  smartPromptState.executionError = "";
+  smartPromptState.saferPlans = [];
+  smartPromptState.selectedSaferPlanId = null;
   smartPromptState.state = "Cancelled";
+  setSmartMixStatus("Transition cancelled. Deck audio continues under manual control.");
   renderSmartPromptPlan();
 }
 
@@ -4500,6 +4944,153 @@ function saveSmartPromptRecipe() {
   smartPromptState.recipes = [{ name, prompt: plan.rawPrompt, plan: { transitionStyle: plan.transitionStyle, blendLengthBars: plan.blendLengthBars, bpmRecoveryDurationBars: plan.bpmRecoveryDurationBars, bpmRecoveryCurve: plan.bpmRecoveryCurve, avoidVocalOverlap: plan.avoidVocalOverlap }, createdAt: Date.now() }, ...smartPromptState.recipes].slice(0, 12);
   writeSmartPromptStorage();
   renderSmartPromptLibrary();
+}
+
+function quickTransitionStyleForDelay(delay) {
+  if (delay <= 5) return { prompt: "quick mix", style: "quick-blend", label: "Quick blend" };
+  if (delay <= 10) return { prompt: "filter fade", style: "filter-sweep", label: "Filter fade" };
+  return { prompt: "smooth blend", style: "smooth-crossfade", label: "Smooth blend" };
+}
+
+function createQuickTransitionPlan(outgoingDeck, options = {}) {
+  if (!deckState[outgoingDeck]?.buffer || !deckState[outgoingDeck].playing) throw new Error(`Deck ${outgoingDeck.toUpperCase()} must be loaded and playing before scheduling its AI transition.`);
+  const incomingDeck = outgoingDeck === "a" ? "b" : "a";
+  const current = currentDeckTime(outgoingDeck);
+  const activeBpm = Number(deckState[outgoingDeck].analysis?.bpm || 120) * Number(document.querySelector(`#pitch-${outgoingDeck}`)?.value || 1);
+  const delay = Math.max(0, Number(options.delaySeconds ?? 10));
+  const style = options.style || quickTransitionStyleForDelay(delay);
+  const prompt = `Transition to Deck ${incomingDeck.toUpperCase()} in ${delay} seconds using a ${style.prompt}. Return the incoming track to its original BPM over ${options.recoveryBars || 8} bars.`;
+  const plan = parseSmartMixPrompt(prompt);
+  plan.activeDeck = outgoingDeck;
+  plan.incomingDeck = incomingDeck;
+  plan.incomingWasLoaded = Boolean(deckState[incomingDeck].buffer);
+  plan.planSource = "Deck Quick Action";
+  plan.priority = transitionPriority(plan.planSource);
+  plan.transitionStyle = style.style;
+  plan.transitionStyleLabel = style.label;
+  plan.blendLengthBars = Number(options.durationBars || (delay <= 5 ? 4 : 8));
+  plan.bpmRecoveryDurationBars = Number(options.recoveryBars || 8);
+  plan.avoidVocalOverlap = Boolean(options.avoidVocalOverlap);
+  plan.forceTrackSelection = options.useLoaded === false;
+  plan.clarification = "";
+  plan.triggerType = options.triggerType || "relative-seconds";
+  plan.relativeDelaySeconds = delay;
+  plan.currentPlaybackTime = current;
+  plan.targetPlaybackTime = Number.isFinite(options.targetPlaybackTime) ? options.targetPlaybackTime : current + delay;
+  plan.estimatedTimeUntilTransition = Math.max(0, plan.targetPlaybackTime - current);
+  plan.secondsRemainingUntilTrigger = plan.estimatedTimeUntilTransition;
+  plan.executeImmediately = delay === 0 && !Number.isFinite(options.targetPlaybackTime);
+  plan.transitionTrigger = options.interpretation || `Begin transition in ${delay} seconds`;
+  plan.interpretation = plan.transitionTrigger;
+  plan.barsUntilTransition = Math.max(1, Math.round(Math.max(0.1, plan.estimatedTimeUntilTransition) / phraseLengthSeconds(activeBpm, 1)));
+  const quickSafetyLimit = delay <= 5 ? tempoSafetyPreferences.preferredShift : delay <= 10 ? tempoSafetyPreferences.warningThreshold : tempoSafetyPreferences.absoluteMaximumShift;
+  if (plan.tempoShiftPercent > quickSafetyLimit) {
+    plan.tempoAssistRatio = 1;
+    plan.bpmRecoveryEnabled = false;
+    plan.tempoSafety = "Natural-tempo quick transition";
+    plan.safetyStrategy = delay <= 5 ? "Fast natural-tempo quick cut" : delay <= 10 ? "Natural-tempo filter fade" : "Short natural-tempo handoff";
+    plan.transitionStyle = delay <= 5 ? "quick-blend" : tempoSafetyPreferences.largeMismatchTransition;
+    plan.transitionStyleLabel = delay <= 5 ? "Quick cut" : plan.transitionStyle === "filter-sweep" ? "Filter fade" : plan.transitionStyle === "drop-mix" ? "Drop mix" : "Quick blend";
+    plan.blendLengthBars = delay <= 5 ? 1 : 2;
+    plan.warnings.push(`The ${delay}-second deadline automatically uses a non-beatmatched ${plan.transitionStyleLabel.toLowerCase()} because the BPM difference exceeds the safe ${quickSafetyLimit}% range.`);
+    plan.requiresSaferPlan = false;
+  }
+  return plan;
+}
+
+async function executeQuickTransition(outgoingDeck, options = {}) {
+  try {
+    const incomingDeck = outgoingDeck === "a" ? "b" : "a";
+    const delay = Number(options.delaySeconds ?? 10);
+    if (!deckState[incomingDeck].buffer && delay < 15 && options.triggerType !== "phrase-boundary") {
+      throw new Error(`Deck ${incomingDeck.toUpperCase()} is empty. More preparation time is required; extend to 15 seconds, use Next Phrase, or choose a track manually.`);
+    }
+    const plan = createQuickTransitionPlan(outgoingDeck, options);
+    smartPromptState.plan = plan;
+    smartPromptState.parsedIntent = plan;
+    smartPromptState.rawPrompt = plan.rawPrompt;
+    smartPromptState.clarification = "";
+    smartPromptState.state = "Plan Ready";
+    clearSmartPromptExecutionError();
+    renderSmartPromptPlan();
+    return executeSmartMixPlan(plan);
+  } catch (error) {
+    const fallback = smartPromptState.plan || parseSmartMixPrompt(`Transition to Deck ${outgoingDeck === "a" ? "B" : "A"} in 15 seconds using a smooth blend`);
+    fallback.planSource = "Deck Quick Action";
+    smartPromptState.plan = fallback;
+    renderSmartPromptPlan();
+    showSmartPromptExecutionError(error.message || "Unable to schedule the deck quick transition.");
+    return false;
+  }
+}
+
+function openQuickTransitionPanel(deckId, timingMode = "seconds") {
+  quickTransitionState.deckId = deckId;
+  document.querySelector("#quickTransitionTitle").textContent = `Deck ${deckId.toUpperCase()} → Deck ${deckId === "a" ? "B" : "A"}`;
+  document.querySelector("#quickTimingMode").value = timingMode;
+  document.querySelector("#quickTimingValue").value = timingMode === "timestamp" ? formatTime(currentDeckTime(deckId) + 15) : "10";
+  document.querySelector("#quickTransitionCustom").hidden = false;
+  document.querySelector("#quickTimingValue").focus();
+}
+
+function scheduleCustomQuickTransition() {
+  const deckId = quickTransitionState.deckId;
+  const mode = document.querySelector("#quickTimingMode").value;
+  const value = document.querySelector("#quickTimingValue").value.trim();
+  const durationBars = Number(document.querySelector("#quickTransitionDuration").value);
+  const recoveryBars = Number(document.querySelector("#quickRecoveryBars").value);
+  const styleValue = document.querySelector("#quickTransitionStyle").value;
+  const styleMap = { smooth: { prompt: "smooth blend", style: "smooth-crossfade", label: "Smooth blend" }, filter: { prompt: "filter fade", style: "filter-sweep", label: "Filter fade" }, quick: { prompt: "quick mix", style: "quick-blend", label: "Quick blend" }, bass: { prompt: "bass swap", style: "bass-swap-phrase", label: "Bass swap" }, drop: { prompt: "drop mix", style: "drop-mix", label: "Drop mix" } };
+  const current = currentDeckTime(deckId);
+  const bpm = Number(deckState[deckId].analysis?.bpm || 120);
+  let delaySeconds = Number(value);
+  let targetPlaybackTime = null;
+  let triggerType = mode;
+  if (mode === "bars") delaySeconds = phraseLengthSeconds(bpm, Number(value));
+  if (mode === "timestamp") { targetPlaybackTime = parseClockTimestamp(value); delaySeconds = targetPlaybackTime - current; triggerType = "absolute-timestamp"; }
+  if (mode === "before-end") { targetPlaybackTime = deckState[deckId].buffer.duration - Number(value); delaySeconds = targetPlaybackTime - current; triggerType = "before-end"; }
+  if (!Number.isFinite(delaySeconds) || delaySeconds < 0) { showSmartPromptExecutionError("The custom transition time is invalid or has already passed."); return; }
+  if (document.querySelector("#quickTimingInterpretation").value === "complete") {
+    const blendSeconds = phraseLengthSeconds(bpm, durationBars);
+    delaySeconds = Math.max(0, delaySeconds - blendSeconds);
+    if (targetPlaybackTime !== null) targetPlaybackTime = current + delaySeconds;
+  }
+  document.querySelector("#quickTransitionCustom").hidden = true;
+  executeQuickTransition(deckId, {
+    delaySeconds, targetPlaybackTime, triggerType, durationBars, recoveryBars, style: styleMap[styleValue],
+    avoidVocalOverlap: document.querySelector("#quickAvoidVocals").checked,
+    useLoaded: document.querySelector("#quickUseLoaded").checked,
+    interpretation: `${document.querySelector("#quickTimingInterpretation").value === "complete" ? "Complete" : "Begin"} transition using ${mode} timing`
+  });
+}
+
+function continueTempoBridgePlan(bridgePlan, activeBridgeDeck, destinationDeck) {
+  const destination = bridgePlan.bridgeFinalDestination;
+  if (!destination?.buffer) { setSmartMixStatus("Bridge transition completed, but the original destination is no longer available."); return; }
+  loadBufferToDeck(destination.buffer, destination.name, destinationDeck, { analysis: destination.analysis, smartMixControlled: true });
+  const followup = parseSmartMixPrompt(`Transition to Deck ${destinationDeck.toUpperCase()} in 16 seconds using a filter fade`);
+  followup.activeDeck = activeBridgeDeck;
+  followup.incomingDeck = destinationDeck;
+  followup.planSource = "Prompt";
+  followup.safetyStrategy = "Bridge completion at original tempo";
+  followup.transitionStyle = "filter-sweep";
+  followup.transitionStyleLabel = "Bridge completion filter fade";
+  followup.blendLengthBars = 2;
+  followup.tempoAssistRatio = 1;
+  followup.bpmRecoveryEnabled = false;
+  followup.requiresSaferPlan = false;
+  followup.incomingWasLoaded = true;
+  followup.relativeDelaySeconds = 16;
+  followup.currentPlaybackTime = currentDeckTime(activeBridgeDeck);
+  followup.targetPlaybackTime = followup.currentPlaybackTime + 16;
+  followup.estimatedTimeUntilTransition = 16;
+  followup.bridgeStage = "final-destination";
+  smartPromptState.plan = followup;
+  smartPromptState.parsedIntent = followup;
+  smartPromptState.state = "Safer Plan Applied";
+  setSmartMixStatus(`Tempo bridge active. Preparing the original destination ${destination.name} for the final handoff.`);
+  renderSmartPromptPlan();
+  setTimeout(() => executeSmartMixPlan(followup), 0);
 }
 
 async function startAiMix(mode = document.querySelector("#smartMixMode")?.value || "club") {
@@ -4529,14 +5120,19 @@ async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = nu
   autoMixState.state = "Analyzing Active Deck";
   setSmartMixStatus(`Analyzing ${smartMixSourceLabel(sourceMode).toLowerCase()}...`);
   renderSmartMixPanel();
-  const activeDeck = detectActiveDeck();
+  const activeDeck = promptPlan?.activeDeck && deckState[promptPlan.activeDeck]?.playing && deckState[promptPlan.activeDeck]?.buffer ? promptPlan.activeDeck : detectActiveDeck();
   const oppositeDeck = activeDeck === "a" ? "b" : activeDeck === "b" ? "a" : null;
   if (promptPlan && activeDeck) {
     promptPlan.activeDeck = activeDeck;
     promptPlan.incomingDeck = oppositeDeck;
   }
   let items = await collectAutoMixItems(mode, sourceMode);
-  if (promptPlan?.forceTrackSelection) items = items.filter((item) => !item.id.startsWith("deck-") && promptCandidateMatches(item, promptPlan));
+  if (promptPlan && !promptPlan.incomingWasLoaded && Number.isFinite(promptPlan.targetPlaybackTime) && promptPlan.targetPlaybackTime - currentDeckTime(activeDeck || promptPlan.activeDeck) < 2) {
+    autoMixState.lastError = "Incoming track preparation could not finish before the requested deadline. Extend the transition time or transition when ready.";
+    setSmartMixStatus(autoMixState.lastError);
+    return false;
+  }
+  if (promptPlan?.forceTrackSelection) items = items.filter((item) => !item.id.startsWith("deck-") && (promptPlan.preferredIncomingId ? item.id === promptPlan.preferredIncomingId : promptCandidateMatches(item, promptPlan)));
   if (activeDeck) {
     const activeItem = deckAsSmartMixItem(activeDeck, mode);
     const incomingItem = promptPlan?.forceTrackSelection ? null : deckAsSmartMixItem(oppositeDeck, mode);
@@ -4548,30 +5144,34 @@ async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = nu
     autoMixState.items = [];
     autoMixState.plan = [];
     autoMixState.state = "No Eligible Track Found";
-    setSmartMixStatus("No playable track matched the current Smart Mix source. Add local audio, change source, or load a track manually.");
+    autoMixState.lastError = "No playable track matched the current Smart Mix source.";
+    setSmartMixStatus(`${autoMixState.lastError} Add local audio, change source, or load a track manually.`);
     renderSmartMixPanel();
-    return;
+    return false;
   }
   if (activeDeck && items.length < 2) {
     autoMixState.items = items;
     autoMixState.plan = [];
     autoMixState.state = "No Eligible Track Found";
+    autoMixState.lastError = promptPlan?.forceTrackSelection ? "No eligible incoming DITC track matched the prompt constraints." : "No eligible incoming track found.";
     setSmartMixStatus(promptPlan?.forceTrackSelection
       ? "The active deck will keep playing. No DITC track matched the prompt constraints; broaden the request or load the incoming deck manually."
       : "The active deck will keep playing. Add another playable track or broaden the Smart Mix source.");
     renderSmartMixPanel();
-    return;
+    return false;
   }
   if (autoMixState.running) stopAiMix({ keepDecks: true, silent: true });
   const plan = buildSmartMixPlan(items, mode, activeDeck ? "decks" : sourceMode);
   if (promptPlan && plan.transitions[0]) applyPromptToTransition(plan.transitions[0], promptPlan);
   if (promptPlan?.requiresSaferPlan) {
-    smartPromptState.state = "Plan Needs Clarification";
+    smartPromptState.state = "Unsafe Plan Detected";
     smartPromptState.plan = promptPlan;
+    if (tempoSafetyPreferences.automaticallySuggest) generateSaferTransitionPlans(promptPlan);
     setSmartMixStatus("The selected incoming track exceeds the configured tempo safety limit. Use the safer plan or choose another track; the active deck continues unchanged.");
     renderSmartPromptPlan();
     renderSmartMixPanel();
-    return;
+    autoMixState.lastError = "The selected incoming track exceeds the configured tempo safety limit.";
+    return false;
   }
   autoMixState.running = true;
   autoMixState.state = activeDeck ? "Preparing Transition" : "Selecting Next Track";
@@ -4583,6 +5183,7 @@ async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = nu
   autoMixState.activeDeck = activeDeck || "a";
   autoMixState.incomingDeck = autoMixState.activeDeck === "a" ? "b" : "a";
   autoMixState.lastManualOverride = "None";
+  autoMixState.lastError = "None";
   autoMixState.promptPlan = promptPlan;
   setSmartMixButtons(true);
   if (activeDeck) {
@@ -4603,6 +5204,7 @@ async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = nu
   scheduleNextAutoMix();
   renderSmartMixPanel();
   switchView("decks");
+  return Boolean(autoMixState.running && autoMixState.handoffArmed && Number.isFinite(autoMixState.estimatedTransitionAt));
 }
 
 async function collectAutoMixItems(mode = "club", sourceMode = "both") {
@@ -4939,6 +5541,7 @@ function runBpmRecovery() {
 
 function startPlannedBpmRecovery(id, transition) {
   const plan = transition.promptPlan;
+  if (DECKFORGE_DEVELOPMENT) console.debug("[DeckForge][SmartMix] bpm recovery started", { deck: id, planId: plan?.id });
   if (!plan?.bpmRecoveryEnabled || Math.abs(Number(document.querySelector(`#pitch-${id}`)?.value || 1) - 1) < 0.005) {
     rampDeckPitchToNatural(id, transition.tempoRestoreSeconds);
     return;
@@ -5018,7 +5621,8 @@ function renderSmartMixPanel() {
   });
   const countdown = document.querySelector("#smartMixCountdown");
   if (countdown) {
-    if (autoMixState.state === "Transitioning") countdown.textContent = "Transition starting";
+    if (["Transitioning", "Executing Safe Transition"].includes(autoMixState.state)) countdown.textContent = "Transition starting";
+    else if (transitionController.schedulerActive && Number.isFinite(transitionController.secondsRemaining)) countdown.textContent = deckState[transitionController.activePlan?.activeDeck]?.playing ? `Transition in ${Math.max(0, transitionController.secondsRemaining).toFixed(1)} seconds` : "Countdown paused with outgoing deck";
     else if (autoMixState.estimatedTransitionAt) countdown.textContent = `Estimated transition in ${Math.max(0, Math.ceil((autoMixState.estimatedTransitionAt - performance.now()) / 1000))} seconds`;
     else if (autoMixState.state === "Transition Complete") countdown.textContent = "Transition complete";
     else countdown.textContent = "No transition planned";
@@ -5039,6 +5643,10 @@ function renderSmartMixPanel() {
   if (eqBlend) eqBlend.textContent = `EQ blend: ${autoMixState.state === "Transitioning" ? `${transitionPercent}%` : "neutral"}`;
   const stemUsage = document.querySelector("#transitionStemUsage");
   if (stemUsage) stemUsage.textContent = "Stems: full mix";
+  const planSource = document.querySelector("#transitionPlanSource");
+  if (planSource) planSource.textContent = `Plan: ${transitionController.activePlan?.source || "none"}`;
+  const triggerDetail = document.querySelector("#transitionTriggerDetail");
+  if (triggerDetail) triggerDetail.textContent = transitionController.activePlan ? `Trigger: ${transitionController.activePlan.triggerType} · ${formatTime(transitionController.activePlan.targetPlaybackTime)}` : "Trigger: none";
   const diagnostics = document.querySelector("#smartMixDiagnostics");
   if (diagnostics) diagnostics.hidden = !DECKFORGE_DEVELOPMENT;
   const output = document.querySelector("#smartMixDiagnosticsOutput");
@@ -5059,6 +5667,13 @@ function renderSmartMixPanel() {
       promptState: smartPromptState.state,
       promptTrigger: smartPromptState.plan?.transitionTrigger || null,
       promptTransitionStyle: smartPromptState.plan?.transitionStyle || null,
+      promptExecutionInProgress: smartPromptState.executionInProgress,
+      promptExecutionError: smartPromptState.executionError || null,
+      lastExecutionPlanId: smartPromptState.lastExecutionPlanId,
+      tempoSafety: smartPromptState.plan ? evaluateTempoSafety(smartPromptState.plan) : null,
+      tempoSafetyPreferences,
+      saferPlanIds: smartPromptState.saferPlans.map((plan) => plan.id),
+      selectedSaferPlanId: smartPromptState.selectedSaferPlanId,
       incomingSource: smartPromptState.plan?.incomingTrackSource || null,
       activeBpm: smartPromptState.plan?.temporaryIncomingBpm || null,
       incomingOriginalBpm: smartPromptState.plan?.originalIncomingBpm || null,
@@ -5068,6 +5683,20 @@ function renderSmartMixPanel() {
       recoveryCurve: bpmRecoveryState.curve,
       recoveryProgress: bpmRecoveryState.progress,
       recoveryManualOverride: bpmRecoveryState.manualOverride,
+      authoritativeTransition: {
+        activePlanId: transitionController.activePlan?.id || null,
+        planSource: transitionController.activePlan?.source || null,
+        previousPlanCancellationResult: transitionController.previousCancellationResult,
+        parsedTimestamp: smartPromptState.plan?.parsedTimestamp || null,
+        activeDeckCurrentTime: transitionController.activePlan ? currentDeckTime(transitionController.activePlan.activeDeck) : null,
+        targetCurrentTime: transitionController.activePlan?.targetPlaybackTime || null,
+        secondsRemaining: transitionController.secondsRemaining,
+        schedulerActive: transitionController.schedulerActive,
+        incomingDeckReady: transitionController.activePlan ? Boolean(deckState[transitionController.activePlan.incomingDeck]?.buffer) : false,
+        transitionStarted: transitionController.transitionStarted,
+        crossfaderAutomationActive: transitionController.crossfaderAutomationActive,
+        lastFailure: transitionController.lastFailure
+      },
       lastManualOverride: autoMixState.lastManualOverride,
       lastError: smartPromptState.lastError !== "None" ? smartPromptState.lastError : autoMixState.lastError
     }, null, 2);
@@ -5207,10 +5836,115 @@ function findQuietSection(buffer, start, end) {
   return quietest;
 }
 
+function transitionPriority(source) {
+  if (source === "Deck Quick Action") return 4;
+  if (source === "Prompt") return 3;
+  if (source === "Smart Mix") return 2;
+  return 1;
+}
+
+function cancelScheduledTransition(reason = "Cancelled", options = {}) {
+  if (transitionController.pollTimer) clearTimeout(transitionController.pollTimer);
+  transitionController.pollTimer = null;
+  transitionController.version += 1;
+  transitionController.schedulerActive = false;
+  transitionController.secondsRemaining = null;
+  transitionController.lastPlaybackTime = null;
+  transitionController.previousCancellationResult = transitionController.activePlan ? `${transitionController.activePlan.id}: ${reason}` : `No active plan: ${reason}`;
+  if (!options.keepPlan) transitionController.activePlan = null;
+  autoMixState.handoffArmed = false;
+  autoMixState.estimatedTransitionAt = null;
+  return transitionController.previousCancellationResult;
+}
+
+function scheduleTransition(plan) {
+  if (!plan?.transition || !Number.isFinite(plan.targetPlaybackTime)) throw new Error("Transition controller received an incomplete concrete plan.");
+  if (transitionController.transitionStarted || autoMixState.transition) throw new Error("Transition controller is locked while a crossfade is active.");
+  if (transitionController.activePlan) {
+    const existingPriority = transitionController.activePlan.priority || transitionPriority(transitionController.activePlan.source);
+    const incomingPriority = plan.priority || transitionPriority(plan.source);
+    if (incomingPriority < existingPriority) throw new Error(`A higher-priority ${transitionController.activePlan.source} transition is already scheduled.`);
+    cancelScheduledTransition(`Replaced by ${plan.source}`);
+  }
+  const version = ++transitionController.version;
+  transitionController.activePlan = { ...plan, version, priority: plan.priority || transitionPriority(plan.source), status: "Waiting for Trigger" };
+  transitionController.schedulerActive = true;
+  transitionController.transitionStarted = false;
+  transitionController.lastFailure = "None";
+  autoMixState.handoffArmed = true;
+  autoMixState.state = "Waiting for Trigger";
+  const initialCurrentTime = currentDeckTime(plan.activeDeck);
+  transitionController.secondsRemaining = plan.targetPlaybackTime - initialCurrentTime;
+  autoMixState.estimatedTransitionAt = performance.now() + Math.max(0, transitionController.secondsRemaining) * 1000;
+  function poll() {
+    const activePlan = transitionController.activePlan;
+    if (!activePlan || activePlan.version !== version || !transitionController.schedulerActive) return;
+    const deck = deckState[activePlan.activeDeck];
+    if (!autoMixState.running || !deck?.buffer) {
+      transitionController.lastFailure = "Smart Mix stopped before the transition trigger.";
+      cancelScheduledTransition(transitionController.lastFailure);
+      return;
+    }
+    const currentTime = currentDeckTime(activePlan.activeDeck);
+    const previousTime = transitionController.lastPlaybackTime;
+    const remaining = activePlan.targetPlaybackTime - currentTime;
+    transitionController.secondsRemaining = remaining;
+    transitionController.lastPlaybackTime = currentTime;
+    autoMixState.estimatedTransitionAt = deck.playing ? performance.now() + Math.max(0, remaining) * 1000 : null;
+    activePlan.status = deck.playing ? "Waiting for Trigger" : "Paused with outgoing deck";
+    if (deck.playing && previousTime !== null && previousTime < activePlan.targetPlaybackTime - 0.5 && currentTime > activePlan.targetPlaybackTime + 0.75) {
+      transitionController.schedulerActive = false;
+      activePlan.status = "Target Passed After Seek";
+      showSmartPromptExecutionError("The outgoing deck was seeked past the transition timestamp. Choose Execute Now, Next Phrase, Delay From Now, or Cancel.");
+      renderSmartMixPanel();
+      return;
+    }
+    if (deck.playing && remaining <= 0) {
+      executeTransition(activePlan);
+      return;
+    }
+    renderSmartMixPanel();
+    transitionController.pollTimer = setTimeout(poll, 100);
+  }
+  transitionController.pollTimer = setTimeout(poll, 0);
+  return transitionController.activePlan;
+}
+
+function replaceScheduledTransition(plan) {
+  const previous = transitionController.activePlan ? cancelScheduledTransition(`Replaced by ${plan.source}`) : "No previous transition plan";
+  const scheduled = scheduleTransition(plan);
+  transitionController.previousCancellationResult = previous;
+  return scheduled;
+}
+
+function executeTransition(plan = transitionController.activePlan) {
+  if (!plan || !transitionController.schedulerActive) return false;
+  if (plan.version !== transitionController.version) return false;
+  if (transitionController.pollTimer) clearTimeout(transitionController.pollTimer);
+  transitionController.pollTimer = null;
+  transitionController.schedulerActive = false;
+  transitionController.transitionStarted = true;
+  transitionController.crossfaderAutomationActive = true;
+  plan.status = "Transitioning";
+  autoMixState.plan[autoMixState.index] = plan.transition;
+  transitionToNextAutoMixItem();
+  return Boolean(autoMixState.transition);
+}
+
+function completeTransition(planId = transitionController.activePlan?.id) {
+  if (transitionController.activePlan && planId && transitionController.activePlan.id !== planId) return false;
+  transitionController.transitionStarted = false;
+  transitionController.crossfaderAutomationActive = false;
+  if (transitionController.activePlan) transitionController.activePlan.status = "Complete";
+  transitionController.schedulerActive = false;
+  transitionController.pollTimer = null;
+  transitionController.activePlan = null;
+  return true;
+}
+
 function scheduleNextAutoMix() {
   if (!autoMixState.running || autoMixState.items.length < 2) return;
   prepareNextSmartMixDeck();
-  autoMixState.handoffArmed = true;
   const transition = autoMixState.plan[autoMixState.index] || planSmartTransition(
     autoMixState.items[autoMixState.index],
     autoMixState.items[(autoMixState.index + 1) % autoMixState.items.length],
@@ -5221,11 +5955,17 @@ function scheduleNextAutoMix() {
   const delay = Math.max(1, transition.startAt - currentTime);
   autoMixState.state = autoMixState.promptPlan ? "Waiting for Trigger" : "Waiting for Transition Point";
   if (autoMixState.promptPlan) { smartPromptState.state = "Waiting for Trigger"; renderSmartPromptPlan(); }
-  autoMixState.estimatedTransitionAt = performance.now() + delay * 1000;
+  const planSource = autoMixState.promptPlan?.planSource || (autoMixState.promptPlan ? "Prompt" : "Smart Mix");
+  const concretePlan = {
+    id: autoMixState.promptPlan?.id || createId(), source: planSource, priority: transitionPriority(planSource),
+    activeDeck: autoMixState.activeDeck, incomingDeck: autoMixState.activeDeck === "a" ? "b" : "a",
+    triggerType: autoMixState.promptPlan?.triggerType || "analyzed-mix-out", targetPlaybackTime: transition.startAt,
+    originalDelaySeconds: delay, transition, status: "Preparing"
+  };
+  const scheduled = transitionController.activePlan ? replaceScheduledTransition(concretePlan) : scheduleTransition(concretePlan);
   setSmartMixStatus(`Smart Mix preparing: ${transition.note}. Estimated transition in ${Math.ceil(delay)} seconds.`);
   renderSmartMixPanel();
-  const timer = setTimeout(() => transitionToNextAutoMixItem(), delay * 1000);
-  autoMixState.timers.push(timer);
+  return scheduled;
 }
 
 function currentSmartTransition() {
@@ -5239,6 +5979,7 @@ function currentSmartTransition() {
 }
 
 function monitorSmartMixHandoff() {
+  if (transitionController.activePlan || transitionController.schedulerActive || transitionController.transitionStarted) return;
   if (!autoMixState.running || autoMixState.items.length < 2 || autoMixState.transition || !autoMixState.handoffArmed) return;
   const active = deckState[autoMixState.activeDeck];
   if (!active?.buffer) return;
@@ -5295,8 +6036,10 @@ function prepareNextSmartMixDeck() {
 
 function transitionToNextAutoMixItem() {
   if (!autoMixState.running || autoMixState.transition || !autoMixState.handoffArmed) return;
+  if (DECKFORGE_DEVELOPMENT) console.debug("[DeckForge][SmartMix] transition started", { activeDeck: autoMixState.activeDeck, incomingDeck: autoMixState.incomingDeck, planId: autoMixState.promptPlan?.id || null });
   autoMixState.handoffArmed = false;
   const nextIndex = (autoMixState.index + 1) % autoMixState.items.length;
+  const controllerPlanId = transitionController.activePlan?.id || null;
   const nextDeck = autoMixState.activeDeck === "a" ? "b" : "a";
   const fromDeck = autoMixState.activeDeck;
   const next = autoMixState.items[nextIndex];
@@ -5311,8 +6054,8 @@ function transitionToNextAutoMixItem() {
   }
   playDeck(nextDeck);
   autoMixState.transition = transition;
-  autoMixState.state = "Transitioning";
-  if (transition.promptPlan) { smartPromptState.state = "Transitioning"; renderSmartPromptPlan(); }
+  autoMixState.state = transition.promptPlan?.safetyStrategy ? "Executing Safe Transition" : "Transitioning";
+  if (transition.promptPlan) { smartPromptState.state = transition.promptPlan.safetyStrategy ? "Executing Safe Transition" : "Transitioning"; renderSmartPromptPlan(); }
   autoMixState.estimatedTransitionAt = null;
   setDeckStatus(fromDeck, "transitioning-out", { smartMixControlled: true });
   setDeckStatus(nextDeck, "transitioning-in", { smartMixControlled: true });
@@ -5331,9 +6074,21 @@ function transitionToNextAutoMixItem() {
     autoMixState.preparedIndex = null;
     autoMixState.transition = null;
     autoMixState.state = "Transition Complete";
-    setDeckStatus(nextDeck, "playing", { smartMixControlled: true });
-    prepareNextSmartMixDeck();
-    scheduleNextAutoMix();
+    completeTransition(controllerPlanId);
+    if (transition.promptPlan) {
+      autoMixState.running = false;
+      autoMixState.promptPlan = null;
+      autoMixState.handoffArmed = false;
+      setSmartMixButtons(false);
+      setDeckStatus(nextDeck, "playing", { smartMixControlled: false });
+      smartPromptState.state = bpmRecoveryState.active || bpmRecoveryState.pending ? smartPromptState.state : "Complete";
+      renderSmartPromptPlan();
+      if (transition.promptPlan.bridgeFinalDestination) continueTempoBridgePlan(transition.promptPlan, nextDeck, fromDeck);
+    } else {
+      setDeckStatus(nextDeck, "playing", { smartMixControlled: true });
+      prepareNextSmartMixDeck();
+      scheduleNextAutoMix();
+    }
   });
 }
 
@@ -5405,6 +6160,9 @@ function fadeCrossfaderTo(target, seconds, frame, done) {
 function stopAiMix(options = {}) {
   const hadPromptPlan = Boolean(autoMixState.promptPlan);
   autoMixState.running = false;
+  cancelScheduledTransition(options.manualOverride ? "Manual override" : "Smart Mix stopped");
+  transitionController.transitionStarted = false;
+  transitionController.crossfaderAutomationActive = false;
   if (!options.preserveRecoveryPlan && bpmRecoveryState.plan) cancelBpmRecovery(options.manualOverride ? "Manual override" : "Cancelled", false, true);
   autoMixState.timers.forEach((timer) => {
     clearTimeout(timer);
@@ -6575,7 +7333,108 @@ function setupEvents() {
     if (smartPromptState.plan) document.querySelector("#smartPromptExplanation").textContent = smartPromptState.plan.explanation;
   });
   document.querySelector("#saferSmartPrompt").addEventListener("click", useSaferSmartPrompt);
+  document.querySelector("#saferTransitionPlans").addEventListener("click", (event) => {
+    const previewId = event.target.closest("[data-safer-preview]")?.dataset.saferPreview;
+    const applyId = event.target.closest("[data-safer-apply]")?.dataset.saferApply;
+    if (previewId) selectSaferTransitionPlan(previewId, false);
+    if (applyId) selectSaferTransitionPlan(applyId, true);
+  });
   document.querySelector("#saveSmartRecipe").addEventListener("click", saveSmartPromptRecipe);
+  document.querySelector("#retrySmartPrompt").addEventListener("click", applySmartPromptPlan);
+  document.querySelector("#executePromptNow").addEventListener("click", () => {
+    if (!smartPromptState.plan) return;
+    smartPromptState.plan.executeImmediately = true;
+    smartPromptState.plan.targetPlaybackTime = currentDeckTime(detectActiveDeck() || smartPromptState.plan.activeDeck);
+    smartPromptState.plan.estimatedTimeUntilTransition = 0;
+    clearSmartPromptExecutionError();
+    applySmartPromptPlan();
+  });
+  document.querySelector("#nextPhrasePrompt").addEventListener("click", () => {
+    const plan = smartPromptState.plan;
+    const active = detectActiveDeck();
+    if (!plan || !active) return;
+    const delay = phraseLengthSeconds(Number(deckState[active].analysis?.bpm || 120), 16);
+    plan.executeImmediately = false;
+    plan.triggerType = "phrase-boundary";
+    plan.targetPlaybackTime = currentDeckTime(active) + delay;
+    plan.estimatedTimeUntilTransition = delay;
+    plan.transitionTrigger = "Next estimated 16-bar boundary";
+    clearSmartPromptExecutionError();
+    applySmartPromptPlan();
+  });
+  document.querySelector("#delayPromptFromNow").addEventListener("click", () => {
+    const plan = smartPromptState.plan;
+    const active = detectActiveDeck();
+    if (!plan || !active) return;
+    const delay = Number(plan.relativeDelaySeconds || 10);
+    plan.executeImmediately = false;
+    plan.triggerType = "relative-seconds";
+    plan.relativeDelaySeconds = delay;
+    plan.targetPlaybackTime = currentDeckTime(active) + delay;
+    plan.estimatedTimeUntilTransition = delay;
+    clearSmartPromptExecutionError();
+    applySmartPromptPlan();
+  });
+  document.querySelector("#editSmartPrompt").addEventListener("click", () => {
+    clearSmartPromptExecutionError();
+    smartPromptState.state = smartPromptState.plan ? "Plan Ready" : "Prompt Idle";
+    renderSmartPromptPlan();
+    document.querySelector("#smartMixPrompt").focus();
+  });
+  document.querySelector("#loadIncomingTrack").addEventListener("click", () => {
+    const active = detectActiveDeck();
+    const incoming = active ? (active === "a" ? "b" : "a") : smartPromptState.plan?.incomingDeck || "b";
+    document.querySelector(`#file-${incoming}`)?.click();
+  });
+  document.querySelector("#changeSmartSource").addEventListener("click", () => {
+    const decksView = document.querySelector("#decks");
+    decksView.classList.add("is-advanced");
+    const toggle = document.querySelector("#deckModeToggle");
+    toggle.setAttribute("aria-pressed", "true");
+    toggle.textContent = "Simple Controls";
+    document.querySelector("#smartMixSource").focus();
+  });
+  document.querySelector("#dismissSmartPromptError").addEventListener("click", cancelSmartPromptPlan);
+  document.querySelectorAll("[data-quick-deck]").forEach((control) => {
+    control.addEventListener("click", (event) => {
+      const deckId = control.dataset.quickDeck;
+      const delayButton = event.target.closest("[data-quick-delay]");
+      if (delayButton) executeQuickTransition(deckId, { delaySeconds: Number(delayButton.dataset.quickDelay) });
+      if (event.target.closest("[data-quick-custom]")) openQuickTransitionPanel(deckId, "seconds");
+      if (event.target.closest("[data-quick-timestamp]")) openQuickTransitionPanel(deckId, "timestamp");
+      if (event.target.closest("[data-quick-phrase]")) {
+        const bpm = Number(deckState[deckId].analysis?.bpm || 120);
+        executeQuickTransition(deckId, { delaySeconds: phraseLengthSeconds(bpm, 16), triggerType: "phrase-boundary", interpretation: "Next estimated 16-bar phrase boundary" });
+      }
+    });
+  });
+  document.querySelector("#closeQuickTransition").addEventListener("click", () => { document.querySelector("#quickTransitionCustom").hidden = true; });
+  document.querySelector("#scheduleQuickCustom").addEventListener("click", scheduleCustomQuickTransition);
+  const tempoPreferenceBindings = {
+    safetyPreferredShift: ["preferredShift", "number"], safetyWarningThreshold: ["warningThreshold", "number"], safetyAbsoluteMaximum: ["absoluteMaximumShift", "number"],
+    safetyAutoSuggest: ["automaticallySuggest", "checkbox"], safetyAutoExecute: ["automaticallyExecute", "checkbox"], safetyAskReplace: ["askBeforeReplacing", "checkbox"],
+    safetyHalfDouble: ["allowHalfDouble", "checkbox"], safetyBridgeSuggestions: ["allowBridgeSuggestions", "checkbox"], safetyPreserveIncoming: ["preserveIncomingBpm", "checkbox"],
+    safetyLargeTransition: ["largeMismatchTransition", "value"], safetyTransitionPreference: ["transitionPreference", "value"]
+  };
+  Object.entries(tempoPreferenceBindings).forEach(([id, [key, type]]) => {
+    document.querySelector(`#${id}`).addEventListener("change", (event) => {
+      tempoSafetyPreferences[key] = type === "number" ? Number(event.target.value) : type === "checkbox" ? event.target.checked : event.target.value;
+      if (tempoSafetyPreferences.warningThreshold < tempoSafetyPreferences.preferredShift) tempoSafetyPreferences.warningThreshold = tempoSafetyPreferences.preferredShift;
+      if (tempoSafetyPreferences.absoluteMaximumShift < tempoSafetyPreferences.warningThreshold) tempoSafetyPreferences.absoluteMaximumShift = tempoSafetyPreferences.warningThreshold;
+      if (tempoSafetyPreferences.absoluteMaximumShift > 20) setSmartMixStatus("Tempo safety warning: automatic beatmatching above 20% can cause extreme stretching. Safer natural-tempo transitions remain recommended.");
+      writeTempoSafetyPreferences();
+      renderTempoSafetyPreferences();
+      if (smartPromptState.plan) renderSmartPromptPlan();
+    });
+  });
+  document.querySelector("#promptMaxShift").addEventListener("change", (event) => {
+    tempoSafetyPreferences.absoluteMaximumShift = Number(event.target.value);
+    if (tempoSafetyPreferences.warningThreshold > tempoSafetyPreferences.absoluteMaximumShift) tempoSafetyPreferences.warningThreshold = tempoSafetyPreferences.absoluteMaximumShift;
+    if (tempoSafetyPreferences.preferredShift > tempoSafetyPreferences.warningThreshold) tempoSafetyPreferences.preferredShift = tempoSafetyPreferences.warningThreshold;
+    writeTempoSafetyPreferences();
+    renderTempoSafetyPreferences();
+    if (smartPromptState.plan) renderSmartPromptPlan();
+  });
   document.querySelector("#smartPromptChips").addEventListener("click", (event) => {
     const chip = event.target.closest("button");
     if (!chip) return;
@@ -6688,7 +7547,8 @@ function setupEvents() {
     button.addEventListener("click", async () => {
       const id = button.dataset.deck;
       const action = button.dataset.action;
-      if (autoMixState.running && ["play", "stop", "cue", "rewind", "forward", "restart", "loop", "clear-deck"].includes(action)) {
+      const controllerTimelineControl = ["play", "cue", "rewind", "forward", "restart"].includes(action) && transitionController.schedulerActive && transitionController.activePlan?.activeDeck === id;
+      if (autoMixState.running && !controllerTimelineControl && ["play", "stop", "cue", "rewind", "forward", "restart", "loop", "clear-deck"].includes(action)) {
         triggerManualOverride(`${action} on Deck ${id.toUpperCase()}`, id);
       }
       if (action === "play") deckState[id].playing ? pauseDeck(id) : await playDeck(id);
@@ -6715,7 +7575,7 @@ function setupEvents() {
       const id = event.target.dataset.seekDeck;
       const deck = deckState[id];
       if (!deck.buffer) return;
-      triggerManualOverride(`Seeked Deck ${id.toUpperCase()}`, id);
+      if (!(transitionController.schedulerActive && transitionController.activePlan?.activeDeck === id)) triggerManualOverride(`Seeked Deck ${id.toUpperCase()}`, id);
       seekDeck(id, (Number(event.target.value) / 1000) * deck.buffer.duration);
     });
   });
@@ -7981,6 +8841,7 @@ setDeckStatus("b", "empty");
 renderSmartMixPanel();
 renderSmartPromptPlan();
 renderSmartPromptLibrary();
+renderTempoSafetyPreferences();
 renderBpmRecovery();
 renderGlobalTransport();
 animationLoop();

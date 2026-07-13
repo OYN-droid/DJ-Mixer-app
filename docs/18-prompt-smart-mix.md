@@ -8,7 +8,9 @@ The parser is deterministic and local. It does not call a hosted language model.
 
 ## Execution adapter
 
-`applySmartPromptPlan` passes an approved plan into the existing `startSmartMix` path. The existing active-deck detection, incoming-deck preparation, transition scheduler, crossfader automation and manual override behavior remain authoritative.
+`applySmartPromptPlan` delegates to `executeSmartMixPlan`. The coordinator validates active and incoming ownership, trigger timing, style support, tempo safety, recovery values and AudioContext state before passing the approved plan into the existing `startSmartMix` path. It then verifies that Smart Mix is running, the handoff is armed and a concrete transition time exists before reporting `Waiting for Trigger`.
+
+Execution uses a token and in-progress guard. Repeated Apply actions cannot create a second scheduler, and Cancel invalidates preparation that is still awaiting audio or source loading. Early returns from `startSmartMix` now return `false` with `autoMixState.lastError`, which the prompt card displays with retry, edit, load-track, source-change and cancel actions.
 
 The opposite loaded deck is preserved unless the prompt explicitly requests DITC selection. When selection is requested, local DITC candidates are filtered by supported name, genre, mood and energy terms. If no candidate qualifies, the active deck continues and the plan reports the failure.
 

@@ -114,17 +114,39 @@
               <input id="smartMixPrompt" type="text" placeholder="Tell Smart Mix when and how to transition…" autocomplete="off">
               <button id="planSmartPrompt" class="primary-button" type="button">Plan Transition</button>
               <button id="applySmartPrompt" class="secondary-button" type="button" disabled>Apply Plan</button>
-              <button id="cancelSmartPrompt" class="secondary-button" type="button" disabled>Cancel Plan</button>
+              <button id="cancelSmartPrompt" class="secondary-button" type="button" disabled>Cancel Transition</button>
             </div>
             <div id="smartPromptChips" class="smart-prompt-chips" aria-label="Suggested Smart Mix prompts">
               <button type="button">After Next Chorus</button><button type="button">In 16 Bars</button><button type="button">At Outro</button><button type="button">Quick Cut</button><button type="button">Smooth Blend</button><button type="button">Avoid Vocal Clash</button><button type="button">Keep Active Deck Tempo</button><button type="button">Return Incoming Track to Original BPM</button><button type="button">Pick Next Track from DITC</button>
+            </div>
+            <div id="quickTransitionCustom" class="quick-transition-custom" hidden>
+              <div><strong id="quickTransitionTitle">Deck A AI Transition</strong><button id="closeQuickTransition" type="button" aria-label="Close custom transition">×</button></div>
+              <label>Timing <select id="quickTimingMode"><option value="seconds">Delay in seconds</option><option value="bars">Delay in bars</option><option value="timestamp">Active-deck timestamp</option><option value="before-end">Seconds before track end</option></select></label>
+              <label>Interpretation <select id="quickTimingInterpretation"><option value="begin" selected>Begin transition in X</option><option value="complete">Complete transition in X</option></select></label>
+              <label>Value <input id="quickTimingValue" type="text" value="10" placeholder="10 or 1:30"></label>
+              <label>Duration <select id="quickTransitionDuration"><option value="4">4 bars</option><option value="8" selected>8 bars</option><option value="16">16 bars</option></select></label>
+              <label>Style <select id="quickTransitionStyle"><option value="smooth">Smooth blend</option><option value="filter">Filter fade</option><option value="quick">Quick mix</option><option value="bass">Bass swap</option><option value="drop">Drop mix</option></select></label>
+              <label>Recovery <select id="quickRecoveryBars"><option value="4">4 bars</option><option value="8" selected>8 bars</option><option value="16">16 bars</option></select></label>
+              <label><input id="quickAvoidVocals" type="checkbox"> Avoid vocal overlap</label>
+              <label><input id="quickUseLoaded" type="checkbox" checked> Use loaded incoming track</label>
+              <button id="scheduleQuickCustom" class="primary-button" type="button">Schedule Transition</button>
             </div>
             <div id="smartPromptClarification" class="smart-prompt-clarification" hidden></div>
             <article id="smartPromptPlan" class="smart-prompt-plan" hidden aria-live="polite">
               <div class="smart-prompt-plan-head"><div><span class="eyebrow">Planned Transition</span><strong id="smartPromptPlanState">Plan Ready</strong></div><strong id="smartPromptConfidence">0%</strong></div>
               <dl id="smartPromptPlanDetails"></dl>
               <p id="smartPromptWarnings" class="smart-prompt-warnings"></p>
+              <section id="tempoSafetyDetails" class="tempo-safety-details" hidden>
+                <strong>Tempo Difference Too Large for Smooth Beatmatching</strong>
+                <dl><div><dt>Outgoing</dt><dd id="safetyOutgoingBpm">--</dd></div><div><dt>Incoming</dt><dd id="safetyIncomingBpm">--</dd></div><div><dt>Difference</dt><dd id="safetyBpmDifference">--</dd></div><div><dt>Required shift</dt><dd id="safetyRequiredShift">--</dd></div><div><dt>Safe limit</dt><dd id="safetyConfiguredLimit">--</dd></div><div><dt>Recommended</dt><dd id="safetyRecommendation">--</dd></div></dl>
+                <p id="safetyInterpretation"></p>
+              </section>
+              <div id="saferTransitionPlans" class="safer-transition-plans" hidden></div>
               <p id="smartPromptExplanation" class="smart-prompt-explanation"></p>
+              <div id="smartPromptExecutionError" class="smart-prompt-error" role="alert" hidden>
+                <strong>Plan could not start</strong><span id="smartPromptExecutionErrorMessage"></span>
+                <div><button id="executePromptNow" type="button">Execute Now</button><button id="nextPhrasePrompt" type="button">Next Phrase</button><button id="delayPromptFromNow" type="button">Delay From Now</button><button id="retrySmartPrompt" type="button">Retry</button><button id="editSmartPrompt" type="button">Edit Prompt</button><button id="loadIncomingTrack" type="button">Load Track</button><button id="changeSmartSource" type="button">Change Source</button><button id="dismissSmartPromptError" type="button">Cancel</button></div>
+              </div>
               <div class="smart-prompt-plan-actions">
                 <button id="previewSmartPrompt" type="button" class="secondary-button">Preview Plan</button>
                 <button id="explainSmartPrompt" type="button" class="secondary-button">Why this transition?</button>
@@ -134,8 +156,21 @@
               <div class="smart-prompt-advanced advanced-only">
                 <label>Recovery duration <select id="promptRecoveryBars"><option value="2">2 bars</option><option value="4">4 bars</option><option value="8" selected>8 bars</option><option value="16">16 bars</option></select></label>
                 <label>Recovery curve <select id="promptRecoveryCurve"><option value="smooth" selected>Smooth S-Curve</option><option value="linear">Linear</option><option value="ease-in">Ease In</option><option value="ease-out">Ease Out</option><option value="phrase-stepped">Phrase-Stepped</option></select></label>
-                <label>Maximum shift <select id="promptMaxShift"><option value="4">4%</option><option value="8" selected>8%</option><option value="12">12%</option></select></label>
+                <label>Maximum shift <select id="promptMaxShift"><option value="4">4%</option><option value="8">8%</option><option value="12" selected>12%</option><option value="20">20%</option><option value="30">30%</option><option value="50">50%</option></select></label>
               </div>
+              <details class="tempo-safety-preferences advanced-only"><summary>Tempo safety preferences</summary><div>
+                <label>Preferred shift <input id="safetyPreferredShift" type="number" min="0" max="25" step="0.5" value="4">%</label>
+                <label>Warning threshold <input id="safetyWarningThreshold" type="number" min="1" max="30" step="0.5" value="8">%</label>
+                <label>Absolute maximum <input id="safetyAbsoluteMaximum" type="number" min="1" max="50" step="0.5" value="12">%</label>
+                <label><input id="safetyAutoSuggest" type="checkbox" checked> Automatically suggest safer plans</label>
+                <label><input id="safetyAutoExecute" type="checkbox"> Automatically execute safer plans</label>
+                <label><input id="safetyAskReplace" type="checkbox" checked> Ask before replacing unsafe plans</label>
+                <label><input id="safetyHalfDouble" type="checkbox" checked> Allow halftime/double-time interpretation</label>
+                <label><input id="safetyBridgeSuggestions" type="checkbox" checked> Allow bridge-track suggestions</label>
+                <label><input id="safetyPreserveIncoming" type="checkbox" checked> Preserve incoming original BPM</label>
+                <label>Large mismatch <select id="safetyLargeTransition"><option value="filter-sweep">Filter fade</option><option value="quick-blend">Quick cut</option><option value="drop-mix">Drop mix</option></select></label>
+                <label>Preference <select id="safetyTransitionPreference"><option value="smooth">Prefer smooth</option><option value="fast">Prefer fast</option></select></label>
+              </div></details>
             </article>
             <details class="smart-prompt-library advanced-only"><summary>Prompt history and recipes</summary><div id="smartPromptHistory"></div><div id="smartPromptRecipes"></div></details>
           </section>
@@ -148,7 +183,7 @@
             <div class="transition-visual advanced-only" aria-label="Smart Mix transition visualization">
               <div class="transition-route"><strong id="transitionOutgoing">Deck A</strong><span>OUT</span><span class="transition-arrow">→</span><span>IN</span><strong id="transitionIncoming">Deck B</strong></div>
               <div class="transition-progress" role="progressbar" aria-label="Crossfade progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span id="transitionProgress"></span></div>
-              <div class="transition-readouts"><span id="transitionEqBlend">EQ blend: neutral</span><span id="transitionStemUsage">Stems: full mix</span></div>
+              <div class="transition-readouts"><span id="transitionPlanSource">Plan: none</span><span id="transitionTriggerDetail">Trigger: none</span><span id="transitionEqBlend">EQ blend: neutral</span><span id="transitionStemUsage">Stems: full mix</span></div>
             </div>
             <div id="bpmRecoveryPanel" class="bpm-recovery" hidden>
               <div class="bpm-recovery-head"><strong>BPM Recovery</strong><span id="bpmRecoveryState">Pending</span></div>
@@ -231,6 +266,7 @@
                 </label>
                 <span id="loop-status-a">Loop off</span>
               </div>
+              <details class="deck-ai-transition" data-quick-deck="a"><summary>AI Transition</summary><div><button type="button" data-quick-delay="0">Now</button><button type="button" data-quick-delay="15">15 sec</button><button type="button" data-quick-delay="10">10 sec</button><button type="button" data-quick-delay="5">5 sec</button><button type="button" data-quick-custom>Custom</button><button type="button" data-quick-timestamp>At Timestamp</button><button type="button" data-quick-phrase>Next Phrase</button></div></details>
 
               <div class="edit-strip advanced-only">
                 <button class="transport-button" data-action="mark-in" data-deck="a">In</button>
@@ -358,6 +394,7 @@
                 </label>
                 <span id="loop-status-b">Loop off</span>
               </div>
+              <details class="deck-ai-transition" data-quick-deck="b"><summary>AI Transition</summary><div><button type="button" data-quick-delay="0">Now</button><button type="button" data-quick-delay="15">15 sec</button><button type="button" data-quick-delay="10">10 sec</button><button type="button" data-quick-delay="5">5 sec</button><button type="button" data-quick-custom>Custom</button><button type="button" data-quick-timestamp>At Timestamp</button><button type="button" data-quick-phrase>Next Phrase</button></div></details>
 
               <div class="edit-strip advanced-only">
                 <button class="transport-button" data-action="mark-in" data-deck="b">In</button>
