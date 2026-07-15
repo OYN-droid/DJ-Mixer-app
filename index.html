@@ -824,12 +824,35 @@
             <button id="undoDismissedRecommendation" class="secondary-button producer-see-more" hidden>Undo Dismiss</button>
           </section>
 
-          <section class="producer-section creative-missions producer-advanced-only" aria-labelledby="creativeMissionsTitle">
+          <section class="producer-section creative-missions" aria-labelledby="creativeMissionsTitle">
             <div class="producer-section-heading">
-              <div><p class="eyebrow">One-click Starting Points</p><h3 id="creativeMissionsTitle">Creative Missions</h3></div>
+              <div><p class="eyebrow">Guided Creative Workflows</p><h3 id="creativeMissionsTitle">Creative Missions</h3></div>
               <span class="producer-context-note">Previewable and editable</span>
             </div>
-            <div id="producerMissionGrid" class="producer-mission-grid"></div>
+            <p class="producer-mission-intro">Choose a goal, review the proposed steps, then apply only what you approve.</p>
+            <div id="producerMissionGrid" class="producer-mission-home"></div>
+            <article id="activeMissionPanel" class="active-mission-panel" hidden aria-labelledby="activeMissionTitle">
+              <div class="producer-section-heading">
+                <div><p id="activeMissionStatus" class="eyebrow">Draft</p><h4 id="activeMissionTitle">Mission</h4></div>
+                <button id="cancelActiveMission" class="secondary-button">Cancel Mission</button>
+              </div>
+              <p id="activeMissionDescription"></p>
+              <div id="activeMissionSummary" class="mission-summary"></div>
+              <div id="activeMissionSteps" class="mission-step-list" aria-live="polite"></div>
+              <p id="activeMissionLiveStatus" class="fine-print" aria-live="polite"></p>
+              <div class="ai-actions mission-primary-actions">
+                <button id="buildActiveMissionPlan" class="primary-button">Create Plan</button>
+                <button id="previewActiveMission" class="secondary-button">Preview Full Mission</button>
+                <button id="applyNextMissionStep" class="primary-button">Apply Next Step</button>
+                <button id="applyApprovedMissionSteps" class="secondary-button producer-advanced-only">Apply Approved Steps</button>
+                <button id="applyAllMissionSteps" class="secondary-button producer-advanced-only">Apply All</button>
+                <button id="rollbackActiveMission" class="secondary-button">Roll Back Mission</button>
+              </div>
+            </article>
+            <details class="mission-history-drawer">
+              <summary>Recent Missions</summary>
+              <div id="producerMissionHistory" class="mission-history-list"></div>
+            </details>
           </section>
 
           <section class="producer-section project-timeline" aria-labelledby="projectTimelineTitle">
@@ -905,6 +928,10 @@
               <details id="recommendationEngineDiagnostics" class="producer-tool-drawer" hidden>
                 <summary>Recommendation Engine diagnostics</summary>
                 <pre id="recommendationEngineDiagnosticsOutput"></pre>
+              </details>
+              <details id="creativeMissionDiagnostics" class="producer-tool-drawer" hidden>
+                <summary>Creative Missions diagnostics</summary>
+                <pre id="creativeMissionDiagnosticsOutput"></pre>
               </details>
             </div>
           </section>
@@ -1002,6 +1029,7 @@
     <script src="src/audio/playback-registry.js"></script>
     <script src="src/project-intelligence.js"></script>
     <script src="src/recommendation-engine.js"></script>
+    <script src="src/creative-missions.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

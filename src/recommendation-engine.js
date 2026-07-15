@@ -154,7 +154,7 @@
       evidence: [{ label: "Arrangement clips", value: arrangement.clipCount }, { label: "Intro status", value: arrangement.introStatus }, { label: "Playable sources", value: playable }],
       confidence: 0.86, expectedImpact: "Give the project a deliberate opening", beginnerFriendly: true,
       learningNote: "An intro can be short; its job is to establish the project before the first full section.",
-      suggestedAction: { actionId: "open-arrangement", label: "Open Arrangement", affectedDomains: ["Arrangement"] },
+      suggestedAction: { actionId: "start-mission:generate-intro", label: "Start Intro Mission", affectedDomains: ["Beat Forge", "Harmony Lab", "Pads", "Arrangement"] },
       priority: "Recommended Next", relatedClipIds: (arrangement.clips || []).map((clip) => clip.id), fingerprint: `${arrangement.clipCount}|${arrangement.introStatus}|${playable}`
     });
     if (arrangement.outroStatus === "Not planned") rules.push({
@@ -163,7 +163,7 @@
       explanation: "An outro creates a clean ending for recording or export instead of stopping on an unresolved section.",
       evidence: [{ label: "Timeline length", value: `${Number(arrangement.timelineLength || 0).toFixed(1)} seconds` }, { label: "Clip count", value: arrangement.clipCount }, { label: "Outro status", value: arrangement.outroStatus }],
       confidence: 0.9, expectedImpact: "Create a deliberate ending", beginnerFriendly: true,
-      suggestedAction: { actionId: "open-arrangement", label: "Plan Outro", affectedDomains: ["Arrangement"] },
+      suggestedAction: { actionId: "start-mission:generate-outro", label: "Start Outro Mission", affectedDomains: ["Beat Forge", "Harmony Lab", "Arrangement"] },
       priority: "Needs Attention", relatedClipIds: (arrangement.clips || []).map((clip) => clip.id), fingerprint: `${arrangement.clipCount}|${arrangement.outroStatus}|${arrangement.timelineLength}`
     });
     if ((arrangement.unresolvedGaps || []).length) {
@@ -254,7 +254,7 @@
       explanation: "The existing Pad AI Builder can create a reviewable local-source plan without inventing or downloading audio.",
       evidence: [{ label: "Assigned pads", value: 0 }, { label: "Playable DITC tracks", value: context.ditc.playableTracks }, { label: "Active bank", value: pads.activeBank || "A" }],
       confidence: 0.88, expectedImpact: "Create performance-ready pad options from local audio", difficulty: "Easy", beginnerFriendly: true,
-      suggestedAction: { actionId: "open-pads", label: "Open Pads", affectedDomains: ["Pads"] },
+      suggestedAction: { actionId: "start-mission:build-pad-bank", label: "Start Pad Bank Mission", affectedDomains: ["DITC", "Pads"] },
       priority: "Creative Opportunity", fingerprint: `${pads.activeBank}|0|${context.ditc.playableTracks}`
     });
     if (pads.activeLoops?.length && (context.smartMix?.enabled || context.smartMix?.currentPlan?.length)) rules.push({

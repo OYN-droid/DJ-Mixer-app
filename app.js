@@ -166,6 +166,7 @@ const mixtapeReferenceState = {
 const PRODUCER_STUDIO_KEY = "deckforge-producer-studio";
 const ProjectIntelligenceEngine = window.ProjectIntelligence;
 const RecommendationEngine = window.ContextualRecommendations;
+const MissionEngine = window.CreativeMissions;
 const projectContext = ProjectIntelligenceEngine.getProjectContext();
 window.DeckForgeProjectContext = projectContext;
 
@@ -190,12 +191,14 @@ const producerStudioState = {
   showAllRecommendations: false,
   pendingRecommendationRejectionId: null,
   lastDismissedRecommendationId: null,
+  missionCatalogExpanded: false,
   promptDomains: { ditc: true, decks: true, smartMix: true, beatForge: true, harmonyLab: true, pads: true, stems: true, arrangement: true, mixtape: true, aiHistory: true },
   pendingStaleAction: null,
   contextUnsubscribe: null
 };
 let projectIntelligenceReady = false;
 let recommendationEngineReady = false;
+let missionEngineReady = false;
 
 const AudioIdentificationService = {
   providers: [],
@@ -3340,9 +3343,78 @@ async function handleRecommendationPromptCommand(prompt) {
   return true;
 }
 
+async function handleMissionPromptCommand(prompt) {
+  if (!missionEngineReady) return false;
+  const lower = prompt.toLowerCase();
+  const active = MissionEngine.getActiveMission();
+  const isMissionCommand = /\bmission\b/.test(lower) || MissionEngine.resolveType(prompt);
+  if (!isMissionCommand && !active) return false;
+  if (active && /cancel (this |the )?mission/.test(lower)) {
+    MissionEngine.cancelMission(active.missionId);
+    renderRecommendationPromptResponse(prompt, null, [{ title: "Mission cancelled", detail: `${active.title} was cancelled. Unrelated audio was left unchanged.` }]);
+    return true;
+  }
+  if (active && /undo (the )?last (mission )?step/.test(lower)) {
+    const stepId = active.completedSteps.at(-1);
+    const result = stepId ? await MissionEngine.undoMissionStep(active.missionId, stepId) : { success: false, reason: "No completed reversible mission step is available." };
+    renderRecommendationPromptResponse(prompt, null, [{ title: result.success ? "Mission step undone" : "Undo unavailable", detail: result.message || result.reason || "The last step could not be undone." }]);
+    return true;
+  }
+  if (active && /skip/.test(lower)) {
+    const domain = ["harmony", "beat", "pad", "stem", "transition", "arrangement"].find((name) => lower.includes(name));
+    const missionStep = active.plan.find((item) => item.skippable && (!domain || item.domain.toLowerCase().includes(domain)) && !["Completed", "Skipped"].includes(item.status));
+    const updated = missionStep && MissionEngine.skipMissionStep(active.missionId, missionStep.stepId);
+    renderRecommendationPromptResponse(prompt, null, [{ title: updated ? "Optional step skipped" : "Step cannot be skipped", detail: updated ? missionStep.title : "Name an optional step that is present in the active mission." }]);
+    return true;
+  }
+  if (active && /show (me )?(the )?mission plan/.test(lower)) {
+    const mission = active.plan.length ? active : MissionEngine.buildMissionPlan(active.missionId);
+    renderRecommendationPromptResponse(prompt, null, mission.plan.map((item) => ({ title: `${item.order}. ${item.title}`, detail: `${item.domain} · ${item.status}${item.error ? ` · ${item.error}` : ""}` })));
+    document.querySelector("#activeMissionPanel")?.scrollIntoView({ block: "start" });
+    return true;
+  }
+  if (active && /keep (my )?current drum pattern/.test(lower)) {
+    active.plan.filter((item) => item.domain === "Beat Forge").forEach((item) => MissionEngine.setStepApproved(active.missionId, item.stepId, false));
+    MissionEngine.updateMission(active.missionId, { userOverrides: { preserveDrumPattern: true } });
+    renderRecommendationPromptResponse(prompt, null, [{ title: "Current drum pattern preserved", detail: "Beat Forge generation steps are no longer approved for this mission." }]);
+    return true;
+  }
+  if (active && /use deck b as (the )?opener/.test(lower)) {
+    MissionEngine.updateMission(active.missionId, { userOverrides: { openingDeck: "b" } });
+    renderRecommendationPromptResponse(prompt, null, [{ title: "Deck B selected as opener", detail: "The mission preference is saved. Recalculate the plan if its deck steps were already created." }]);
+    return true;
+  }
+  if (active && /make (the |this )?mission easier for a beginner/.test(lower)) {
+    MissionEngine.updateMission(active.missionId, { difficulty: "Beginner", userOverrides: { applyMode: "Guided", safeDefaults: true } });
+    renderRecommendationPromptResponse(prompt, null, [{ title: "Guided mode selected", detail: "The mission will keep safe defaults and apply one approved step at a time." }]);
+    return true;
+  }
+  if (active && /apply only/.test(lower)) {
+    const requested = ["intro", "transition", "beat", "harmony", "pad", "arrangement"].filter((name) => lower.includes(name));
+    active.plan.forEach((item) => MissionEngine.setStepApproved(active.missionId, item.stepId, requested.some((name) => item.title.toLowerCase().includes(name) || item.domain.toLowerCase().includes(name))));
+    const result = await MissionEngine.applyMission(active.missionId, { guided: false });
+    renderRecommendationPromptResponse(prompt, null, [{ title: result.success ? "Approved mission steps applied" : "Mission paused", detail: result.success ? `Applied only steps matching: ${requested.join(", ")}.` : "One of the selected steps needs attention before the mission can continue." }]);
+    return true;
+  }
+  if (active && /show advanced controls/.test(lower)) {
+    producerStudioState.mode = "advanced";
+    renderProducerStudio({ sync: false });
+    renderRecommendationPromptResponse(prompt, null, [{ title: "Advanced mission controls shown", detail: "Per-step approval, skipping, Apply Approved Steps, and Apply All are now visible." }]);
+    return true;
+  }
+  const type = MissionEngine.resolveType(prompt);
+  if (!type) return false;
+  const mission = MissionEngine.createMission(type, { source: "Prompt Studio", userGoal: prompt });
+  renderRecommendationPromptResponse(prompt, null, [{ title: `Mission draft: ${mission.title}`, detail: `DeckForge interpreted this as ${mission.title}. Review the goal and choose Create Plan; no project changes were applied.` }]);
+  renderProducerMissions();
+  document.querySelector("#activeMissionPanel")?.scrollIntoView({ block: "start" });
+  return true;
+}
+
 async function generateAiPlan() {
   const prompt = document.querySelector("#aiPrompt").value.trim();
   if (!prompt) return;
+  if (await handleMissionPromptCommand(prompt)) return;
   if (await handleRecommendationPromptCommand(prompt)) return;
   emitProjectContextChange("AI", "prompt-submitted", { summary: "Submitted a Producer Studio prompt", decision: { domain: "AI", action: "Prompt submitted", summary: prompt, initiatedBy: "user" } });
   const includedDomains = selectedPromptContextDomains();
@@ -8514,6 +8586,13 @@ async function executeContextualRecommendationAction(actionId, recommendation, o
     if (token.kind === "recording" && AudioEngine.recorder?.state === "recording") { toggleMixRecording(); return { success: true, message: "Stopped the recommendation-started recording." }; }
     return { success: false, message: "No reversible before-state is available for this action." };
   }
+  if (actionId.startsWith("start-mission:")) {
+    const type = actionId.split(":")[1];
+    if (!missionEngineReady) return { success: false, message: "Creative Missions is not ready." };
+    const mission = MissionEngine.createMission(type, { source: "Contextual Recommendation", userGoal: recommendation.title });
+    switchView("ai"); renderProducerMissions(); document.querySelector("#activeMissionPanel")?.scrollIntoView({ block: "start" });
+    return { success: true, message: `Created a ${mission.title} draft for review. No project changes were applied.` };
+  }
   if (actionId === "open-ditc") { switchView("sources"); return { success: true, message: "Opened DITC." }; }
   if (actionId === "open-pads") { switchView("sampler"); return { success: true, message: "Opened Pads." }; }
   if (actionId === "open-smart-mix") { switchView("decks"); document.querySelector("#smartMixPrompt")?.focus(); return { success: true, message: "Opened Smart Mix transition planning." }; }
@@ -8717,24 +8796,130 @@ function renderProducerSuggestions(context, suppliedRecommendations = null) {
   }).join("") : recommendationEmptyState(context);
 }
 
-const PRODUCER_MISSIONS = [
-  ["Build Mixtape", "Create a cohesive mixtape plan using the current project, DITC tracks, decks, pads, and references."],
-  ["Create Live Set", "Create a live set with a clear energy arc and safe transitions using the current project."],
-  ["Generate Intro", "Generate a memorable project intro with an 8-bar structure, DJ drop space, and a clean first transition."],
-  ["Generate Outro", "Generate a strong closing section that resolves the current key, energy arc, and project identity."],
-  ["Improve Energy", "Improve the project energy arc without replacing manual arrangement choices."],
-  ["Generate Beat", "Generate a Beat Forge pattern that fits the current BPM, genre, decks, and arrangement."],
-  ["Compose Harmony", "Compose a Harmony Lab idea that fits the current key, Beat Forge groove, and project space."],
-  ["Find Better Songs", "Find better intro, transition, and closing songs in the current DITC selection."],
-  ["Master Session", "Review this session and create a non-destructive mastering checklist."],
-  ["Build Pad Bank", "Build a project-aware pad bank for intros, drops, transitions, scratches, and the outro."],
-  ["Generate Transition", "Generate a safe, editable transition plan for the current decks and selected songs."]
-];
-
 function renderProducerMissions() {
   const grid = document.querySelector("#producerMissionGrid");
-  if (!grid) return;
-  grid.innerHTML = PRODUCER_MISSIONS.map(([label, prompt], index) => `<button class="producer-mission" data-producer-mission="${index}"><span>${escapeHtml(label)}</span><small>${escapeHtml(prompt)}</small><b>Start mission →</b></button>`).join("");
+  if (!grid || !missionEngineReady) return;
+  const catalog = MissionEngine.catalogForContext(ProjectIntelligenceEngine.getProjectContext(), producerStudioState.mode);
+  const groups = [...new Set(catalog.map((item) => item.group))];
+  grid.innerHTML = groups.map((group) => `<section class="mission-purpose-group"><h4>${escapeHtml(group)}</h4><div class="producer-mission-grid">${catalog.filter((item) => item.group === group).map((item) => `<button class="producer-mission" data-producer-mission="${escapeHtml(item.type)}"><span>${escapeHtml(item.title)}</span><small>${escapeHtml(item.description)}</small><em>${escapeHtml(item.domains.join(" · "))}</em><b>${escapeHtml(item.difficulty)} · Start Mission →</b></button>`).join("")}</div></section>`).join("");
+  renderActiveMission();
+  renderMissionHistory();
+}
+
+function renderActiveMission() {
+  const panel = document.querySelector("#activeMissionPanel");
+  if (!panel || !missionEngineReady) return;
+  const mission = MissionEngine.getActiveMission();
+  panel.hidden = !mission;
+  if (!mission) return;
+  document.querySelector("#activeMissionStatus").textContent = `${mission.status} · Context v${mission.contextVersion}`;
+  document.querySelector("#activeMissionTitle").textContent = mission.title;
+  document.querySelector("#activeMissionDescription").textContent = mission.userGoal;
+  document.querySelector("#activeMissionSummary").innerHTML = `<span>${mission.affectedDomains.map(escapeHtml).join(" · ")}</span><span>${mission.estimatedSteps || "Draft"} step${mission.estimatedSteps === 1 ? "" : "s"}</span><span>${escapeHtml(mission.difficulty)}</span><span>${Math.round(mission.confidence * 100)}% supported</span>`;
+  const list = document.querySelector("#activeMissionSteps");
+  list.innerHTML = mission.plan.length ? mission.plan.map((item) => `<article class="mission-step status-${item.status.toLowerCase().replace(/\s+/g, "-")}" data-mission-step-id="${escapeHtml(item.stepId)}" tabindex="-1">
+    <div class="mission-step-order" aria-hidden="true">${item.order}</div>
+    <div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.domain)} · ${escapeHtml(item.status)} · ${escapeHtml(item.estimatedImpact)}</small>${item.error ? `<p>${escapeHtml(item.error)}</p>` : ""}${item.warnings.length ? `<p class="recommendation-warning">${escapeHtml(item.warnings.join(" "))}</p>` : ""}</div>
+    <div class="mission-step-actions">
+      ${item.previewAvailable && item.status !== "Unavailable" ? `<button data-mission-step-action="preview">Preview</button>` : ""}
+      ${item.applyAvailable && !["Unavailable", "Completed"].includes(item.status) ? `<button data-mission-step-action="apply">Apply Step</button>` : ""}
+      ${item.undoAvailable && item.status === "Completed" ? `<button data-mission-step-action="undo">Undo</button>` : ""}
+      ${item.skippable && !["Completed", "Skipped"].includes(item.status) ? `<button data-mission-step-action="skip">Skip</button>` : ""}
+      <label class="producer-advanced-only"><input type="checkbox" data-mission-step-approved ${item.approved ? "checked" : ""} ${item.status === "Unavailable" ? "disabled" : ""}> Approved</label>
+    </div>
+  </article>`).join("") : `<div class="producer-empty-state">Review the interpreted goal, then choose Create Plan. Nothing has been applied.</div>`;
+  const planReady = mission.plan.length > 0;
+  const buildButton = document.querySelector("#buildActiveMissionPlan");
+  buildButton.hidden = planReady && mission.status !== "Stale";
+  buildButton.textContent = mission.status === "Stale" ? "Recalculate Mission" : "Create Plan";
+  document.querySelector("#previewActiveMission").disabled = !planReady;
+  document.querySelector("#applyNextMissionStep").disabled = !planReady || ["Cancelled", "Completed", "Undone"].includes(mission.status);
+  document.querySelector("#applyApprovedMissionSteps").disabled = !planReady;
+  document.querySelector("#applyAllMissionSteps").disabled = !planReady;
+  document.querySelector("#rollbackActiveMission").disabled = !mission.undoState.rollbackAvailable;
+  document.querySelector("#activeMissionLiveStatus").textContent = mission.resultSummary;
+}
+
+function renderMissionHistory() {
+  const list = document.querySelector("#producerMissionHistory");
+  if (!list || !missionEngineReady) return;
+  const history = MissionEngine.getHistory();
+  list.innerHTML = history.length ? history.map((mission) => `<article data-mission-history-id="${escapeHtml(mission.missionId)}"><div><strong>${mission.favorite ? "★ " : ""}${escapeHtml(mission.title)}</strong><small>${escapeHtml(mission.status)}${mission.savedAsTemplate ? " · Template" : ""} · ${new Date(mission.updatedAt).toLocaleString()}</small></div><button data-mission-history-action="reopen">Reopen</button><button data-mission-history-action="duplicate">Duplicate</button><button data-mission-history-action="rename">Rename</button><button data-mission-history-action="favorite">${mission.favorite ? "Unfavorite" : "Favorite"}</button><button data-mission-history-action="template">Save Template</button><button data-mission-history-action="delete">Delete</button></article>`).join("") : `<p class="fine-print">No missions yet.</p>`;
+}
+
+function removeMissionArrangementClip(clipId) {
+  if (!clipId || !editorState.clips.some((clip) => clip.id === clipId)) return false;
+  editorState.clips = editorState.clips.filter((clip) => clip.id !== clipId);
+  if (editorState.selectedClipId === clipId) editorState.selectedClipId = null;
+  renderEditor();
+  emitProjectContextChange("arrangement", "mission-step-undone", { summary: "Removed a mission-created arrangement clip" });
+  return true;
+}
+
+async function executeCreativeMissionStep(missionStep, mission, options = {}) {
+  if (options.mode === "undo") {
+    const token = options.undoToken || {};
+    if (token.kind === "beat-edit") { undoBeatEdit(); return { success: true, message: "Restored the previous Beat Forge pattern." }; }
+    if (token.kind === "harmony-edit") { undoHarmony(); return { success: true, message: "Restored the previous Harmony Lab pattern." }; }
+    if (token.kind === "arrangement-clip") return { success: removeMissionArrangementClip(token.clipId), message: "Removed the mission-created arrangement clip." };
+    return { success: false, message: "This mission step has no reversible before-state." };
+  }
+  const action = missionStep.actionType;
+  if (action === "open-ditc") { switchView("sources"); return { success: true, message: "Opened DITC." }; }
+  if (action === "open-decks" || action === "open-recording") { switchView("decks"); return { success: true, message: action === "open-recording" ? "Opened Deck recording controls." : "Opened Decks." }; }
+  if (action === "open-pads") { switchView("sampler"); return { success: true, message: "Opened Pads." }; }
+  if (action === "open-stems") { switchView("stems"); return { success: true, message: "Opened Stem Lab." }; }
+  if (action === "open-arrangement") { switchView("editor"); return { success: true, message: "Opened Arrangement." }; }
+  if (action === "build-transition") return executeContextualRecommendationAction("smart-safe-transition", { relatedPadIds: [], evidence: [] }, { mode: options.mode === "preview" ? "preview" : "apply" });
+  if (["generate-beat", "generate-intro-beat", "generate-outro-beat"].includes(action)) {
+    switchView("drums");
+    const input = document.querySelector("#beatPrompt");
+    input.value = action === "generate-intro-beat" ? `Create an 8 bar ${producerStudioState.genre || "project"} intro at ${document.querySelector("#globalBpm")?.value || 124} BPM with a restrained first half` : action === "generate-outro-beat" ? `Create a restrained 8 bar outro at ${document.querySelector("#globalBpm")?.value || 124} BPM with a deliberate ending` : `Create a ${producerStudioState.genre || "project-aware"} groove at ${document.querySelector("#globalBpm")?.value || 124} BPM`;
+    buildBeatPromptPlan("new");
+    if (options.mode === "preview") { await previewGeneratedBeat(); return { success: true, message: "Previewing the Beat Forge candidate through the registered Beat Forge preview source.", previewSource: "Beat Forge" }; }
+    applyBeatPromptPlan();
+    return { success: true, message: "Applied the candidate through Beat Forge.", undoToken: { kind: "beat-edit" } };
+  }
+  if (["generate-harmony", "generate-intro-harmony", "generate-outro-harmony"].includes(action)) {
+    switchView("keys");
+    const input = document.querySelector("#harmonyPrompt");
+    input.value = action === "generate-intro-harmony" ? "Create a cinematic intro pad with restrained movement" : action === "generate-outro-harmony" ? "Create a resolving outro chord progression with a gentle ending" : "Create soulful project-aware chords";
+    buildHarmonyPlan(false);
+    if (options.mode === "preview") { await previewHarmonyPattern(); return { success: true, message: "Previewing the Harmony Lab candidate through the registered Harmony preview source.", previewSource: "Harmony Lab" }; }
+    applyHarmonyPlan();
+    return { success: true, message: "Applied the candidate through Harmony Lab.", undoToken: { kind: "harmony-edit" } };
+  }
+  if (action === "beat-to-arrangement") { const before = new Set(editorState.clips.map((clip) => clip.id)); sendBeatToArrangement(); const clip = editorState.clips.find((item) => !before.has(item.id)); return clip ? { success: true, message: "Added the Beat Forge pattern through the existing Arrangement action.", undoToken: { kind: "arrangement-clip", clipId: clip.id } } : { success: false, message: "No Beat Forge clip was added." }; }
+  if (action === "harmony-to-arrangement") { const before = new Set(editorState.clips.map((clip) => clip.id)); sendHarmonyToArrangement(); const clip = editorState.clips.find((item) => !before.has(item.id)); return clip ? { success: true, message: "Added the Harmony Lab pattern through the existing Arrangement action.", undoToken: { kind: "arrangement-clip", clipId: clip.id } } : { success: false, message: "No Harmony clip was added." }; }
+  if (action === "plan-pad-bank" || action === "apply-pad-bank") {
+    switchView("sampler");
+    document.querySelector("#aiPadPrompt").value = `${mission.userGoal} using decoded local sources`;
+    previewAiPadPlan();
+    if (!sampler.pendingAiPlan?.sources.length) return { success: false, message: "No decoded DITC sources are available for a pad plan." };
+    if (action === "plan-pad-bank") return { success: true, message: "Prepared pad assignments for review; the current bank was not changed." };
+    applyAiPadPlan(); return { success: true, message: "Applied the reviewed plan through the existing Pad AI Builder." };
+  }
+  if (action === "load-starter-pad-layout") { switchView("sampler"); loadStarterPadBank(); return { success: true, message: "Loaded the existing starter pad layout as relink-required slots. No audio was invented." }; }
+  if (action === "show-mixtape-plan" || action === "show-energy-analysis") return { success: true, message: "Planning evidence is displayed without changing the project." };
+  return { success: false, message: `Unsupported mission action: ${action}` };
+}
+
+function initializeMissionEngine() {
+  MissionEngine.configure({
+    projectId: producerStudioState.projectId,
+    getContext: () => ProjectIntelligenceEngine.getProjectContext(),
+    executeStep: executeCreativeMissionStep,
+    onEvent: (event) => recordProducerEvent(event.summary, { domain: "Creative Missions", action: `Mission ${event.type.replace(/-/g, " ")}`, summary: event.summary, initiatedBy: "user" })
+  });
+  missionEngineReady = true;
+  MissionEngine.subscribe(() => { renderActiveMission(); renderMissionHistory(); renderCreativeMissionDiagnostics(); });
+}
+
+function renderCreativeMissionDiagnostics() {
+  const details = document.querySelector("#creativeMissionDiagnostics");
+  if (details) details.hidden = !DECKFORGE_DEVELOPMENT;
+  const output = document.querySelector("#creativeMissionDiagnosticsOutput");
+  if (output && DECKFORGE_DEVELOPMENT && missionEngineReady) output.textContent = JSON.stringify(MissionEngine.getDiagnostics(), null, 2);
 }
 
 function rememberProducerPrompt(prompt, options = {}) {
@@ -8886,6 +9071,7 @@ function renderProducerStudio(options = {}) {
   renderPromptContextPreview();
   renderProjectIntelligenceDiagnostics();
   renderRecommendationDiagnostics();
+  renderCreativeMissionDiagnostics();
   renderAiContext();
   const sync = document.querySelector("#producerSyncStatus");
   if (sync) sync.textContent = context.timestamps.lastMeaningfulUpdate ? `Project context updated · v${context.contextVersion} · ${new Date(context.timestamps.lastMeaningfulUpdate).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : `Context v${context.contextVersion} · No meaningful updates yet`;
@@ -8990,9 +9176,30 @@ function setupProducerStudioEvents() {
   document.querySelector("#producerMissionGrid").addEventListener("click", (event) => {
     const button = event.target.closest("[data-producer-mission]");
     if (!button) return;
-    const mission = PRODUCER_MISSIONS[Number(button.dataset.producerMission)];
-    previewProducerPrompt(mission[1], mission[0]);
+    MissionEngine.createMission(button.dataset.producerMission, { source: "Creative Missions" });
+    renderProducerMissions();
+    document.querySelector("#activeMissionPanel")?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
+  document.querySelector("#buildActiveMissionPlan").addEventListener("click", () => { const active = MissionEngine.getActiveMission(); if (active) { if (active.status === "Stale") MissionEngine.recalculateMission(active.missionId); else MissionEngine.buildMissionPlan(active.missionId); renderActiveMission(); } });
+  document.querySelector("#previewActiveMission").addEventListener("click", async () => { const active = MissionEngine.getActiveMission(); if (!active) return; const result = await MissionEngine.previewMission(active.missionId); document.querySelector("#activeMissionLiveStatus").textContent = result.message || "Mission plan previewed."; renderActiveMission(); });
+  document.querySelector("#applyNextMissionStep").addEventListener("click", async () => { const active = MissionEngine.getActiveMission(); if (!active) return; const result = await MissionEngine.applyMission(active.missionId, { guided: true }); document.querySelector("#activeMissionLiveStatus").textContent = result.success ? "Applied the next approved mission step." : result.results?.at(-1)?.reason || "The step needs attention."; renderActiveMission(); });
+  document.querySelector("#applyApprovedMissionSteps").addEventListener("click", async () => { const active = MissionEngine.getActiveMission(); if (active) { await MissionEngine.applyMission(active.missionId, { guided: false }); renderActiveMission(); } });
+  document.querySelector("#applyAllMissionSteps").addEventListener("click", async () => { const active = MissionEngine.getActiveMission(); if (active && window.confirm("Apply every currently supported mission step? Each step will still be revalidated.")) { await MissionEngine.applyMission(active.missionId, { guided: false, all: true }); renderActiveMission(); } });
+  document.querySelector("#cancelActiveMission").addEventListener("click", () => { const active = MissionEngine.getActiveMission(); if (active) { MissionEngine.cancelMission(active.missionId); renderActiveMission(); } });
+  document.querySelector("#rollbackActiveMission").addEventListener("click", async () => { const active = MissionEngine.getActiveMission(); if (active) { await MissionEngine.undoMission(active.missionId); renderActiveMission(); } });
+  document.querySelector("#activeMissionSteps").addEventListener("click", async (event) => {
+    const card = event.target.closest("[data-mission-step-id]"); const button = event.target.closest("[data-mission-step-action]"); const active = MissionEngine.getActiveMission();
+    if (!card || !button || !active) return;
+    const action = button.dataset.missionStepAction; const stepId = card.dataset.missionStepId; let result;
+    if (action === "preview" || action === "apply") result = await MissionEngine.runStep(active.missionId, stepId, action);
+    if (action === "undo") result = await MissionEngine.undoMissionStep(active.missionId, stepId);
+    if (action === "skip") result = MissionEngine.skipMissionStep(active.missionId, stepId);
+    if (result?.stale) document.querySelector("#activeMissionLiveStatus").textContent = `${result.reason} Recalculate the mission before continuing.`;
+    renderActiveMission();
+    document.querySelector(`[data-mission-step-id="${CSS.escape(stepId)}"]`)?.focus();
+  });
+  document.querySelector("#activeMissionSteps").addEventListener("change", (event) => { const input = event.target.closest("[data-mission-step-approved]"); const card = event.target.closest("[data-mission-step-id]"); const active = MissionEngine.getActiveMission(); if (input && card && active) MissionEngine.setStepApproved(active.missionId, card.dataset.missionStepId, input.checked); });
+  document.querySelector("#producerMissionHistory").addEventListener("click", (event) => { const row = event.target.closest("[data-mission-history-id]"); const button = event.target.closest("[data-mission-history-action]"); if (!row || !button) return; const id = row.dataset.missionHistoryId; const mission = MissionEngine.getMission(id); const action = button.dataset.missionHistoryAction; if (action === "reopen") MissionEngine.setActiveMission(id); if (action === "duplicate") MissionEngine.duplicateMission(id); if (action === "rename") { const title = window.prompt("Rename mission", mission?.title || ""); if (title) MissionEngine.updateMission(id, { title }); } if (action === "favorite") MissionEngine.updateMission(id, { favorite: !mission?.favorite }); if (action === "template") MissionEngine.updateMission(id, { savedAsTemplate: true }); if (action === "delete") MissionEngine.deleteMission(id); renderProducerMissions(); });
   document.querySelector("#producerSuggestionGrid").addEventListener("click", (event) => {
     const button = event.target.closest("[data-suggestion-action]");
     const card = event.target.closest("[data-suggestion-id]");
@@ -11153,6 +11360,7 @@ renderSources();
 renderAiContext();
 initializeProjectIntelligence();
 initializeRecommendationEngine();
+initializeMissionEngine();
 renderProducerStudio();
 renderEditor();
 drawWaveform("a");

@@ -1,0 +1,171 @@
+(function initializeCreativeMissions(global) {
+  "use strict";
+
+  const STORAGE_PREFIX = "deckforge-creative-missions";
+  const VALID_STATUSES = new Set(["Draft", "Analyzing", "Needs Input", "Plan Ready", "Previewing", "Ready to Apply", "Applying", "Paused", "Completed", "Partially Completed", "Cancelled", "Failed", "Stale", "Undone"]);
+  const subscribers = new Set();
+  let projectId = "deckforge-session";
+  let getContext = () => ({});
+  let executeStep = async () => ({ success: false, message: "No mission step adapter is configured." });
+  let onEvent = () => {};
+  let missions = [];
+  let activeMissionId = null;
+  let lastError = "None";
+  let domainCalls = [];
+  let previewSources = [];
+
+  const CATALOG = [
+    { type: "build-mixtape", group: "Start Something", title: "Build Mixtape", description: "Shape playable tracks into a cohesive mix with an energy arc and safe transitions.", difficulty: "Beginner", domains: ["DITC", "Smart Mix", "Arrangement"], empty: false },
+    { type: "create-live-set", group: "Start Something", title: "Create Live Set", description: "Prepare a flexible set plan with room for manual DJing and fallback transitions.", difficulty: "Intermediate", domains: ["DITC", "Decks", "Smart Mix", "Pads"], empty: false },
+    { type: "generate-intro", group: "Start Something", title: "Generate Intro", description: "Create an opening with optional drums, harmony, pads, and a first transition.", difficulty: "Beginner", domains: ["Beat Forge", "Harmony Lab", "Pads", "Arrangement"], empty: true },
+    { type: "generate-outro", group: "Improve Something", title: "Generate Outro", description: "Plan a deliberate closing section and prepare a clean ending.", difficulty: "Beginner", domains: ["Beat Forge", "Harmony Lab", "Arrangement"], empty: false },
+    { type: "improve-energy", group: "Improve Something", title: "Improve Energy", description: "Review real track and arrangement signals before proposing lighter or larger changes.", difficulty: "Intermediate", domains: ["DITC", "Smart Mix", "Arrangement"], empty: false },
+    { type: "build-transition", group: "Create Elements", title: "Build Transition", description: "Use the existing Smart Mix transition controller with tempo safety intact.", difficulty: "Beginner", domains: ["Decks", "Smart Mix"], empty: false },
+    { type: "create-remix", group: "Start Something", title: "Create Remix", description: "Coordinate stems, drums, harmony, and arrangement around a local source.", difficulty: "Advanced", domains: ["Stem Lab", "Beat Forge", "Harmony Lab", "Arrangement"], empty: false },
+    { type: "create-mashup", group: "Start Something", title: "Create Mashup", description: "Validate two playable sources before combining vocal and instrumental ideas.", difficulty: "Advanced", domains: ["Decks", "Stem Lab", "Arrangement"], empty: false },
+    { type: "build-pad-bank", group: "Create Elements", title: "Build Pad Bank", description: "Preview pad assignments from decoded local sources without silent overwrites.", difficulty: "Beginner", domains: ["DITC", "Pads"], empty: true },
+    { type: "generate-beat", group: "Create Elements", title: "Generate Beat", description: "Create, preview, and apply a Beat Forge pattern using the project BPM.", difficulty: "Beginner", domains: ["Beat Forge", "Arrangement"], empty: true },
+    { type: "compose-harmony", group: "Create Elements", title: "Compose Harmony", description: "Create and preview a Harmony Lab idea using known project settings.", difficulty: "Beginner", domains: ["Harmony Lab", "Arrangement"], empty: true },
+    { type: "finish-arrangement", group: "Finish Something", title: "Finish Arrangement", description: "Review gaps, intro, outro, and export readiness, then apply steps individually.", difficulty: "Intermediate", domains: ["Arrangement", "Recording"], empty: false },
+    { type: "prepare-performance", group: "Finish Something", title: "Prepare Performance", description: "Prepare decks, fallbacks, pads, and recording while preserving manual control.", difficulty: "Advanced", domains: ["Decks", "Smart Mix", "Pads", "Recording"], empty: false },
+    { type: "starter-mix", group: "Start Something", title: "Import and Build First Mix", description: "Start in DITC, then return to build a safe two-song plan.", difficulty: "Beginner", domains: ["DITC", "Decks"], starter: true, empty: true },
+    { type: "starter-beat", group: "Start Something", title: "Create a Starter Beat", description: "Generate and preview a first Beat Forge pattern before applying it.", difficulty: "Beginner", domains: ["Beat Forge"], starter: true, empty: true },
+    { type: "starter-pad-bank", group: "Start Something", title: "Build a Starter Pad Bank", description: "Create honest relink-required pad slots without inventing audio.", difficulty: "Beginner", domains: ["Pads"], starter: true, empty: true },
+    { type: "learn-two-songs", group: "Start Something", title: "Learn to Mix Two Songs", description: "Import two local songs and prepare a safe first transition.", difficulty: "Beginner", domains: ["DITC", "Decks", "Smart Mix"], starter: true, empty: true }
+  ];
+
+  function clone(value, fallback = null) { try { return JSON.parse(JSON.stringify(value)); } catch (error) { lastError = error.message; return fallback; } }
+  function id(prefix) { return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`; }
+  function now() { return new Date().toISOString(); }
+  function storageKey() { return `${STORAGE_PREFIX}:${projectId}`; }
+  function persist() { try { localStorage.setItem(storageKey(), JSON.stringify({ activeMissionId, missions: missions.slice(0, 20) })); } catch (error) { lastError = error.message; } }
+  function restore() { try { const saved = JSON.parse(localStorage.getItem(storageKey()) || "null"); missions = Array.isArray(saved?.missions) ? saved.missions : []; activeMissionId = saved?.activeMissionId || null; } catch (error) { lastError = error.message; missions = []; } }
+  function notify(type, mission, detail = {}) { persist(); const snapshot = clone(mission); subscribers.forEach((fn) => { try { fn(snapshot, { type, ...detail }); } catch (error) { lastError = error.message; } }); }
+  function emit(type, mission, summary, detail = {}) { try { onEvent({ type, mission: clone(mission), summary, ...detail }); } catch (error) { lastError = error.message; } if (mission) mission.contextVersion = getContext()?.contextVersion || mission.contextVersion; notify(type, mission, detail); }
+  function contextEmpty(context) { return !context?.ditc?.totalTracks && !(context?.decks || []).some((deck) => deck.loadedTrack) && !context?.arrangement?.clipCount && !context?.beatForge?.activePattern && !context?.harmonyLab?.melody && !context?.pads?.assignedPadCount; }
+  function catalogForContext(context = getContext(), mode = "advanced") {
+    if (contextEmpty(context)) return CATALOG.filter((item) => item.starter).map((item) => ({ ...item }));
+    const available = CATALOG.filter((item) => !item.starter);
+    return (mode === "simple" ? available.filter((item) => item.difficulty === "Beginner").slice(0, 5) : available).map((item) => ({ ...item }));
+  }
+  function step(order, domain, title, actionType, options = {}) {
+    return { stepId: id("step"), order, domain, title, description: options.description || title, actionType, parameters: options.parameters || {}, dependencies: options.dependencies || [], status: options.available === false ? "Unavailable" : "Pending", previewAvailable: Boolean(options.preview), applyAvailable: options.apply !== false && options.available !== false, undoAvailable: Boolean(options.undo), required: options.required !== false, skippable: options.required === false, approved: options.approved !== false, estimatedImpact: options.impact || "Project plan", warnings: options.warnings || [], result: null, error: options.available === false ? options.reason || "Required project input is unavailable." : null };
+  }
+
+  function buildSteps(type, context, options = {}) {
+    const playable = Number(context?.ditc?.playableTracks || 0);
+    const loaded = (context?.decks || []).filter((deck) => deck.loadedTrack);
+    const arrangement = context?.arrangement || {};
+    const pads = Number(context?.pads?.assignedPadCount || 0);
+    const stems = Number(context?.stems?.availableStems?.length || context?.stems?.stemCount || 0);
+    const hasBeat = Boolean(context?.beatForge?.activePattern);
+    const hasHarmony = Boolean(context?.harmonyLab?.melody || context?.harmonyLab?.chordProgression);
+    const plans = {
+      "starter-mix": [step(1, "DITC", "Import playable local tracks", "open-ditc", { impact: "Opens DITC; no project content changes" }), step(2, "Decks", "Load two tracks for a first mix", "open-decks", { available: playable >= 2, reason: "Import at least two playable tracks first." }), step(3, "Smart Mix", "Prepare a safe first transition", "build-transition", { available: loaded.length === 2, preview: true, undo: false, reason: "Load both decks first." })],
+      "learn-two-songs": [step(1, "DITC", "Import two playable local songs", "open-ditc", { impact: "Opens DITC; no project content changes" }), step(2, "Decks", "Load an outgoing and incoming song", "open-decks", { available: playable >= 2, reason: "Import at least two playable songs first." }), step(3, "Smart Mix", "Preview a tempo-safe transition", "build-transition", { available: loaded.length === 2, preview: true, reason: "Load both decks first." })],
+      "starter-beat": [step(1, "Beat Forge", "Generate a starter Beat Forge candidate", "generate-beat", { preview: true, undo: true })],
+      "starter-pad-bank": [step(1, "Pads", "Create relink-required starter slots", "load-starter-pad-layout", { warnings: pads ? ["Existing pad assignments require confirmation before replacement."] : [] })],
+      "build-mixtape": [step(1, "DITC", "Review playable tracks and remove duplicates", "open-ditc", { available: playable > 0, reason: "No playable local tracks are available." }), step(2, "Project Planning", "Build the track and energy outline", "show-mixtape-plan", { available: playable >= 2, apply: false, reason: "At least two playable tracks are required." }), step(3, "Smart Mix", "Validate the current deck transition", "build-transition", { available: loaded.length === 2, preview: true, required: false, reason: "Load two decks to validate a transition." }), step(4, "Arrangement", "Open Arrangement for the approved draft", "open-arrangement", { available: playable >= 2, impact: "Navigation only" })],
+      "create-live-set": [step(1, "DITC", "Review playable and alternate tracks", "open-ditc", { available: playable > 0, reason: "No playable local tracks are available." }), step(2, "Decks", "Prepare opening and incoming decks", "open-decks", { available: playable >= 2, reason: "At least two playable tracks are required." }), step(3, "Smart Mix", "Preview a fallback transition", "build-transition", { available: loaded.length === 2, preview: true, required: false, reason: "Load both decks to create the fallback." }), step(4, "Pads", "Review performance pad opportunities", "open-pads", { required: false }), step(5, "Recording", "Prepare test recording", "open-recording", { impact: "Navigation only" })],
+      "generate-intro": [step(1, "Beat Forge", "Generate an intro drum candidate", "generate-intro-beat", { preview: true, undo: true }), step(2, "Harmony Lab", "Generate an atmosphere or chord candidate", "generate-intro-harmony", { preview: true, undo: true, required: false }), step(3, "Pads", "Review a drop or effect slot", "open-pads", { required: false }), step(4, "Arrangement", "Add the approved Beat Forge pattern", "beat-to-arrangement", { undo: true, required: false, dependencies: ["generate-intro-beat"] }), step(5, "Arrangement", "Add the approved Harmony Lab pattern", "harmony-to-arrangement", { undo: true, required: false, dependencies: ["generate-intro-harmony"] }), step(6, "Smart Mix", "Prepare the first transition", "build-transition", { available: loaded.length === 2, preview: true, required: false, reason: "Load both decks to prepare the transition." })],
+      "generate-outro": [step(1, "Arrangement", "Review the current ending", "open-arrangement", { available: arrangement.clipCount > 0, reason: "The arrangement has no clips yet." }), step(2, "Beat Forge", "Generate a restrained outro rhythm", "generate-outro-beat", { preview: true, undo: true, required: false }), step(3, "Harmony Lab", "Generate a resolving harmony candidate", "generate-outro-harmony", { preview: true, undo: true, required: false }), step(4, "Arrangement", "Return to place approved ending elements", "open-arrangement")],
+      "improve-energy": [step(1, "Project Planning", "Review available energy evidence", "show-energy-analysis", { apply: false, available: Boolean(context?.mixtape?.energyCurve || (context?.ditc?.tracks || []).some((track) => track.energy)), reason: "No analyzed energy values are available; DeckForge will not invent a curve." }), step(2, "DITC", "Review track order and bridge options", "open-ditc", { available: playable > 1, reason: "At least two playable tracks are required." }), step(3, "Smart Mix", "Preview a transition adjustment", "build-transition", { available: loaded.length === 2, preview: true, required: false, reason: "Load both decks to evaluate a real transition." }), step(4, "Arrangement", "Review section contrast", "open-arrangement", { available: arrangement.clipCount > 0, required: false, reason: "No arrangement exists yet." })],
+      "build-transition": [step(1, "Decks", "Confirm outgoing and incoming decks", "open-decks", { available: loaded.length === 2, reason: "Load an outgoing and incoming deck." }), step(2, "Smart Mix", "Build and preview the transition plan", "build-transition", { available: loaded.length === 2, preview: true, reason: "Load both decks first.", warnings: ["Tempo safety and safer-plan validation remain active."] })],
+      "create-remix": [step(1, "DITC", "Choose a decoded local source", "open-ditc", { available: playable > 0, reason: "Import local audio first." }), step(2, "Stem Lab", "Prepare source stems", "open-stems", { available: stems > 0, reason: "No separated stems are available." }), step(3, "Beat Forge", "Generate a remix drum candidate", "generate-beat", { preview: true, undo: true, required: false }), step(4, "Harmony Lab", "Generate a harmony candidate", "generate-harmony", { preview: true, undo: true, required: false }), step(5, "Arrangement", "Open Arrangement for approved elements", "open-arrangement")],
+      "create-mashup": [step(1, "Decks", "Confirm two playable source tracks", "open-decks", { available: loaded.length === 2, reason: "Load both source tracks." }), step(2, "Stem Lab", "Validate vocal and instrumental stems", "open-stems", { available: stems >= 2, reason: "At least two usable stems are required." }), step(3, "Smart Mix", "Validate BPM and transition safety", "build-transition", { available: loaded.length === 2, preview: true }), step(4, "Arrangement", "Open Arrangement for manual phrase alignment", "open-arrangement", { available: stems >= 2, reason: "Prepare stems first." })],
+      "build-pad-bank": [step(1, "Pads", "Preview assignments from local sources", "plan-pad-bank", { available: playable > 0, reason: "Import decoded local audio first." }), step(2, "Pads", "Apply the reviewed pad assignments", "apply-pad-bank", { available: playable > 0, undo: false, warnings: pads ? ["The existing bank requires confirmation before replacement."] : [] })],
+      "generate-beat": [step(1, "Beat Forge", "Generate a Beat Forge candidate", "generate-beat", { preview: true, undo: true }), step(2, "Arrangement", "Add the approved beat to Arrangement", "beat-to-arrangement", { undo: true, required: false, dependencies: ["generate-beat"] })],
+      "compose-harmony": [step(1, "Harmony Lab", "Generate a Harmony Lab candidate", "generate-harmony", { preview: true, undo: true }), step(2, "Arrangement", "Add the approved harmony to Arrangement", "harmony-to-arrangement", { undo: true, required: false, dependencies: ["generate-harmony"] })],
+      "finish-arrangement": [step(1, "Arrangement", "Review gaps and incomplete sections", "open-arrangement", { available: arrangement.clipCount > 0, reason: "The arrangement has no clips." }), step(2, "Arrangement", "Review intro status", "open-arrangement", { available: arrangement.introStatus !== "Not planned", required: false, reason: "No intro is identified." }), step(3, "Arrangement", "Review outro status", "open-arrangement", { available: arrangement.outroStatus !== "Not planned", required: false, reason: "No outro is identified." }), step(4, "Recording", "Prepare a test recording", "open-recording", { required: false })],
+      "prepare-performance": [step(1, "Decks", "Prepare deck order and manual overrides", "open-decks", { available: playable >= 2 || loaded.length === 2, reason: "At least two playable tracks are required." }), step(2, "Smart Mix", "Prepare a fallback transition", "build-transition", { available: loaded.length === 2, preview: true, required: false, reason: "Load both decks first." }), step(3, "Pads", "Review performance pads", "open-pads", { required: false }), step(4, "Recording", "Open recording controls", "open-recording", { required: false })]
+    };
+    return (plans[type] || []).map((item) => ({ ...item, parameters: { ...item.parameters, ...options.parameters } }));
+  }
+
+  function createMission(type, options = {}) {
+    const template = CATALOG.find((item) => item.type === type);
+    if (!template) throw new Error(`Unknown mission type: ${type}`);
+    const context = getContext() || {};
+    const timestamp = now();
+    const mission = { missionId: id("mission"), projectId, type, title: options.title || template.title, description: template.description, userGoal: options.userGoal || template.description, source: options.source || "Creative Missions", status: "Draft", contextVersion: context.contextVersion || 0, createdAt: timestamp, updatedAt: timestamp, difficulty: template.difficulty, estimatedSteps: 0, estimatedDuration: options.estimatedDuration || "5–15 minutes", beginnerFriendly: template.difficulty === "Beginner", affectedDomains: [...template.domains], prerequisites: [], missingRequirements: [], warnings: [], plan: [], currentStep: 0, completedSteps: [], failedSteps: [], skippedSteps: [], previewState: { status: "Not previewed", stepId: null }, applyState: { mode: "Guided", approvedStepIds: [] }, undoState: { tokens: [], rollbackAvailable: false }, confidence: 0, evidence: [], userOverrides: options.userOverrides || {}, rollbackSnapshot: null, resultSummary: "Mission draft created." };
+    missions.unshift(mission); activeMissionId = mission.missionId; emit("created", mission, `Created ${mission.title} mission draft`); return clone(mission);
+  }
+  function analyzeMissionRequirements(missionOrId, context = getContext()) {
+    const mission = typeof missionOrId === "string" ? missions.find((item) => item.missionId === missionOrId) : missionOrId;
+    if (!mission) return null;
+    mission.status = "Analyzing";
+    const planned = buildSteps(mission.type, context || {}, mission.userOverrides);
+    mission.missingRequirements = planned.filter((item) => item.status === "Unavailable" && item.required).map((item) => item.error);
+    mission.warnings = planned.flatMap((item) => item.warnings);
+    mission.confidence = planned.length ? planned.filter((item) => item.status !== "Unavailable").length / planned.length : 0;
+    mission.evidence = [{ label: "Project context", value: `v${context?.contextVersion || 0}` }, { label: "Playable tracks", value: context?.ditc?.playableTracks || 0 }, { label: "Loaded decks", value: (context?.decks || []).filter((deck) => deck.loadedTrack).length }, { label: "Arrangement clips", value: context?.arrangement?.clipCount || 0 }];
+    return planned;
+  }
+  function buildMissionPlan(missionId) {
+    const mission = missions.find((item) => item.missionId === missionId); if (!mission) return null;
+    const context = getContext() || {}; const planned = analyzeMissionRequirements(mission, context) || [];
+    mission.plan = planned; mission.estimatedSteps = planned.length; mission.contextVersion = context.contextVersion || 0; mission.updatedAt = now();
+    mission.applyState.approvedStepIds = planned.filter((item) => item.approved && item.status !== "Unavailable").map((item) => item.stepId);
+    mission.status = mission.missingRequirements.length && !planned.some((item) => item.status !== "Unavailable") ? "Needs Input" : "Plan Ready";
+    mission.resultSummary = `${planned.filter((item) => item.status !== "Unavailable").length} supported step(s); ${planned.filter((item) => item.status === "Unavailable").length} unavailable.`;
+    emit("planned", mission, `Built ${mission.title} plan`); return clone(mission);
+  }
+  function validateStep(mission, missionStep, options = {}) {
+    const context = getContext() || {};
+    if (!options.allowStale && mission.contextVersion !== (context.contextVersion || 0)) return { valid: false, stale: true, reason: `Project context changed from v${mission.contextVersion} to v${context.contextVersion || 0}.` };
+    if (missionStep.status === "Unavailable") return { valid: false, reason: missionStep.error || "Step is unavailable." };
+    const incompleteDependency = missionStep.dependencies.find((actionType) => !mission.plan.some((item) => item.actionType === actionType && item.status === "Completed"));
+    if (incompleteDependency) return { valid: false, reason: "Complete the earlier approved mission step first." };
+    return { valid: true };
+  }
+  async function runStep(missionId, stepId, mode = "apply", options = {}) {
+    const mission = missions.find((item) => item.missionId === missionId); const missionStep = mission?.plan.find((item) => item.stepId === stepId);
+    if (!mission || !missionStep) return { success: false, reason: "Mission step is unavailable." };
+    const validation = validateStep(mission, missionStep, options);
+    if (!validation.valid) { if (validation.stale) { mission.status = "Stale"; missionStep.status = "Stale"; notify("stale", mission, { stepId, validation }); } return { success: false, ...validation }; }
+    if (mode === "preview" && !missionStep.previewAvailable) return { success: false, reason: "This step has no temporary preview." };
+    mission.status = mode === "preview" ? "Previewing" : "Applying"; missionStep.status = mode === "preview" ? "Previewing" : "Applying"; notify("step-started", mission, { stepId, mode });
+    try {
+      domainCalls.push({ at: now(), missionId, stepId, domain: missionStep.domain, actionType: missionStep.actionType, mode });
+      const result = await executeStep(missionStep, mission, { mode, force: options.allowStale });
+      if (!result?.success) throw new Error(result?.message || result?.reason || "The domain action did not complete.");
+      missionStep.result = clone(result); missionStep.error = null;
+      if (mode === "preview") { missionStep.status = "Previewed"; mission.previewState = { status: "Previewed", stepId, source: result.previewSource || missionStep.domain }; previewSources.push(mission.previewState); mission.status = "Ready to Apply"; emit("previewed", mission, `Previewed ${missionStep.title}`, { stepId }); }
+      else { missionStep.status = "Completed"; if (!mission.completedSteps.includes(stepId)) mission.completedSteps.push(stepId); if (result.undoToken) { mission.undoState.tokens.push({ stepId, actionType: missionStep.actionType, token: result.undoToken }); mission.undoState.rollbackAvailable = mission.undoState.tokens.length === mission.completedSteps.length; } mission.currentStep = Math.min(mission.plan.length, mission.plan.findIndex((item) => item.stepId === stepId) + 1); finishStatus(mission); emit("step-applied", mission, `Applied mission step: ${missionStep.title}`, { stepId }); }
+      mission.updatedAt = now(); return { success: true, mission: clone(mission), result };
+    } catch (error) { missionStep.status = "Failed"; missionStep.error = error.message; if (!mission.failedSteps.includes(stepId)) mission.failedSteps.push(stepId); mission.status = missionStep.required ? "Paused" : "Partially Completed"; lastError = error.message; emit("step-failed", mission, `Mission step failed: ${missionStep.title}`, { stepId, error: error.message }); return { success: false, reason: error.message, mission: clone(mission) }; }
+  }
+  function finishStatus(mission) {
+    const actionable = mission.plan.filter((item) => item.status !== "Unavailable" && item.applyAvailable);
+    const remaining = actionable.filter((item) => !["Completed", "Skipped"].includes(item.status));
+    if (remaining.length) { mission.status = "Ready to Apply"; mission.resultSummary = `${mission.completedSteps.length} of ${actionable.length} applicable steps completed.`; return; }
+    const requiredFailure = mission.plan.some((item) => item.required && ["Failed", "Unavailable"].includes(item.status));
+    mission.status = requiredFailure || mission.skippedSteps.length || mission.failedSteps.length ? "Partially Completed" : "Completed";
+    mission.resultSummary = mission.status === "Completed" ? "Mission completed." : `Mission completed with ${mission.skippedSteps.length} skipped and ${mission.failedSteps.length} failed step(s).`;
+    emit("completed", mission, mission.resultSummary);
+  }
+  async function previewMission(missionId) { const mission = missions.find((item) => item.missionId === missionId); if (!mission) return { success: false }; mission.status = "Previewing"; mission.previewState = { status: "Plan previewed", stepId: null }; emit("previewed", mission, `Previewed ${mission.title} plan`); return { success: true, mission: clone(mission), message: "Plan preview is ready. Use Preview on an audio-capable step to hear it temporarily." }; }
+  async function applyMission(missionId, options = {}) { const mission = missions.find((item) => item.missionId === missionId); if (!mission) return { success: false }; const candidates = mission.plan.filter((item) => item.applyAvailable && item.status !== "Completed" && item.status !== "Skipped" && (options.all || mission.applyState.approvedStepIds.includes(item.stepId))); if (!candidates.length) { finishStatus(mission); return { success: true, mission: clone(mission) }; } const selected = options.guided !== false ? candidates.slice(0, 1) : candidates; const results = []; for (const item of selected) { const result = await runStep(missionId, item.stepId, "apply", options); results.push(result); if (!result.success) break; } return { success: results.every((item) => item.success), results, mission: getMission(missionId) }; }
+  function pauseMission(missionId) { return updateStatus(missionId, "Paused", "paused", "Paused mission"); }
+  function resumeMission(missionId) { return updateStatus(missionId, "Ready to Apply", "resumed", "Resumed mission"); }
+  function cancelMission(missionId) { return updateStatus(missionId, "Cancelled", "cancelled", "Cancelled mission; unrelated audio was left unchanged"); }
+  function updateStatus(missionId, status, event, summary) { const mission = missions.find((item) => item.missionId === missionId); if (!mission || !VALID_STATUSES.has(status)) return null; mission.status = status; mission.updatedAt = now(); emit(event, mission, `${summary}: ${mission.title}`); return clone(mission); }
+  function skipMissionStep(missionId, stepId) { const mission = missions.find((item) => item.missionId === missionId); const item = mission?.plan.find((entry) => entry.stepId === stepId); if (!mission || !item || !item.skippable) return null; item.status = "Skipped"; if (!mission.skippedSteps.includes(stepId)) mission.skippedSteps.push(stepId); finishStatus(mission); emit("step-skipped", mission, `Skipped optional mission step: ${item.title}`, { stepId }); return clone(mission); }
+  async function undoMissionStep(missionId, stepId) { const mission = missions.find((item) => item.missionId === missionId); const item = mission?.plan.find((entry) => entry.stepId === stepId); const undo = mission?.undoState.tokens.find((entry) => entry.stepId === stepId); if (!mission || !item || !undo) return { success: false, reason: "No reversible before-state is available for this step." }; const result = await executeStep(item, mission, { mode: "undo", undoToken: undo.token }); if (result?.success) { item.status = "Undone"; mission.completedSteps = mission.completedSteps.filter((id) => id !== stepId); mission.undoState.tokens = mission.undoState.tokens.filter((entry) => entry.stepId !== stepId); mission.status = "Ready to Apply"; emit("step-undone", mission, `Undid mission step: ${item.title}`, { stepId }); } return result; }
+  async function undoMission(missionId) { const mission = missions.find((item) => item.missionId === missionId); if (!mission || !mission.undoState.rollbackAvailable) return { success: false, reason: "Full rollback is unavailable because one or more applied steps are not reversible." }; for (const entry of [...mission.undoState.tokens].reverse()) { const result = await undoMissionStep(missionId, entry.stepId); if (!result?.success) return result; } mission.status = "Undone"; emit("rolled-back", mission, `Rolled back mission: ${mission.title}`); return { success: true, mission: clone(mission) }; }
+  function recalculateMission(missionId) { const mission = missions.find((item) => item.missionId === missionId); if (!mission) return null; const overrides = mission.userOverrides; mission.plan = []; mission.completedSteps = []; mission.failedSteps = []; mission.skippedSteps = []; mission.userOverrides = overrides; return buildMissionPlan(missionId); }
+  function setStepApproved(missionId, stepId, approved) { const mission = missions.find((item) => item.missionId === missionId); const item = mission?.plan.find((entry) => entry.stepId === stepId); if (!mission || !item) return null; item.approved = approved; mission.applyState.approvedStepIds = mission.plan.filter((entry) => entry.approved).map((entry) => entry.stepId); notify("edited", mission, { stepId }); return clone(mission); }
+  function duplicateMission(missionId) { const source = missions.find((item) => item.missionId === missionId); if (!source) return null; return createMission(source.type, { title: `${source.title} Copy`, userGoal: source.userGoal, source: "Mission history", userOverrides: source.userOverrides }); }
+  function updateMission(missionId, changes = {}) { const mission = missions.find((item) => item.missionId === missionId); if (!mission) return null; if (changes.title) mission.title = String(changes.title).trim() || mission.title; if (changes.difficulty) { mission.difficulty = changes.difficulty; mission.beginnerFriendly = changes.difficulty === "Beginner"; } if (changes.userOverrides) mission.userOverrides = { ...mission.userOverrides, ...changes.userOverrides }; if (typeof changes.favorite === "boolean") mission.favorite = changes.favorite; if (typeof changes.savedAsTemplate === "boolean") mission.savedAsTemplate = changes.savedAsTemplate; mission.updatedAt = now(); emit("edited", mission, `Edited mission: ${mission.title}`); return clone(mission); }
+  function deleteMission(missionId) { missions = missions.filter((item) => item.missionId !== missionId); if (activeMissionId === missionId) activeMissionId = null; persist(); notify("deleted", null, { missionId }); return true; }
+  function getMission(missionId) { return clone(missions.find((item) => item.missionId === missionId), null); }
+  function getActiveMission() { return getMission(activeMissionId); }
+  function setActiveMission(missionId) { if (!missions.some((item) => item.missionId === missionId)) return null; activeMissionId = missionId; persist(); return getActiveMission(); }
+  function getHistory() { return clone(missions, []); }
+  function resolveType(text) { const value = String(text || "").toLowerCase(); const aliases = [["mixtape", "build-mixtape"], ["live set", "create-live-set"], ["intro", "generate-intro"], ["outro", "generate-outro"], ["energy", "improve-energy"], ["transition", "build-transition"], ["remix", "create-remix"], ["mashup", "create-mashup"], ["pad bank", "build-pad-bank"], ["beat", "generate-beat"], ["harmony", "compose-harmony"], ["arrangement", "finish-arrangement"], ["performance", "prepare-performance"]]; return aliases.find(([needle]) => value.includes(needle))?.[1] || null; }
+  function configure(options = {}) { projectId = options.projectId || projectId; getContext = options.getContext || getContext; executeStep = options.executeStep || executeStep; onEvent = options.onEvent || onEvent; restore(); return catalogForContext(); }
+  function subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); }
+  function getDiagnostics() { const mission = getActiveMission(); return { activeMissionId, missionType: mission?.type || null, contextVersion: mission?.contextVersion || null, currentStatus: mission?.status || "None", currentStep: mission?.currentStep || 0, completedSteps: mission?.completedSteps || [], failedSteps: mission?.failedSteps || [], skippedSteps: mission?.skippedSteps || [], domainCalls: domainCalls.slice(-20), previewSources: previewSources.slice(-10), snapshotStatus: mission?.rollbackSnapshot ? "Captured" : "Per-step snapshots", rollbackAvailable: mission?.undoState?.rollbackAvailable || false, lastMissionError: lastError, historyCount: missions.length }; }
+
+  global.CreativeMissions = Object.freeze({ configure, catalogForContext, createMission, analyzeMissionRequirements, buildMissionPlan, previewMission, applyMission, pauseMission, resumeMission, cancelMission, undoMission, undoMissionStep, recalculateMission, skipMissionStep, runStep, setStepApproved, duplicateMission, updateMission, deleteMission, getMission, getActiveMission, setActiveMission, getHistory, resolveType, getDiagnostics, subscribe, VALID_STATUSES: [...VALID_STATUSES] });
+})(window);

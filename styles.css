@@ -1387,6 +1387,10 @@ input[type="range"] {
 .producer-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
 .producer-empty-actions button { min-height: 30px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.025); color: var(--ink-soft); }
 
+.producer-mission-intro { margin-bottom: 14px; color: var(--muted); font-size: 0.75rem; }
+.producer-mission-home { display: grid; gap: 16px; }
+.mission-purpose-group { display: grid; gap: 8px; }
+.mission-purpose-group > h4 { color: #c2a4ff; font-size: 0.69rem; text-transform: uppercase; letter-spacing: 0.08em; }
 .producer-mission-grid { display: grid; grid-template-columns: repeat(4, minmax(170px, 1fr)); gap: 9px; }
 .producer-mission {
   display: grid;
@@ -1403,7 +1407,44 @@ input[type="range"] {
 .producer-mission:hover { border-color: rgba(255, 138, 61, 0.48); transform: translateY(-2px); }
 .producer-mission span { font-size: 0.83rem; font-weight: 800; }
 .producer-mission small { color: var(--muted); font-size: 0.68rem; line-height: 1.42; }
+.producer-mission em { color: #8bded7; font-size: 0.61rem; font-style: normal; line-height: 1.35; }
 .producer-mission b { color: #ffae77; font-size: 0.68rem; }
+.active-mission-panel { margin-top: 18px; padding: 16px; border: 1px solid rgba(167, 123, 255, 0.35); border-radius: var(--radius-md); background: linear-gradient(145deg, rgba(167, 123, 255, 0.08), transparent 48%), #0d1116; }
+.active-mission-panel[hidden] { display: none; }
+.active-mission-panel > p { color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
+.mission-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.mission-summary span { padding: 4px 8px; border: 1px solid rgba(167, 123, 255, 0.24); border-radius: 999px; color: #c9b7eb; font-size: 0.63rem; }
+.mission-step-list { display: grid; gap: 7px; }
+.mission-step { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.018); }
+.mission-step:focus { outline: 2px solid var(--producer-cyan); outline-offset: 2px; }
+.mission-step.status-completed { border-color: rgba(105, 224, 133, .4); }
+.mission-step.status-failed, .mission-step.status-stale { border-color: rgba(255, 93, 93, .45); }
+.mission-step.status-previewed { border-color: rgba(53, 223, 208, .42); }
+.mission-step-order { display: grid; width: 26px; height: 26px; place-content: center; border-radius: 50%; background: rgba(167, 123, 255, .13); color: #c7adff; font-size: .7rem; font-weight: 800; }
+.mission-step > div:nth-child(2) { display: grid; gap: 3px; }
+.mission-step strong { font-size: .75rem; }
+.mission-step small { color: var(--muted); font-size: .64rem; }
+.mission-step p { color: #ffb3b3; font-size: .65rem; }
+.mission-step-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; max-width: 260px; }
+.mission-step-actions button { min-height: 28px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--ink-soft); font-size: .62rem; }
+.mission-step-actions label { color: var(--muted); font-size: .62rem; }
+.mission-primary-actions { margin-top: 12px; }
+.mission-history-drawer { margin-top: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: .7rem; }
+.mission-history-list { display: grid; gap: 6px; margin-top: 10px; }
+.mission-history-list article { display: grid; grid-template-columns: 1fr auto auto auto; align-items: center; gap: 6px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.mission-history-list article div { display: grid; gap: 2px; }
+.mission-history-list small { color: var(--muted); }
+.mission-history-list button { min-height: 27px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--ink-soft); font-size: .61rem; }
+
+@media (max-width: 900px) {
+  .mission-step { grid-template-columns: 28px minmax(0, 1fr); }
+  .mission-step-actions { grid-column: 2; justify-content: flex-start; max-width: none; }
+  .mission-history-list article { grid-template-columns: 1fr auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .producer-mission, .mission-step { transition: none; }
+}
 
 .producer-timeline { display: grid; }
 .producer-timeline-filters { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
