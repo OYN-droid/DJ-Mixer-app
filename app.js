@@ -90,7 +90,8 @@ const sampler = {
   banks: {},
   scenes: {},
   takeHistory: [],
-  promptHistory: []
+  promptHistory: [],
+  recentTriggers: []
 };
 
 const PAD_KEYS = ["1", "2", "3", "4", "q", "w", "e", "r", "a", "s", "d", "f", "z", "x", "c", "v"];
@@ -163,36 +164,34 @@ const mixtapeReferenceState = {
 };
 
 const PRODUCER_STUDIO_KEY = "deckforge-producer-studio";
-const projectContext = {
-  version: 1,
-  updatedAt: null,
-  project: {},
-  decks: [],
-  ditc: {},
-  smartMix: {},
-  beatForge: {},
-  harmonyLab: {},
-  pads: {},
-  stemLab: {},
-  arrangement: {},
-  mixtapeAnalyzer: {},
-  tags: []
-};
+const ProjectIntelligenceEngine = window.ProjectIntelligence;
+const projectContext = ProjectIntelligenceEngine.getProjectContext();
 window.DeckForgeProjectContext = projectContext;
 
 const producerStudioState = {
   mode: "simple",
+  projectId: "deckforge-session",
   projectName: "DeckForge Session",
-  genre: "Open Format",
-  subgenre: "Live Remix",
-  tags: ["DJ set", "in progress"],
+  description: "",
+  genre: null,
+  subgenre: null,
+  era: null,
+  region: null,
+  mood: null,
+  energy: null,
+  tags: [],
+  createdAt: new Date().toISOString(),
   history: [],
   savedPrompts: [],
-  timeline: [],
   dismissedSuggestions: new Set(),
   appliedSuggestions: new Map(),
-  undoActions: new Map()
+  undoActions: new Map(),
+  timelineFilter: "all",
+  promptDomains: { ditc: true, decks: true, smartMix: true, beatForge: true, harmonyLab: true, pads: true, stems: true, arrangement: true, mixtape: true, aiHistory: true },
+  pendingStaleAction: null,
+  contextUnsubscribe: null
 };
+let projectIntelligenceReady = false;
 
 const AudioIdentificationService = {
   providers: [],
@@ -1307,6 +1306,7 @@ async function loadFileToDeck(file, id) {
   renderAiContext();
   setDeckStatus(id, "ready", { smartMixControlled: false, manualOverride: false, error: "" });
   updateSmartMixSourceOptions();
+  emitProjectContextChange("decks", "track-loaded", { summary: `Loaded ${file.name} on Deck ${id.toUpperCase()}`, decision: { domain: "Decks", action: "Track loaded", summary: `Loaded ${file.name} on Deck ${id.toUpperCase()}`, after: { deck: id, track: file.name }, initiatedBy: "user" } });
 }
 
 function loadBufferToDeck(buffer, name, id, options = {}) {
@@ -1337,6 +1337,7 @@ function loadBufferToDeck(buffer, name, id, options = {}) {
     error: ""
   });
   updateSmartMixSourceOptions();
+  emitProjectContextChange(options.smartMixControlled ? "smartMix" : "decks", "track-loaded", { summary: `Loaded ${name} on Deck ${id.toUpperCase()}`, decision: { domain: options.smartMixControlled ? "Smart Mix" : "Decks", action: "Track loaded", summary: `Loaded ${name} on Deck ${id.toUpperCase()}`, after: { deck: id, track: name }, initiatedBy: options.smartMixControlled ? "AI" : "user" } });
 }
 
 function addBufferToPad(buffer, name) {
@@ -1360,6 +1361,7 @@ function setPadBuffer(index, buffer, name, options = {}) {
   renderPadEditor();
   renderEditorSourceBin();
   savePadWorkspace();
+  emitProjectContextChange("pads", "pad-assigned", { summary: `Assigned ${sampler.names[index]} to Pad ${index + 1}`, decision: { domain: "Pads", action: "Pad assigned", summary: `Assigned ${sampler.names[index]} to Pad ${index + 1} in Bank ${sampler.bank}`, after: { bank: sampler.bank, pad: index + 1, name: sampler.names[index] }, initiatedBy: options.source?.includes("AI") ? "AI" : "user" } });
 }
 
 async function playDeck(id) {
@@ -1383,6 +1385,7 @@ async function playDeck(id) {
     setDeckPlaying(id, true);
     setDeckStatus(id, "playing", { error: "" });
     renderGlobalTransport();
+    emitProjectContextChange("decks", "playback-started", { summary: `Deck ${id.toUpperCase()} playback started` });
     return true;
   } catch (error) {
     if (commandVersion !== deck.commandVersion) return false;
@@ -1514,10 +1517,12 @@ function pauseDeck(id) {
   deck.playing = false;
   setDeckPlaying(id, false);
   setDeckStatus(id, deck.buffer ? "paused" : "empty");
+  emitProjectContextChange("decks", "playback-paused", { summary: `Deck ${id.toUpperCase()} playback paused` });
 }
 
 function stopDeck(id) {
   const deck = deckState[id];
+  const wasActive = deck.playing || deck.status === "paused" || deck.offset > 0;
   deck.commandVersion += 1;
   stopDeckSource(deck);
   deck.playing = false;
@@ -1527,6 +1532,7 @@ function stopDeck(id) {
   document.querySelector(`.platter[data-deck="${id}"]`)?.style.setProperty("--platter-angle", "0deg");
   updateDeckTimeDisplay(id);
   setDeckStatus(id, deck.buffer ? "ready" : "empty");
+  if (wasActive) emitProjectContextChange("decks", "playback-stopped", { summary: `Deck ${id.toUpperCase()} playback stopped` });
 }
 
 function clearDeck(id) {
@@ -1550,6 +1556,7 @@ function clearDeck(id) {
   renderAiContext();
   setDeckStatus(id, "empty", { smartMixControlled: false, manualOverride: false, error: "" });
   updateSmartMixSourceOptions();
+  emitProjectContextChange("decks", "deck-cleared", { summary: `Cleared Deck ${id.toUpperCase()}`, decision: { domain: "Decks", action: "Deck cleared", summary: `Cleared Deck ${id.toUpperCase()}`, initiatedBy: "user" } });
 }
 
 function cueDeck(id) {
@@ -2036,6 +2043,8 @@ function triggerPad(index, options = {}) {
   sampler.active[index] = { source, gain, filter, pan, startedAt: startAt, duration: region.end - region.start, mode, choke };
   if (options.held && ["hold", "gate", "repeat", "roll"].includes(mode)) sampler.held.add(index);
   sampler.lastTrigger = `${index + 1}. ${sampler.names[index]} (${padModeLabel(mode)})`;
+  sampler.recentTriggers.unshift({ pad: index + 1, name: sampler.names[index], mode, timestamp: new Date().toISOString() });
+  sampler.recentTriggers = sampler.recentTriggers.slice(0, 12);
   source.onended = () => {
     sampler.active[index] = null;
     renderPads();
@@ -2047,6 +2056,7 @@ function triggerPad(index, options = {}) {
   }
   renderPads();
   renderAiContext();
+  emitProjectContextChange("pads", "pad-triggered", { summary: `Triggered Pad ${index + 1}: ${sampler.names[index]}` });
 }
 
 function releasePad(index) {
@@ -2068,6 +2078,7 @@ function stopPad(index, options = {}) {
   }
   sampler.lastStop = `${index + 1}. ${sampler.names[index]}`;
   if (!options.quiet) renderPads();
+  if (!options.quiet) emitProjectContextChange("pads", "pad-stopped", { summary: `Stopped Pad ${index + 1}: ${sampler.names[index]}` });
 }
 
 function nextPadTriggerTime() {
@@ -2151,6 +2162,7 @@ function applyPadBank(bank) {
 
 function switchPadBank(name) {
   if (name === sampler.bank) return;
+  const previousBank = sampler.bank;
   panicPads();
   sampler.banks[sampler.bank] = capturePadBank();
   sampler.bank = name;
@@ -2159,15 +2171,18 @@ function switchPadBank(name) {
   savePadWorkspace();
   renderPads(); renderPadEditor();
   setPadEditorStatus(`Switched to Bank ${name}. Pad audio was stopped; decks were not affected.`);
+  emitProjectContextChange("pads", "pad-bank-changed", { summary: `Switched from Pad Bank ${previousBank} to ${name}`, decision: { domain: "Pads", action: "Pad bank selected", summary: `Selected Pad Bank ${name}`, before: { bank: previousBank }, after: { bank: name }, initiatedBy: "user" } });
 }
 
 function switchPadScene(name) {
+  const previousScene = sampler.scene;
   panicPads();
   sampler.scenes[sampler.scene] = { bank: sampler.bank, quantize: sampler.quantize };
   sampler.scene = name;
   const scene = sampler.scenes[name];
   if (scene) { document.querySelector("#padQuantize").value = scene.quantize; sampler.quantize = scene.quantize; if (scene.bank !== sampler.bank) switchPadBank(scene.bank); }
   savePadWorkspace(); renderPadDiagnostics();
+  emitProjectContextChange("pads", "pad-scene-changed", { summary: `Switched from Pad Scene ${previousScene} to ${name}`, decision: { domain: "Pads", action: "Pad scene selected", summary: `Selected Pad Scene ${name}`, before: { scene: previousScene }, after: { scene: name }, initiatedBy: "user" } });
 }
 
 function savePadWorkspace() {
@@ -2786,6 +2801,7 @@ async function addEditorClipFromSource(source, trackIndex, start) {
   editorState.playhead = clip.start;
   renderEditor();
   editorStatus(`Added ${clip.name} at ${formatTime(clip.start)}. Playhead moved to the clip start.`);
+  emitProjectContextChange("arrangement", "clip-added", { summary: `Added ${clip.name} to the arrangement`, decision: { domain: "Arrangement", action: "Clip added", summary: `Added ${clip.name} at ${formatTime(clip.start)}`, after: { id: clip.id, trackIndex, start: clip.start, duration: clip.duration }, initiatedBy: "user" } });
 }
 
 async function addEditorFileClip(file, trackIndex, start) {
@@ -2833,6 +2849,7 @@ function setEditorClipField(field, value) {
   if (field === "start") clip.start = snapEditorTime(clip.start);
   if (field === "duration") clip.duration = Math.max(0.25, clip.duration);
   renderEditor();
+  emitProjectContextChange("arrangement", "clip-edited", { summary: `Edited ${clip.name} ${field}` });
 }
 
 function splitSelectedEditorClip() {
@@ -2852,6 +2869,7 @@ function splitSelectedEditorClip() {
   editorState.clips.push(duplicate);
   editorState.selectedClipId = duplicate.id;
   renderEditor();
+  emitProjectContextChange("arrangement", "clip-split", { summary: `Split ${clip.name}`, decision: { domain: "Arrangement", action: "Clip split", summary: `Split ${clip.name} at ${formatTime(duplicate.start)}`, initiatedBy: "user" } });
 }
 
 function duplicateSelectedEditorClip() {
@@ -2861,13 +2879,16 @@ function duplicateSelectedEditorClip() {
   editorState.clips.push(duplicate);
   editorState.selectedClipId = duplicate.id;
   renderEditor();
+  emitProjectContextChange("arrangement", "clip-duplicated", { summary: `Duplicated ${clip.name}`, decision: { domain: "Arrangement", action: "Clip duplicated", summary: `Duplicated ${clip.name}`, initiatedBy: "user" } });
 }
 
 function deleteSelectedEditorClip() {
   if (!editorState.selectedClipId) return;
+  const removed = selectedEditorClip();
   editorState.clips = editorState.clips.filter((clip) => clip.id !== editorState.selectedClipId);
   editorState.selectedClipId = null;
   renderEditor();
+  emitProjectContextChange("arrangement", "clip-deleted", { summary: `Deleted ${removed?.name || "arrangement clip"}`, decision: { domain: "Arrangement", action: "Clip deleted", summary: `Deleted ${removed?.name || "arrangement clip"}`, before: removed ? { id: removed.id, name: removed.name, start: removed.start, duration: removed.duration } : null, initiatedBy: "user" } });
 }
 
 function quantizeSelectedEditorClip() {
@@ -2955,9 +2976,11 @@ async function playEditorArrangement() {
   editorStatus(scheduledCount
     ? `Previewing ${scheduledCount} editor clip${scheduledCount === 1 ? "" : "s"} from ${formatTime(from)}.`
     : `No playable editor clips at ${formatTime(from)}. Select a clip or move the playhead to a clip start.`);
+  emitProjectContextChange("arrangement", "playback-started", { summary: `Started arrangement playback at ${formatTime(from)}` });
 }
 
-function stopEditorArrangement() {
+function stopEditorArrangement(options = {}) {
+  const wasActive = editorState.playing || editorState.paused || editorState.scheduled.length > 0;
   editorState.scheduled.forEach((item) => {
     try {
       item.source.stop();
@@ -2970,20 +2993,23 @@ function stopEditorArrangement() {
   editorState.paused = false;
   const play = document.querySelector("#editorPlay");
   if (play) play.textContent = "Play";
+  if (wasActive && !options.silent) emitProjectContextChange("arrangement", "playback-stopped", { summary: "Stopped arrangement playback" });
 }
 
 function pauseEditorArrangement() {
   const playhead = editorState.playhead;
-  stopEditorArrangement();
+  stopEditorArrangement({ silent: true });
   editorState.playhead = playhead;
   editorState.paused = true;
   editorStatus(`Arrangement paused at ${formatTime(playhead)}.`);
+  emitProjectContextChange("arrangement", "playback-paused", { summary: `Paused arrangement at ${formatTime(playhead)}` });
 }
 
 function addEditorTrack() {
   const index = editorState.tracks.length + 1;
   editorState.tracks.push({ id: createId(), name: `Arrangement Track ${index}`, role: "Layer" });
   renderEditor();
+  emitProjectContextChange("arrangement", "track-lane-added", { summary: `Added Arrangement Track ${index}` });
 }
 
 function startEditorPerformanceRecording(overdub = false) {
@@ -3050,6 +3076,7 @@ function stopEditorPerformanceRecording() {
   editorState.selectedClipId = clip.id;
   renderEditor();
   editorStatus(`Captured ${events.length} performance event${events.length === 1 ? "" : "s"} as an editable timeline clip.`);
+  emitProjectContextChange("arrangement", "performance-recorded", { summary: `Recorded ${clip.name}`, decision: { domain: "Arrangement", action: "Performance recorded", summary: `Captured ${events.length} performance events as ${clip.name}`, after: { clipId: clip.id, eventCount: events.length, duration: clip.duration }, initiatedBy: "user" } });
 }
 
 function recordEditorPerformanceEvent(event) {
@@ -3250,12 +3277,20 @@ function generateEditorAiSuggestions() {
 function generateAiPlan() {
   const prompt = document.querySelector("#aiPrompt").value.trim();
   if (!prompt) return;
+  emitProjectContextChange("AI", "prompt-submitted", { summary: "Submitted a Producer Studio prompt", decision: { domain: "AI", action: "Prompt submitted", summary: prompt, initiatedBy: "user" } });
+  const includedDomains = selectedPromptContextDomains();
+  const intelligenceSummary = ProjectIntelligenceEngine.getContextSummary({ include: ["project", ...includedDomains] });
   const context = collectAiContext();
+  context.projectIntelligence = intelligenceSummary;
   aiPlanState = buildLocalAiPlan(prompt, context);
+  aiPlanState.contextVersion = intelligenceSummary.contextVersion;
+  aiPlanState.projectContext = intelligenceSummary;
+  aiPlanState.includedContextDomains = [...includedDomains];
   rememberProducerPrompt(prompt);
   renderAiPlan(aiPlanState);
   document.querySelector("#applyAiPlan").disabled = false;
   document.querySelector("#startAiMix").disabled = !(aiPlanState.tags.mixtape || aiPlanState.tags.liveSet);
+  resetPromptContextDomains();
 }
 
 async function analyzeMixtapeInspiration() {
@@ -3356,6 +3391,7 @@ async function runMixtapeReferenceAnalysis(source, buffer) {
   mixtapeInspirationState = { source, referenceAnalysis, structure, blueprint };
   renderMixtapeInspiration(mixtapeInspirationState);
   document.querySelector("#applyMixtapeBlueprint").disabled = false;
+  emitProjectContextChange("mixtape", "reference-analyzed", { summary: `Analyzed reference mixtape ${source.name}`, decision: { domain: "AI", action: "Reference mixtape analyzed", summary: `Analyzed ${source.name} for project identity and structure`, after: { name: source.name, genre: structure.genre || null, mood: structure.mood || null }, initiatedBy: "user" } });
 }
 
 function inferTrackOrder(name, fallback) {
@@ -4379,6 +4415,9 @@ function applyMixtapeBlueprintAsPlan() {
   const { structure, blueprint } = mixtapeInspirationState;
   aiPlanState = {
     prompt: `Create a new original mixtape inspired by ${structure.name}.`,
+    contextVersion: ProjectIntelligenceEngine.getContextVersion(),
+    projectContext: ProjectIntelligenceEngine.getContextSummary(),
+    includedContextDomains: selectedPromptContextDomains(),
     tags: { mixtape: true, liveSet: true, chopped: true, stems: true },
     executableActions: buildExecutableDjActions(collectAiContext(), { mixtape: true, liveSet: true, stems: true, searchClip: false }),
     steps: [
@@ -4591,6 +4630,10 @@ function renderAiPlan(plan) {
   const output = document.querySelector("#aiPlanOutput");
   output.innerHTML = `
     <div class="ai-step">
+      <strong>Project Context</strong>
+      <small>Context v${plan.contextVersion ?? "N/A"} · ${(plan.includedContextDomains || []).join(", ") || "Project only"}</small>
+    </div>
+    <div class="ai-step">
       <strong>Direction</strong>
       <small>${plan.prompt}</small>
     </div>
@@ -4603,8 +4646,16 @@ function renderAiPlan(plan) {
   `;
 }
 
-async function applyAiPlan() {
+async function applyAiPlan(options = {}) {
   if (!aiPlanState) return;
+  if (!options.force && !ProjectIntelligenceEngine.isContextVersionCurrent(aiPlanState.contextVersion)) {
+    showStaleRecommendationDialog({
+      label: "Prompt Studio plan",
+      recalculate: () => generateAiPlan(),
+      applyAnyway: () => applyAiPlan({ force: true })
+    });
+    return;
+  }
   document.querySelector("#drumMachine").value = aiPlanState.drumMachine.id;
   applyDrumPreset(aiPlanState.drumPreset.id);
   document.querySelector("#globalBpm").value = aiPlanState.bpm;
@@ -4629,8 +4680,8 @@ async function applyAiPlan() {
   if (aiPlanState.tags.mixtape || aiPlanState.tags.liveSet) {
     document.querySelector("#startAiMix").disabled = false;
   }
-  recordProducerEvent("Applied a Prompt Studio plan to the project");
-  renderProducerStudio();
+  emitProjectContextChange("AI", "prompt-plan-applied", { summary: "Applied a Prompt Studio plan", decision: { domain: "AI", action: "Prompt applied", summary: aiPlanState.prompt, initiatedBy: "user", after: { contextVersion: ProjectIntelligenceEngine.getContextVersion(), bpm: aiPlanState.bpm } } });
+  renderProducerStudio({ sync: false });
 }
 
 async function preparePromptStemSplit() {
@@ -5593,6 +5644,7 @@ async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = nu
   autoMixState.lastManualOverride = "None";
   autoMixState.lastError = "None";
   autoMixState.promptPlan = promptPlan;
+  emitProjectContextChange("smartMix", "plan-created", { summary: `Created a ${getSmartMixProfile(mode).name} Smart Mix plan`, decision: { domain: "Smart Mix", action: "Plan created", summary: `Created ${plan.transitions.length} Smart Mix transition${plan.transitions.length === 1 ? "" : "s"} in ${getSmartMixProfile(mode).name}`, after: { mode, sourceMode, transitionCount: plan.transitions.length }, initiatedBy: promptPlan ? "user" : "AI" } });
   setSmartMixButtons(true);
   if (activeDeck) {
     setDeckStatus(activeDeck, "playing", { smartMixControlled: true, manualOverride: false });
@@ -6483,6 +6535,7 @@ function transitionToNextAutoMixItem() {
     autoMixState.transition = null;
     autoMixState.state = "Transition Complete";
     completeTransition(controllerPlanId);
+    emitProjectContextChange("smartMix", "transition-completed", { summary: `Completed transition from Deck ${fromDeck.toUpperCase()} to Deck ${nextDeck.toUpperCase()}`, decision: { domain: "Smart Mix", action: "Transition completed", summary: `Completed ${transition.style.replace(/-/g, " ")} from Deck ${fromDeck.toUpperCase()} to Deck ${nextDeck.toUpperCase()}`, after: { outgoingDeck: fromDeck, incomingDeck: nextDeck, style: transition.style }, initiatedBy: transition.promptPlan ? "user" : "AI" } });
     if (transition.promptPlan) {
       autoMixState.running = false;
       autoMixState.promptPlan = null;
@@ -6614,6 +6667,7 @@ function triggerManualOverride(reason, deckId = null) {
   autoMixState.lastManualOverride = reason;
   if (deckId && deckState[deckId]) deckState[deckId].manualOverride = true;
   stopAiMix({ keepDecks: true, manualOverride: reason, preserveRecoveryPlan: bpmRecoveryState.manualOverride });
+  emitProjectContextChange("smartMix", "manual-override", { summary: reason, decision: { domain: "Smart Mix", action: "Manual override", summary: reason, after: { deckId, automationStopped: true }, initiatedBy: "user" } });
 }
 
 const globalTransportState = { paused: false, lastError: "None" };
@@ -6643,18 +6697,19 @@ async function stopAllAudio() {
   ditcState.previewTrackId = null;
   renderSources();
   renderGlobalTransport();
+  emitProjectContextChange("playback", "global-stop", { summary: "Stopped all active audio", decision: { domain: "Playback", action: "Global stop", summary: "Stopped all active audio", initiatedBy: "user" } });
 }
 
 function panicStopAllAudio() { stopAllAudio(); }
 
 async function pauseGlobalAudio() {
   if (!AudioEngine.context || AudioEngine.context.state !== "running") return;
-  try { await AudioEngine.context.suspend(); globalTransportState.paused = true; renderGlobalTransport(); }
+  try { await AudioEngine.context.suspend(); globalTransportState.paused = true; renderGlobalTransport(); emitProjectContextChange("playback", "global-paused", { summary: "Paused the global audio context" }); }
   catch (error) { globalTransportState.lastError = error.message || "AudioContext pause failed"; }
 }
 
 async function resumeGlobalAudio() {
-  try { await AudioEngine.init(); globalTransportState.paused = false; renderGlobalTransport(); }
+  try { await AudioEngine.init(); globalTransportState.paused = false; renderGlobalTransport(); emitProjectContextChange("playback", "global-resumed", { summary: "Resumed the global audio context" }); }
   catch (error) { globalTransportState.lastError = error.message || "AudioContext resume failed"; }
 }
 
@@ -6891,6 +6946,8 @@ function snapshotHarmony(label = "Edit") {
 
 function touchHarmony(source = "Manual") {
   instrument.pattern.version += 1; instrument.pattern.source = source; saveHarmonyState(); renderHarmonyLab();
+  const generated = /AI Composer|Harmony Match|Live Recording|Apply/i.test(source);
+  emitProjectContextChange("harmonyLab", "harmony-pattern-changed", { summary: `${instrument.pattern.name} updated from ${source}`, decision: generated ? { domain: "Harmony Lab", action: /Live/.test(source) ? "Harmony recorded" : "Harmony generated", summary: `${instrument.pattern.name}: ${instrument.pattern.notes.length} notes in ${instrument.key} ${instrument.scale}`, after: { pattern: instrument.pattern.name, notes: instrument.pattern.notes.length, key: instrument.key, scale: instrument.scale, source }, initiatedBy: /AI|Match/.test(source) ? "AI" : "user" } : null });
 }
 
 function renderHarmonyLab() {
@@ -6951,10 +7008,11 @@ async function playHarmonyPattern() {
   instrument.patternPlaying = true; instrument.patternPaused = false; instrument.patternStartedAt = AudioEngine.context.currentTime; const duration = scheduleHarmonyPattern(); document.querySelector("#harmonyPlay").textContent = "Playing";
   instrument.patternTimer = setTimeout(() => { instrument.patternTimer = null; if (instrument.patternLoop && instrument.patternPlaying) { instrument.patternPlaying = false; playHarmonyPattern(); } else stopHarmonyPattern(); }, duration * 1000);
   renderHarmonyDiagnostics();
+  emitProjectContextChange("harmonyLab", "playback-started", { summary: `Playing Harmony pattern ${instrument.pattern.name}` });
 }
 
-function stopHarmonyPattern() { clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = false; instrument.previewing = false; instrument.recording = false; stopAllInstrumentVoices(); const play = document.querySelector("#harmonyPlay"); if (play) play.textContent = "Play Pattern"; const record = document.querySelector("#harmonyRecord"); if (record) { record.textContent = "Record"; record.classList.remove("is-active"); } renderHarmonyDiagnostics(); }
-function pauseHarmonyPattern() { clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = true; stopAllInstrumentVoices(); document.querySelector("#harmonyPlay").textContent = "Resume"; }
+function stopHarmonyPattern() { const wasActive = instrument.patternPlaying || instrument.patternPaused || instrument.previewing || instrument.recording; clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = false; instrument.previewing = false; instrument.recording = false; stopAllInstrumentVoices(); const play = document.querySelector("#harmonyPlay"); if (play) play.textContent = "Play Pattern"; const record = document.querySelector("#harmonyRecord"); if (record) { record.textContent = "Record"; record.classList.remove("is-active"); } renderHarmonyDiagnostics(); if (wasActive) emitProjectContextChange("harmonyLab", "playback-stopped", { summary: "Stopped Harmony playback" }); }
+function pauseHarmonyPattern() { const wasPlaying = instrument.patternPlaying; clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = true; stopAllInstrumentVoices(); document.querySelector("#harmonyPlay").textContent = "Resume"; if (wasPlaying) emitProjectContextChange("harmonyLab", "playback-paused", { summary: "Paused Harmony playback" }); }
 
 function updateHarmonyPosition() { if (!instrument.patternPlaying || !AudioEngine.context) return; const elapsed = AudioEngine.context.currentTime - instrument.patternStartedAt; const step = Math.floor(elapsed / harmonyStepSeconds()) % (instrument.pattern.bars * 16); instrument.patternPlayhead = step * harmonyStepSeconds(); const display = document.querySelector("#harmonyPosition"); if (display) display.textContent = `Bar ${Math.floor(step / 16) + 1} · Beat ${Math.floor((step % 16) / 4) + 1}`; }
 
@@ -6975,7 +7033,7 @@ function generateBassPlan(variation = false) { const field = document.querySelec
 
 function undoHarmony() { const previous = instrument.undoStack.pop(); if (!previous) return; instrument.pattern = previous.pattern; instrument.preset = previous.preset; instrument.machine = previous.machine; instrument.key = previous.key; instrument.scale = previous.scale; saveHarmonyState(); renderInstrumentOptions(); renderHarmonyLab(); }
 
-function sendHarmonyToArrangement() { const bpm = Number(document.querySelector("#globalBpm")?.value) || 124; const stepSeconds = 60 / bpm / 4; const events = instrument.pattern.notes.map((note) => ({ kind: "key", midi: note.midi, isBass: note.type === "bass", time: note.start * stepSeconds, duration: note.duration * stepSeconds, velocity: note.velocity, presetId: instrument.preset, machineId: instrument.machine, automation: note.automation })); const clip = { id: createId(), sourceKind: "performance", type: "keys", name: instrument.pattern.name, trackIndex: 1, start: editorState.playhead, duration: instrument.pattern.bars * 16 * stepSeconds, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0, stretch: 1, loop: true, muted: false, solo: false, filter: 16000, eq: 0, effect: "none", color: editorClipColor("keys"), events }; editorState.clips.push(clip); editorState.selectedClipId = clip.id; renderEditor(); editorStatus(`Sent ${instrument.pattern.name} from Harmony Lab to Arrangement.`); }
+function sendHarmonyToArrangement() { const bpm = Number(document.querySelector("#globalBpm")?.value) || 124; const stepSeconds = 60 / bpm / 4; const events = instrument.pattern.notes.map((note) => ({ kind: "key", midi: note.midi, isBass: note.type === "bass", time: note.start * stepSeconds, duration: note.duration * stepSeconds, velocity: note.velocity, presetId: instrument.preset, machineId: instrument.machine, automation: note.automation })); const clip = { id: createId(), sourceKind: "performance", type: "keys", name: instrument.pattern.name, trackIndex: 1, start: editorState.playhead, duration: instrument.pattern.bars * 16 * stepSeconds, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0, stretch: 1, loop: true, muted: false, solo: false, filter: 16000, eq: 0, effect: "none", color: editorClipColor("keys"), events }; editorState.clips.push(clip); editorState.selectedClipId = clip.id; renderEditor(); editorStatus(`Sent ${instrument.pattern.name} from Harmony Lab to Arrangement.`); emitProjectContextChange("arrangement", "harmony-clip-added", { summary: `Added ${instrument.pattern.name} from Harmony Lab`, decision: { domain: "Arrangement", action: "Harmony clip added", summary: `Added ${instrument.pattern.name} from Harmony Lab`, after: { clipId: clip.id, duration: clip.duration }, initiatedBy: "user" } }); }
 
 function renderHarmonyMatch() { const deck = deckState.a.buffer ? deckState.a : deckState.b.buffer ? deckState.b : null; const output = document.querySelector("#harmonyMatchSuggestion"); if (!output) return; const deckKey = deck?.analysis?.key || instrument.key; const bpm = deck?.analysis?.bpm || Number(document.querySelector("#globalBpm")?.value) || 124; const groove = activeDrumGroove()?.name || "current Beat Forge groove"; instrument.matchPlan = generateHarmonyNotes("match", false); output.textContent = deck ? `Deck ${deck.id.toUpperCase()} is near ${Math.round(bpm)} BPM${deckKey ? ` in ${deckKey}` : ""}. Try ${getInstrumentPreset().name} chords with a sparse bass counterline over ${groove}.` : `Beat Forge suggests a ${groove} pocket. Use restrained ${instrument.key} ${instrument.scale} harmony to preserve rhythmic space.`; }
 
@@ -7011,6 +7069,7 @@ async function splitCurrentStemFile() {
       button.disabled = false;
       renderStemResults();
       renderAiContext();
+      emitProjectContextChange("stems", "stems-separated", { summary: `Separated ${stemState.stems.length} stems from ${stemState.sourceName}`, decision: { domain: "Stems", action: "Stems separated", summary: `Created ${stemState.stems.length} stems from ${stemState.sourceName}`, after: { source: stemState.sourceName, stemTypes: stemState.stems.map((stem) => stem.name) }, initiatedBy: "user" } });
       return;
     } catch {
       document.querySelector("#stemStatus").textContent = "AI stem server unavailable. Creating rough browser fallback stems...";
@@ -7021,6 +7080,7 @@ async function splitCurrentStemFile() {
   await splitStemsWithBrowserFallback();
   button.disabled = false;
   renderStemResults();
+  emitProjectContextChange("stems", "stems-separated", { summary: `Created ${stemState.stems.length} browser stems from ${stemState.sourceName}`, decision: { domain: "Stems", action: "Stems separated", summary: `Created ${stemState.stems.length} browser fallback stems from ${stemState.sourceName}`, after: { source: stemState.sourceName, stemTypes: stemState.stems.map((stem) => stem.name) }, initiatedBy: "user" } });
 }
 
 async function splitStemsWithServer(file) {
@@ -7278,6 +7338,8 @@ function touchDrumPattern(source = "User Edited") {
   saveBeatForgeState();
   renderBeatForgeSummary();
   renderBeatDiagnostics();
+  const generated = /AI|Groove Applied|Imported|Live Recording|Prompt|Match/i.test(source);
+  emitProjectContextChange("beatForge", "beat-pattern-changed", { summary: `${drums.name} updated from ${source}`, decision: generated ? { domain: "Beat Forge", action: /Groove/.test(source) ? "Groove applied" : "Pattern generated", summary: `${drums.name}: ${drums.groove} groove, version ${drums.version}`, after: { pattern: drums.name, groove: drums.groove, version: drums.version, source }, initiatedBy: /AI|Prompt|Match/.test(source) ? "AI" : "user" } : null });
 }
 
 function visibleDrumStep(localStep) {
@@ -7402,9 +7464,11 @@ function startDrums() {
   document.querySelector("#drumPlay").textContent = "Playing";
   tickDrums(drums.schedulerVersion);
   renderBeatDiagnostics();
+  emitProjectContextChange("beatForge", "playback-started", { summary: `Playing Beat Forge pattern ${drums.name}` });
 }
 
 function stopDrums() {
+  const wasActive = drums.playing || drums.paused || drums.previewing || drums.recording;
   drums.playing = false;
   drums.paused = false;
   clearTimeout(drums.timer);
@@ -7421,6 +7485,7 @@ function stopDrums() {
   document.querySelector("#beatOverdub")?.classList.remove("is-active");
   document.querySelectorAll(".step").forEach((step) => step.classList.remove("is-current"));
   renderBeatDiagnostics();
+  if (wasActive) emitProjectContextChange("beatForge", "playback-stopped", { summary: "Stopped Beat Forge playback" });
 }
 
 function pauseDrums() {
@@ -7432,6 +7497,7 @@ function pauseDrums() {
   drums.schedulerVersion += 1;
   document.querySelector("#drumPlay").textContent = "Resume";
   document.querySelectorAll(".step").forEach((step) => step.classList.remove("is-current"));
+  emitProjectContextChange("beatForge", "playback-paused", { summary: "Paused Beat Forge playback" });
 }
 
 function seededDrumValue(laneIndex, step, salt = 0) {
@@ -7986,8 +8052,6 @@ function toggleMixRecording() {
   if (AudioEngine.recorder && AudioEngine.recorder.state === "recording") {
     AudioEngine.recorder.stop();
     recordButton.textContent = "●";
-    recordProducerEvent("Finished mix recording");
-    renderProducerStudio();
     return;
   }
   AudioEngine.chunks = [];
@@ -7998,11 +8062,11 @@ function toggleMixRecording() {
     const blob = new Blob(AudioEngine.chunks, { type: AudioEngine.recorder.mimeType });
     AudioEngine.mixUrl = URL.createObjectURL(blob);
     downloadButton.disabled = false;
+    emitProjectContextChange("playback", "mix-recording-finished", { summary: "Finished mix recording", decision: { domain: "Playback", action: "Mix recording finished", summary: "Finished mix recording and prepared the take", initiatedBy: "user" } });
   };
   AudioEngine.recorder.start();
   recordButton.textContent = "■";
-  recordProducerEvent("Started mix recording");
-  renderProducerStudio();
+  emitProjectContextChange("playback", "mix-recording-started", { summary: "Started mix recording", decision: { domain: "Playback", action: "Mix recording started", summary: "Started mix recording", initiatedBy: "user" } });
 }
 
 function readProducerStudioStorage() {
@@ -8010,16 +8074,22 @@ function readProducerStudioStorage() {
     const saved = JSON.parse(localStorage.getItem(PRODUCER_STUDIO_KEY) || "null");
     if (!saved) return;
     producerStudioState.mode = saved.mode === "advanced" ? "advanced" : "simple";
+    producerStudioState.projectId = saved.projectId || producerStudioState.projectId;
     producerStudioState.projectName = saved.projectName || producerStudioState.projectName;
-    producerStudioState.genre = saved.genre || producerStudioState.genre;
-    producerStudioState.subgenre = saved.subgenre || producerStudioState.subgenre;
+    producerStudioState.description = saved.description || "";
+    producerStudioState.genre = saved.genre && saved.genre !== "Open Format" ? saved.genre : null;
+    producerStudioState.subgenre = saved.subgenre && saved.subgenre !== "Live Remix" ? saved.subgenre : null;
+    producerStudioState.era = saved.era || null;
+    producerStudioState.region = saved.region || null;
+    producerStudioState.mood = saved.mood || null;
+    producerStudioState.energy = saved.energy || null;
     producerStudioState.tags = Array.isArray(saved.tags) ? saved.tags : producerStudioState.tags;
+    producerStudioState.createdAt = saved.createdAt || producerStudioState.createdAt;
     producerStudioState.history = Array.isArray(saved.history) ? saved.history : [];
     producerStudioState.savedPrompts = Array.isArray(saved.savedPrompts) ? saved.savedPrompts : [];
-    producerStudioState.timeline = Array.isArray(saved.timeline) ? saved.timeline : [];
     producerStudioState.dismissedSuggestions = new Set(saved.dismissedSuggestions || []);
   } catch {
-    producerStudioState.timeline = [];
+    producerStudioState.dismissedSuggestions = new Set();
   }
 }
 
@@ -8027,13 +8097,19 @@ function writeProducerStudioStorage() {
   try {
     localStorage.setItem(PRODUCER_STUDIO_KEY, JSON.stringify({
       mode: producerStudioState.mode,
+      projectId: producerStudioState.projectId,
       projectName: producerStudioState.projectName,
+      description: producerStudioState.description,
       genre: producerStudioState.genre,
       subgenre: producerStudioState.subgenre,
+      era: producerStudioState.era,
+      region: producerStudioState.region,
+      mood: producerStudioState.mood,
+      energy: producerStudioState.energy,
       tags: producerStudioState.tags,
+      createdAt: producerStudioState.createdAt,
       history: producerStudioState.history.slice(0, 20),
       savedPrompts: producerStudioState.savedPrompts.slice(0, 20),
-      timeline: producerStudioState.timeline.slice(0, 80),
       dismissedSuggestions: [...producerStudioState.dismissedSuggestions]
     }));
   } catch {
@@ -8042,80 +8118,348 @@ function writeProducerStudioStorage() {
 }
 
 function projectMixLength() {
-  const arrangementLength = editorState.clips.reduce((max, clip) => Math.max(max, Number(clip.start || 0) + Number(clip.duration || 0)), 0);
-  const deckLength = [deckState.a, deckState.b].reduce((max, deck) => Math.max(max, Number(deck.buffer?.duration || 0)), 0);
-  return Math.max(arrangementLength, deckLength);
+  return editorState.clips.reduce((max, clip) => Math.max(max, Number(clip.start || 0) + Number(clip.duration || 0)), 0);
 }
 
-function deriveProjectGenre() {
-  const analyzed = [deckState.a.analysis, deckState.b.analysis, ...sourceFiles.map((source) => source.analysis)].filter(Boolean);
-  return analyzed.find((analysis) => analysis.genre)?.genre || producerStudioState.genre;
+function mostCommonEvidence(values) {
+  const usable = values.filter(Boolean);
+  if (!usable.length) return { value: null, count: 0, total: 0, conflicts: [] };
+  const counts = usable.reduce((map, value) => map.set(value, (map.get(value) || 0) + 1), new Map());
+  const [value, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+  return { value, count, total: usable.length, conflicts: [...counts.keys()].filter((item) => item !== value) };
 }
 
-function deriveProjectKey() {
-  return deckState.a.analysis?.key || deckState.b.analysis?.key || `${instrument.key} ${instrument.scale}`;
+function contextEvidence(value, options = {}) {
+  return {
+    value: value ?? null,
+    confidence: value == null ? 0 : Math.max(0, Math.min(100, Math.round(options.confidence ?? 100))),
+    source: options.source || "Not set",
+    lastUpdated: options.lastUpdated || new Date().toISOString(),
+    userConfirmed: Boolean(options.userConfirmed),
+    conflictingEvidence: options.conflictingEvidence || []
+  };
 }
 
-function projectProgress() {
-  const signals = [
-    sourceFiles.length > 0,
-    Boolean(deckState.a.buffer || deckState.b.buffer),
-    drums.pattern.flat().some(Boolean),
-    instrument.pattern.notes.length > 0,
-    sampler.buffers.some(Boolean),
-    editorState.clips.length > 0,
-    Boolean(AudioEngine.mixUrl)
-  ];
-  return Math.round((signals.filter(Boolean).length / signals.length) * 100);
+function camelotKey(key) {
+  const normalized = String(key || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const map = { "c major": "8B", "g major": "9B", "d major": "10B", "a major": "11B", "e major": "12B", "b major": "1B", "f# major": "2B", "gb major": "2B", "db major": "3B", "c# major": "3B", "ab major": "4B", "eb major": "5B", "bb major": "6B", "f major": "7B", "a minor": "8A", "e minor": "9A", "b minor": "10A", "f# minor": "11A", "gb minor": "11A", "c# minor": "12A", "db minor": "12A", "g# minor": "1A", "ab minor": "1A", "d# minor": "2A", "eb minor": "2A", "bb minor": "3A", "a# minor": "3A", "f minor": "4A", "c minor": "5A", "g minor": "6A", "d minor": "7A" };
+  return map[normalized] || null;
 }
 
-function refreshProjectContext() {
-  const aiContext = collectAiContext();
-  const loadedDecks = aiContext.decks.filter((deck) => deck.loaded);
-  const currentGenre = deriveProjectGenre();
-  producerStudioState.genre = currentGenre;
-  Object.assign(projectContext, {
-    updatedAt: new Date().toISOString(),
-    project: {
-      name: producerStudioState.projectName,
-      bpm: aiContext.bpm,
-      key: deriveProjectKey(),
-      genre: currentGenre,
-      subgenre: producerStudioState.subgenre,
-      progress: projectProgress(),
-      mixLength: projectMixLength(),
-      referenceMixtape: mixtapeReferenceState.name || mixtapeInspirationState?.structure?.name || "None",
-      recordingStatus: AudioEngine.recorder?.state === "recording" ? "Recording" : AudioEngine.mixUrl ? "Take ready" : "Not recording",
-      aiStatus: autoMixState.running ? autoMixState.state : aiPlanState ? "Plan ready" : "Ready"
-    },
-    decks: aiContext.decks.map((deck) => ({ ...deck, playing: deckState[deck.id].playing, bpm: deckState[deck.id].analysis?.bpm || null, key: deckState[deck.id].analysis?.key || null })),
-    ditc: { trackCount: aiContext.crate.length, selectedCount: aiContext.selectedCrate.length, tracks: aiContext.crate },
-    smartMix: { running: autoMixState.running, state: autoMixState.state, mode: autoMixState.mode, planLength: autoMixState.plan.length },
-    beatForge: { pattern: drums.name, section: drums.section, groove: drums.groove, version: drums.version, activeSteps: drums.pattern.flat().filter(Boolean).length },
-    harmonyLab: { key: instrument.key, scale: instrument.scale, pattern: instrument.pattern.name, noteCount: instrument.pattern.notes.length, version: instrument.pattern.version },
-    pads: { bank: sampler.bank, scene: sampler.scene, loadedCount: aiContext.pads.length, loaded: aiContext.pads },
-    stemLab: { source: stemState.sourceName || "None", stemCount: aiContext.stems.length, stems: aiContext.stems },
-    arrangement: { clipCount: editorState.clips.length, trackCount: editorState.tracks.length, duration: projectMixLength(), playing: editorState.playing },
-    mixtapeAnalyzer: { reference: mixtapeReferenceState.name || "None", analyzed: Boolean(mixtapeInspirationState) },
-    tags: [...producerStudioState.tags]
+function arrangementIntelligence() {
+  const clips = [...editorState.clips].sort((a, b) => a.start - b.start);
+  const timelineLength = projectMixLength();
+  const gaps = [];
+  let coveredUntil = 0;
+  clips.forEach((clip) => {
+    if (clip.start - coveredUntil > 1) gaps.push({ start: coveredUntil, end: clip.start, duration: clip.start - coveredUntil });
+    coveredUntil = Math.max(coveredUntil, clip.start + clip.duration);
   });
-  return projectContext;
+  const transitionRegions = clips.filter((clip) => clip.type === "fx" || /transition|blend|echo|filter/i.test(`${clip.name} ${clip.effect || ""}`)).map((clip) => ({ id: clip.id, name: clip.name, start: clip.start, duration: clip.duration }));
+  const introClip = clips.find((clip) => /intro|cold open/i.test(clip.name));
+  const outroClip = clips.find((clip) => /outro|closing|finale/i.test(clip.name));
+  return {
+    timelineLength,
+    trackLanes: editorState.tracks.map(({ id, name, role }) => ({ id, name, role })),
+    clips: clips.map((clip) => ({ id: clip.id, name: clip.name, type: clip.type, sourceKind: clip.sourceKind, trackIndex: clip.trackIndex, start: clip.start, duration: clip.duration, effect: clip.effect || "none", muted: Boolean(clip.muted), loop: Boolean(clip.loop) })),
+    clipCount: clips.length,
+    currentPlayhead: editorState.playhead,
+    selectedClip: editorState.selectedClipId,
+    unresolvedGaps: gaps,
+    transitionRegions,
+    introStatus: introClip ? `Planned: ${introClip.name}` : "Not planned",
+    outroStatus: outroClip ? `Planned: ${outroClip.name}` : "Not planned",
+    recordingState: editorState.recording ? "Recording" : editorState.playing ? "Playing" : editorState.paused ? "Paused" : "Idle",
+    exportReadiness: Boolean(clips.length && introClip && outroClip && !gaps.length)
+  };
+}
+
+function projectProgressModel(arrangement) {
+  const songClips = arrangement.clips.filter((clip) => ["song", "deck", "file"].includes(clip.type) || clip.sourceKind === "crate");
+  const expectedTransitions = Math.max(0, songClips.length - 1);
+  const plannedTransitions = Math.min(expectedTransitions, arrangement.transitionRegions.length);
+  const factors = [
+    { id: "tracks", label: "Tracks collected", complete: sourceFiles.length > 0, detail: `${sourceFiles.length} local track${sourceFiles.length === 1 ? "" : "s"}` },
+    { id: "intro", label: "Intro planned", complete: arrangement.introStatus !== "Not planned", detail: arrangement.introStatus },
+    { id: "transitions", label: "Transitions planned", complete: expectedTransitions > 0 && plannedTransitions >= expectedTransitions, detail: expectedTransitions ? `${plannedTransitions} of ${expectedTransitions}` : "No multi-track arrangement" },
+    { id: "outro", label: "Outro planned", complete: arrangement.outroStatus !== "Not planned", detail: arrangement.outroStatus },
+    { id: "beat", label: "Beat elements created", complete: drums.source !== "Preset" && drums.pattern.flat().some(Boolean), detail: drums.source !== "Preset" ? drums.name : "No created pattern" },
+    { id: "harmony", label: "Harmony elements created", complete: instrument.pattern.notes.length > 0, detail: instrument.pattern.notes.length ? instrument.pattern.name : "No harmony material" },
+    { id: "pads", label: "Pads prepared", complete: sampler.buffers.some(Boolean), detail: `${sampler.buffers.filter(Boolean).length} playable pad${sampler.buffers.filter(Boolean).length === 1 ? "" : "s"}` },
+    { id: "stems", label: "Stems prepared", complete: stemState.stems.length > 0, detail: `${stemState.stems.length} stem${stemState.stems.length === 1 ? "" : "s"}` },
+    { id: "arrangement", label: "Arrangement started", complete: arrangement.clipCount > 0, detail: `${arrangement.clipCount} clip${arrangement.clipCount === 1 ? "" : "s"}` },
+    { id: "recording", label: "Recording completed", complete: Boolean(AudioEngine.mixUrl), detail: AudioEngine.mixUrl ? "Take ready" : "No completed recording" },
+    { id: "export", label: "Export ready", complete: arrangement.exportReadiness && Boolean(AudioEngine.mixUrl), detail: arrangement.exportReadiness && AudioEngine.mixUrl ? "Ready" : "Not ready" }
+  ];
+  return { percentage: Math.round(factors.filter((factor) => factor.complete).length / factors.length * 100), factors, completed: factors.filter((factor) => factor.complete).length, total: factors.length };
+}
+
+function projectIdentityModel() {
+  const analyzed = [deckState.a.analysis, deckState.b.analysis, ...sourceFiles.map((source) => source.analysis)].filter((analysis) => analysis && !analysis.status);
+  const genreResult = mostCommonEvidence(analyzed.map((analysis) => analysis.genre));
+  const moodResult = mostCommonEvidence(analyzed.map((analysis) => analysis.mood));
+  const energyResult = mostCommonEvidence(analyzed.map((analysis) => analysis.energy));
+  const activeDeck = detectActiveDeck();
+  const deckKey = activeDeck ? deckState[activeDeck].analysis?.key : deckState.a.analysis?.key || deckState.b.analysis?.key;
+  const harmonyKey = instrument.pattern.notes.length ? `${instrument.key} ${instrument.scale}` : null;
+  const keyValue = deckKey || harmonyKey;
+  const analyzedBpms = analyzed.map((analysis) => Number(analysis.bpm)).filter(Number.isFinite);
+  const genreValue = producerStudioState.genre || genreResult.value;
+  const genreConfirmed = Boolean(producerStudioState.genre);
+  const identity = {
+    genre: contextEvidence(genreValue, { confidence: genreConfirmed ? 100 : genreResult.total ? genreResult.count / genreResult.total * 100 : 0, source: genreConfirmed ? "User confirmed" : genreResult.total ? "Analyzed decks and DITC tracks" : "Not set", userConfirmed: genreConfirmed, conflictingEvidence: genreResult.conflicts }),
+    subgenre: contextEvidence(producerStudioState.subgenre, { source: producerStudioState.subgenre ? "User confirmed" : "Not set", userConfirmed: Boolean(producerStudioState.subgenre) }),
+    era: contextEvidence(producerStudioState.era, { source: producerStudioState.era ? "User confirmed" : "Not set", userConfirmed: Boolean(producerStudioState.era) }),
+    region: contextEvidence(producerStudioState.region, { source: producerStudioState.region ? "User confirmed" : "Not set", userConfirmed: Boolean(producerStudioState.region) }),
+    mood: contextEvidence(producerStudioState.mood || moodResult.value, { confidence: producerStudioState.mood ? 100 : moodResult.total ? moodResult.count / moodResult.total * 100 : 0, source: producerStudioState.mood ? "User confirmed" : moodResult.total ? "Analyzed tracks" : "Not set", userConfirmed: Boolean(producerStudioState.mood), conflictingEvidence: moodResult.conflicts }),
+    energy: contextEvidence(producerStudioState.energy || energyResult.value, { confidence: producerStudioState.energy ? 100 : energyResult.total ? energyResult.count / energyResult.total * 100 : 0, source: producerStudioState.energy ? "User confirmed" : energyResult.total ? "Analyzed tracks" : "Not set", userConfirmed: Boolean(producerStudioState.energy), conflictingEvidence: energyResult.conflicts }),
+    bpmRange: contextEvidence(analyzedBpms.length ? `${Math.min(...analyzedBpms)}–${Math.max(...analyzedBpms)} BPM` : null, { confidence: analyzedBpms.length ? 90 : 0, source: analyzedBpms.length ? "Analyzed decks and DITC tracks" : "Not analyzed" }),
+    keyCenter: contextEvidence(keyValue, { confidence: deckKey ? 88 : harmonyKey ? 100 : 0, source: deckKey ? "Loaded deck analysis" : harmonyKey ? "Active Harmony Lab material" : "Not analyzed" }),
+    influences: contextEvidence(mixtapeInspirationState?.structure?.theme || null, { confidence: mixtapeInspirationState ? 80 : 0, source: mixtapeInspirationState ? "Reference mixtape analysis" : "Not set" }),
+    themes: contextEvidence(mixtapeInspirationState?.structure?.sampleWorld || null, { confidence: mixtapeInspirationState ? 75 : 0, source: mixtapeInspirationState ? "Reference mixtape analysis" : "Not set" }),
+    preferredTransitions: contextEvidence(tempoSafetyPreferences.transitionPreference || null, { confidence: 100, source: "Configured tempo safety preference" }),
+    preferredDrumFeel: contextEvidence(drums.source !== "Preset" ? drums.groove : null, { confidence: drums.source !== "Preset" ? 85 : 0, source: drums.source !== "Preset" ? "Active created Beat Forge pattern" : "Not set" }),
+    preferredHarmony: contextEvidence(instrument.pattern.notes.length ? `${instrument.key} ${instrument.scale}` : null, { confidence: instrument.pattern.notes.length ? 90 : 0, source: instrument.pattern.notes.length ? "Active Harmony Lab pattern" : "Not set" }),
+    preferredClipsOrPads: contextEvidence(sampler.buffers.some(Boolean) ? sampler.names.filter((_, index) => sampler.buffers[index]).slice(0, 8) : null, { confidence: sampler.buffers.some(Boolean) ? 100 : 0, source: sampler.buffers.some(Boolean) ? "Active pad bank" : "Not set" })
+  };
+  return identity;
+}
+
+function safeSavedSources() {
+  try { return JSON.parse(localStorage.getItem("deckforge-sources") || "[]"); } catch { return []; }
+}
+
+function buildProjectIntelligenceSnapshot() {
+  const now = new Date().toISOString();
+  const savedSources = safeSavedSources();
+  const selectedItems = selectedCrateItems();
+  const arrangement = arrangementIntelligence();
+  const progress = projectProgressModel(arrangement);
+  const identity = projectIdentityModel();
+  const activeDeckId = detectActiveDeck();
+  const registry = window.AudioPlaybackRegistry;
+  const registrySnapshot = registry?.snapshot() || [];
+  const activeSources = registrySnapshot.filter((source) => source.playing || source.paused);
+  const primarySource = registry?.primary();
+  const activeLoops = sampler.active.map((active, index) => active?.source?.loop ? index + 1 : null).filter(Boolean);
+  const assignedPads = sampler.buffers.map((buffer, index) => buffer ? ({ index: index + 1, name: sampler.names[index], mode: sampler.modes[index], category: sampler.categories[index], duration: getPadRegion(index).end - getPadRegion(index).start }) : null).filter(Boolean);
+  const genreConflicts = identity.genre.conflictingEvidence || [];
+  const missingContext = [!identity.genre.value && "Genre", !identity.keyCenter.value && "Key", !sourceFiles.length && "DITC tracks", !deckState.a.buffer && !deckState.b.buffer && "Loaded deck", !instrument.pattern.notes.length && "Harmony material", !arrangement.clipCount && "Arrangement"].filter(Boolean);
+  const risks = [];
+  if (arrangement.clipCount && arrangement.outroStatus === "Not planned") risks.push({ id: "missing-outro", domain: "Arrangement", severity: "Medium", summary: "No outro is planned in the arrangement." });
+  if (arrangement.unresolvedGaps.length) risks.push({ id: "arrangement-gaps", domain: "Arrangement", severity: "Medium", summary: `${arrangement.unresolvedGaps.length} empty arrangement region${arrangement.unresolvedGaps.length === 1 ? "" : "s"} detected.` });
+  if (activeLoops.length && deckState.b.playing && deckState.b.analysis?.vocalDensity === "High") risks.push({ id: "pad-vocal-clash", domain: "Pads", severity: "Medium", summary: "An active pad loop may compete with Deck B's high vocal density." });
+  const priorities = [arrangement.clipCount && arrangement.outroStatus === "Not planned" ? "Finish the outro" : null, !arrangement.clipCount ? "Start the arrangement" : null, !sourceFiles.length ? "Collect tracks in DITC" : null, !instrument.pattern.notes.length ? "Create a harmony idea" : null].filter(Boolean).slice(0, 3);
+  const previousHistory = ProjectIntelligenceEngine.getProjectContext().aiHistory || { decisions: [], recentSummary: null };
+  const recentDecisions = previousHistory.decisions || [];
+  const recentSummary = { generatedAt: now, events: recentDecisions.slice(0, 5).map((decision) => decision.summary), suggestedNextStep: priorities[0] || "Review today's suggestions" };
+  const projectBpm = Number(document.querySelector("#globalBpm")?.value) || null;
+  const keyValue = identity.keyCenter.value;
+  const analyzedGenre = identity.genre.value;
+  const projectPhase = AudioEngine.mixUrl ? "Recorded" : arrangement.clipCount ? "Arranging" : drums.source !== "Preset" || instrument.pattern.notes.length || assignedPads.length ? "Producing" : sourceFiles.length ? "Collecting" : "Setup";
+  const contextConfidenceValues = Object.values(identity).map((field) => field.confidence).filter((value) => value > 0);
+  const contextConfidence = contextConfidenceValues.length ? Math.round(contextConfidenceValues.reduce((sum, value) => sum + value, 0) / contextConfidenceValues.length) : 0;
+  return {
+    project: {
+      projectId: producerStudioState.projectId,
+      projectName: producerStudioState.projectName || "Not set",
+      description: producerStudioState.description || null,
+      genre: analyzedGenre,
+      subgenre: identity.subgenre.value,
+      era: identity.era.value,
+      region: identity.region.value,
+      mood: identity.mood.value,
+      energy: identity.energy.value,
+      bpm: projectBpm,
+      key: keyValue,
+      camelotKey: camelotKey(keyValue),
+      tags: [...producerStudioState.tags],
+      referenceMixtape: mixtapeReferenceState.name || mixtapeInspirationState?.structure?.name || null,
+      projectPhase,
+      projectProgress: progress.percentage,
+      progressFactors: progress.factors,
+      identity,
+      createdAt: producerStudioState.createdAt,
+      updatedAt: now
+    },
+    ditc: {
+      totalTracks: sourceFiles.length + savedSources.length,
+      playableTracks: sourceFiles.length,
+      selectedTracks: selectedItems.map((item) => ({ id: item.id, name: item.name, kind: item.kind, bpm: item.analysis?.bpm || null, key: item.analysis?.key || null })),
+      favorites: [...sourceFiles.filter((track) => track.favorite).map((track) => ({ id: track.id, name: track.name })), ...savedSources.filter((track) => track.favorite).map((track, index) => ({ id: `saved-${index}`, name: track.name }))],
+      recentlyAdded: sourceFiles.filter((track) => Date.now() - track.addedAt < 86400000).map((track) => ({ id: track.id, name: track.name, addedAt: track.addedAt })),
+      tagsInUse: [...new Set(sourceFiles.flatMap((track) => track.tags || []))].sort(),
+      currentFilters: { search: ditcState.search, filter: ditcState.filter, sort: ditcState.sort },
+      currentCollection: ditcState.filter,
+      smartMixEligibleTracks: sourceFiles.filter((track) => ditcState.smartMixIds.has(track.id) || crateSelection.local.has(track.id)).map((track) => ({ id: track.id, name: track.name })),
+      recentRecommendations: recentDecisions.filter((decision) => decision.domain === "DITC").slice(0, 5),
+      verifiedReferenceTracks: savedSources.filter((track) => track.verified || track.fingerprintConfirmed).map((track, index) => ({ id: `saved-${index}`, name: track.name }))
+    },
+    decks: ["a", "b"].map((id) => {
+      const deck = deckState[id];
+      const tempo = Number(document.querySelector(`#pitch-${id}`)?.value || 1);
+      return {
+        id,
+        loadedTrack: deck.buffer ? { name: deck.trackName, duration: deck.buffer.duration } : null,
+        playbackState: deck.playing ? "Playing" : deck.status === "paused" ? "Paused" : deck.buffer ? "Ready" : "Empty",
+        currentTime: deck.buffer ? currentDeckTime(id) : 0,
+        duration: deck.buffer?.duration || 0,
+        bpm: deck.analysis?.bpm || null,
+        originalBpm: deck.analysis?.bpm || null,
+        key: deck.analysis?.key || null,
+        gain: deck.gain?.gain?.value ?? null,
+        tempo,
+        channelVolume: Number(document.querySelector(`#channel-${id}`)?.value ?? 1),
+        cuePoints: [deck.selectionStart, deck.selectionEnd].filter(Number.isFinite),
+        loops: deck.loop ? [{ start: deck.loopStart, end: deck.loopEnd, beats: deck.loopBeats }] : [],
+        activeStems: [],
+        manualOverrideState: deck.manualOverride,
+        smartMixControlled: deck.smartMixControlled,
+        analysis: deck.analysis ? { genre: deck.analysis.genre || null, mood: deck.analysis.mood || null, energy: deck.analysis.energy || null, vocalDensity: deck.analysis.vocalDensity || null } : null
+      };
+    }),
+    smartMix: {
+      enabled: autoMixState.running,
+      state: autoMixState.state,
+      currentMode: autoMixState.mode,
+      outgoingDeck: autoMixState.activeDeck || null,
+      incomingDeck: autoMixState.incomingDeck || null,
+      currentPlan: autoMixState.plan.map((transition) => ({ from: transition.from?.name || null, to: transition.to?.name || null, style: transition.style || null, startAt: transition.startAt ?? null, overlap: transition.overlap ?? null })),
+      source: autoMixState.promptPlan?.planSource || autoMixState.sourceMode || null,
+      transitionStyle: autoMixState.transition?.style || autoMixState.plan[autoMixState.index]?.style || smartPromptState.plan?.transitionStyle || null,
+      trigger: smartPromptState.plan?.triggerType || smartPromptState.plan?.transitionTrigger || null,
+      countdown: Number.isFinite(autoMixState.estimatedTransitionAt) && AudioEngine.context ? Math.max(0, autoMixState.estimatedTransitionAt - AudioEngine.context.currentTime) : null,
+      tempoSafetyResult: smartPromptState.plan?.tempoSafety || null,
+      bpmRecovery: { active: bpmRecoveryState.active, pending: bpmRecoveryState.pending, progress: bpmRecoveryState.progress, originalBpm: bpmRecoveryState.originalBpm || null, targetRatio: bpmRecoveryState.targetRatio },
+      confidence: smartPromptState.plan?.confidence ?? null,
+      manualOverride: autoMixState.lastManualOverride !== "None" ? autoMixState.lastManualOverride : null,
+      lastCompletedTransition: recentDecisions.find((decision) => decision.action === "Transition completed") || null
+    },
+    pads: {
+      activeBank: sampler.bank,
+      activeScene: sampler.scene,
+      assignedPads,
+      assignedPadCount: assignedPads.length,
+      activeLoops,
+      recentTriggers: sampler.recentTriggers.slice(0, 12),
+      savedMacros: [],
+      recentAiPadBank: sampler.pendingAiPlan?.plan ? { prompt: sampler.pendingAiPlan.prompt, suggestedBank: sampler.pendingAiPlan.plan.suggestedBank } : null,
+      recordingState: editorState.recording ? "Recording to arrangement" : "Idle"
+    },
+    beatForge: {
+      activePattern: drums.source === "Preset" ? null : { id: drums.patternId, name: drums.name },
+      activeKit: drumMachines.find((machine) => machine.id === drums.machine)?.name || null,
+      activeGroove: drums.groove || null,
+      section: drums.section,
+      bpm: projectBpm,
+      bars: drums.bars,
+      patternVersion: drums.version,
+      recentAiGenerations: drums.lastGeneration && drums.lastGeneration !== "None" ? [drums.lastGeneration] : [],
+      recentPrompt: drums.lastPrompt !== "None" ? drums.lastPrompt : null,
+      currentLocks: { ...drums.grooveLocks },
+      playbackState: drums.playing ? "Playing" : drums.paused ? "Paused" : drums.previewing ? "Previewing" : "Idle",
+      recordingState: drums.recording ? "Recording" : drums.overdub ? "Overdubbing" : "Idle",
+      activeStepCount: drums.pattern.flat().filter(Boolean).length,
+      source: drums.source
+    },
+    harmonyLab: {
+      activeInstrument: getInstrumentPreset()?.name || null,
+      currentKey: instrument.pattern.notes.length ? instrument.key : null,
+      currentScale: instrument.pattern.notes.length ? instrument.scale : null,
+      activeChordProgression: instrument.pattern.notes.some((note) => note.type === "chord") ? { name: instrument.pattern.name, chordCount: instrument.pattern.notes.filter((note) => note.type === "chord").length } : null,
+      activeBassline: instrument.pattern.notes.some((note) => note.type === "bass") ? { name: instrument.pattern.name, noteCount: instrument.pattern.notes.filter((note) => note.type === "bass").length } : null,
+      melody: instrument.pattern.notes.length ? { name: instrument.pattern.name, type: instrument.pattern.type, noteCount: instrument.pattern.notes.length, bars: instrument.pattern.bars, version: instrument.pattern.version } : null,
+      recentAiGenerations: instrument.pattern.source === "AI Composer" ? [instrument.pattern.name] : [],
+      currentPrompt: instrument.lastPrompt || null,
+      playbackState: instrument.patternPlaying ? "Playing" : instrument.patternPaused ? "Paused" : instrument.previewing ? "Previewing" : "Idle",
+      recordingState: instrument.recording ? "Recording" : "Idle"
+    },
+    stems: {
+      separatedTracks: stemState.stems.length ? [{ source: stemState.sourceName || "Unknown source", stemCount: stemState.stems.length }] : [],
+      availableStemTypes: stemState.stems.map((stem) => stem.name),
+      selectedStem: stemState.previewSource ? stemState.previewStemId || null : null,
+      recentStemCombinations: [],
+      mashupCandidates: stemState.stems.length >= 2 ? stemState.stems.slice(0, 4).map((stem) => stem.name) : [],
+      currentPreview: Boolean(stemState.previewSource),
+      processingState: document.querySelector("#splitStems")?.disabled && stemState.sourceBuffer ? "Processing" : "Idle"
+    },
+    arrangement,
+    mixtape: {
+      referenceAnalysis: mixtapeInspirationState?.structure ? { name: mixtapeInspirationState.structure.name, genre: mixtapeInspirationState.structure.genre, mood: mixtapeInspirationState.structure.mood, bpmRange: mixtapeInspirationState.structure.bpmRange || null } : null,
+      verifiedTracklist: (mixtapeInspirationState?.structure?.detectedTracklist || []).filter((track) => /verified|confirmed/i.test(track.status || "")).map((track) => ({ artist: track.artist, title: track.title, confidence: track.confidence })),
+      detectedIdentity: mixtapeInspirationState?.structure?.theme || null,
+      themes: mixtapeInspirationState?.structure?.sampleWorld || [],
+      pacing: mixtapeInspirationState?.structure?.pacing || null,
+      energyCurve: mixtapeInspirationState?.structure?.energyArc || null,
+      djTags: mixtapeInspirationState?.structure?.tagsAndDrops || null,
+      clips: [],
+      recommendations: mixtapeInspirationState?.blueprint?.chapters?.map((chapter) => ({ title: chapter.title, detail: chapter.detail })) || []
+    },
+    playback: {
+      activeAudioSources: activeSources.map((source) => ({ id: source.id, type: source.type, name: source.metadata?.name || source.displayName, playing: Boolean(source.playing), paused: Boolean(source.paused), looping: Boolean(source.looping), recording: Boolean(source.recording) })),
+      masterVolume: Number(document.querySelector("#masterVolume")?.value || 0),
+      currentSource: primarySource ? { id: primarySource.id, name: primarySource.metadata?.name || primarySource.displayName } : null,
+      globalStopState: registry?.lastStopEvent || "None",
+      audioContextStatus: AudioEngine.context?.state || "Not started",
+      recordingStatus: AudioEngine.recorder?.state === "recording" ? "Recording" : AudioEngine.mixUrl ? "Take ready" : "Not recording"
+    },
+    aiHistory: { ...previousHistory, recentSummary },
+    creativePreferences: { transitionPreference: tempoSafetyPreferences.transitionPreference, preferredTempoShift: tempoSafetyPreferences.preferredShift, preserveIncomingBpm: tempoSafetyPreferences.preserveIncomingBpm },
+    systemStatus: {
+      activeModules: [sourceFiles.length && "DITC", (deckState.a.buffer || deckState.b.buffer) && "Decks", autoMixState.running && "Smart Mix", assignedPads.length && "Pads", drums.source !== "Preset" && "Beat Forge", instrument.pattern.notes.length && "Harmony Lab", stemState.stems.length && "Stems", arrangement.clipCount && "Arrangement", mixtapeInspirationState && "Mixtape Analyzer"].filter(Boolean),
+      missingContext,
+      conflictingContext: genreConflicts.map((value) => ({ field: "Genre", value, source: "Analyzed track" })),
+      confidence: contextConfidence,
+      currentCreativePriorities: priorities,
+      currentRisks: risks,
+      lastContextError: "None"
+    }
+  };
+}
+
+function initializeProjectIntelligence() {
+  ProjectIntelligenceEngine.configure({ projectId: producerStudioState.projectId, adapter: buildProjectIntelligenceSnapshot });
+  projectIntelligenceReady = true;
+  ProjectIntelligenceEngine.syncFromAdapter({ domain: "systemStatus", type: "context-initialized", summary: "Project context initialized", meaningful: false, force: true });
+  producerStudioState.contextUnsubscribe = ProjectIntelligenceEngine.subscribeToProjectContext(() => {
+    if (document.querySelector("#ai")?.classList.contains("is-active")) renderProducerStudio({ sync: false });
+    renderProjectIntelligenceDiagnostics();
+  });
+}
+
+function emitProjectContextChange(domain, type, options = {}) {
+  if (!projectIntelligenceReady) return false;
+  return ProjectIntelligenceEngine.syncFromAdapter({
+    domain,
+    type,
+    summary: options.summary || type,
+    meaningful: options.meaningful !== false,
+    decision: options.decision || null
+  });
+}
+
+function refreshProjectContext(options = {}) {
+  if (options.sync) emitProjectContextChange(options.domain || "systemStatus", options.type || "context-refreshed", { meaningful: options.meaningful !== false, summary: options.summary });
+  return ProjectIntelligenceEngine.getProjectContext();
 }
 
 function producerOverviewItems(context) {
-  const loaded = context.decks.filter((deck) => deck.loaded);
+  const currentDeck = context.decks.find((deck) => deck.playbackState === "Playing") || context.decks.find((deck) => deck.loadedTrack);
+  const incomingDeck = context.smartMix.incomingDeck ? context.decks.find((deck) => deck.id === context.smartMix.incomingDeck) : null;
   return [
-    ["Project Name", context.project.name, "project"],
-    ["Current BPM", `${context.project.bpm} BPM`, "tempo"],
-    ["Current Key", context.project.key, "harmony"],
-    ["Genre", context.project.genre, "identity"],
-    ["Subgenre", context.project.subgenre, "identity"],
-    ["Project Progress", `${context.project.progress}%`, "progress"],
-    ["Reference Mixtape", context.project.referenceMixtape, "reference"],
-    ["Deck Status", loaded.length ? loaded.map((deck) => `Deck ${deck.id.toUpperCase()}: ${deck.title}`).join(" · ") : "Decks empty", "decks"],
-    ["Current Mix Length", formatTime(context.project.mixLength), "arrangement"],
-    ["Recording Status", context.project.recordingStatus, "recording"],
-    ["Current AI Status", context.project.aiStatus, "ai"]
+    ["Project Name", context.project.projectName || "Not set", "project"],
+    ["Genre", context.project.genre || "Not set", "identity"],
+    ["Current BPM", context.project.bpm ? `${context.project.bpm} BPM` : "Not set", "tempo"],
+    ["Current Key", context.project.key || "Not analyzed", "harmony"],
+    ["Current Deck", currentDeck?.loadedTrack ? `Deck ${currentDeck.id.toUpperCase()}: ${currentDeck.loadedTrack.name}` : "No track loaded", "decks"],
+    ["Incoming Track", incomingDeck?.loadedTrack?.name || "No incoming track", "decks"],
+    ["Track Count", `${context.ditc.totalTracks || 0} total · ${context.ditc.playableTracks || 0} playable`, "ditc"],
+    ["Beat Forge", context.beatForge.activePattern?.name || "No active pattern", "beat"],
+    ["Harmony Lab", context.harmonyLab.melody?.name || "No harmony material", "harmony"],
+    ["Active Pad Bank", `Bank ${context.pads.activeBank || "Not set"} · ${context.pads.activeScene || "No scene"}`, "pads"],
+    ["Arrangement Length", context.arrangement.timelineLength ? formatTime(context.arrangement.timelineLength) : "Not started", "arrangement"],
+    ["Project Progress", `${context.project.projectProgress || 0}%`, "progress"],
+    ["Last Meaningful Update", context.timestamps.lastMeaningfulUpdate ? new Date(context.timestamps.lastMeaningfulUpdate).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "No updates yet", "ai"]
   ];
 }
 
@@ -8125,22 +8469,33 @@ function renderProjectOverview(context) {
   grid.innerHTML = producerOverviewItems(context).map(([label, value, kind]) => `
     <article class="project-stat" data-stat-kind="${kind}">
       <span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong>
-      ${kind === "progress" ? `<div class="project-progress-track"><span style="width:${context.project.progress}%"></span></div>` : ""}
+      ${kind === "progress" ? `<div class="project-progress-track"><span style="width:${context.project.projectProgress || 0}%"></span></div>` : ""}
     </article>`).join("");
 }
 
+function evidenceConfidence(values) {
+  const available = values.filter(Boolean).length;
+  return values.length ? Math.round(available / values.length * 100) : 0;
+}
+
 function buildProducerSuggestions(context) {
-  const emptyPads = 16 - context.pads.loadedCount;
-  const loadedDecks = context.decks.filter((deck) => deck.loaded);
-  const suggestions = [
-    { id: "intro", type: "Arrangement", title: "Better Intro", confidence: loadedDecks.length ? 86 : 58, prompt: "Build a distinctive 8-bar intro using the current decks, pads, and project identity.", detail: loadedDecks.length ? `Shape an 8-bar cold open around ${loadedDecks[0].title} before the first full-energy section.` : "Start an 8-bar cold open now, then attach the first deck when a track is loaded." },
-    { id: "transition", type: "Smart Mix", title: "Transition Opportunity", confidence: loadedDecks.length === 2 ? 91 : 62, prompt: "Find and plan the best next transition using the current decks and DITC selections.", detail: loadedDecks.length === 2 ? `Compare Deck A and Deck B around ${context.project.bpm} BPM and preserve manual deck control.` : "Load or select a second track to improve transition scoring." },
-    { id: "pad", type: "Pads", title: "Unused Pad Space", confidence: emptyPads ? 82 : 55, prompt: "Build a project-aware pad bank for the intro, transitions, drops, and outro.", detail: emptyPads ? `${emptyPads} pad slots are open in Bank ${context.pads.bank}; reserve them for drops, FX, and transition cues.` : `Bank ${context.pads.bank} is full. Consider a second scene for transition material.` },
-    { id: "groove", type: "Beat Forge", title: "Better Drum Groove", confidence: 88, prompt: `Create a variation of the current ${context.beatForge.groove} groove that supports ${context.project.genre} at ${context.project.bpm} BPM.`, detail: `${context.beatForge.pattern} has ${context.beatForge.activeSteps} active steps. A section-aware variation can add movement without replacing it.` },
-    { id: "harmony", type: "Harmony Lab", title: "Harmony Suggestion", confidence: context.harmonyLab.noteCount ? 84 : 66, prompt: `Generate Rhodes chords in ${context.project.key} that leave space for the current decks and Beat Forge pattern.`, detail: context.harmonyLab.noteCount ? `${context.harmonyLab.pattern} already has ${context.harmonyLab.noteCount} notes; try a contrasting voicing.` : `Establish a four-bar harmonic idea in ${context.project.key}.` },
-    { id: "stem", type: "Stem Lab", title: "Stem Opportunity", confidence: loadedDecks.length ? 79 : 48, prompt: "Find the best stem opportunity for an acapella bridge or instrumental transition.", detail: context.stemLab.stemCount ? `${context.stemLab.stemCount} stems are ready for a bridge or drop.` : "A loaded or selected anchor record can become an acapella or instrumental transition tool." },
-    { id: "ditc", type: "DITC", title: "DITC Recommendation", confidence: context.ditc.trackCount ? 81 : 52, prompt: "Find better opening, transition, and closing songs from the current DITC project.", detail: context.ditc.trackCount ? `Review ${context.ditc.trackCount} crate track${context.ditc.trackCount === 1 ? "" : "s"} against tempo, key, and project arc.` : "Import local tracks to unlock track-specific opening and closing recommendations." }
-  ];
+  const loadedDecks = context.decks.filter((deck) => deck.loadedTrack);
+  const emptyPads = 16 - (context.pads.assignedPadCount || 0);
+  const analyzedTracks = [...loadedDecks.filter((deck) => deck.bpm || deck.key), ...sourceFiles.filter((track) => track.analysis)];
+  const suggestions = [];
+  if (context.arrangement.clipCount && context.arrangement.introStatus === "Not planned") suggestions.push({ id: "intro", type: "Arrangement", title: "Intro Is Missing", confidence: 100, prompt: "Plan an intro using the current arrangement, loaded tracks, and project identity.", detail: `The arrangement contains ${context.arrangement.clipCount} clips but no clip is identified as an intro.` });
+  if (context.arrangement.clipCount && context.arrangement.outroStatus === "Not planned") suggestions.push({ id: "outro", type: "Arrangement", title: "Finish the Outro", confidence: 100, prompt: "Create an outro plan for the current arrangement without replacing existing clips.", detail: `The ${formatTime(context.arrangement.timelineLength)} arrangement has no clip identified as an outro.` });
+  if (loadedDecks.length === 2) {
+    const [a, b] = loadedDecks;
+    const confidence = evidenceConfidence([a.bpm, b.bpm, a.key, b.key]);
+    suggestions.push({ id: "transition", type: "Smart Mix", title: "Transition Opportunity", confidence, prompt: "Plan the safest editable transition between the two loaded decks.", detail: `Deck A has ${a.bpm ? `${a.bpm} BPM` : "no BPM analysis"}; Deck B has ${b.bpm ? `${b.bpm} BPM` : "no BPM analysis"}.` });
+  }
+  if (emptyPads > 0 && context.ditc.playableTracks > 0) suggestions.push({ id: "pad", type: "Pads", title: "Prepare Open Pad Slots", confidence: evidenceConfidence([context.pads.activeBank, context.pads.activeScene, context.ditc.playableTracks]), prompt: "Build a project-aware pad plan from the currently playable DITC tracks.", detail: `${emptyPads} slots are open in Bank ${context.pads.activeBank}; ${context.ditc.playableTracks} playable DITC track${context.ditc.playableTracks === 1 ? " is" : "s are"} available.` });
+  if (context.beatForge.activePattern) suggestions.push({ id: "groove", type: "Beat Forge", title: "Develop the Active Groove", confidence: evidenceConfidence([context.beatForge.activePattern, context.beatForge.activeGroove, context.beatForge.bpm]), prompt: `Create a non-destructive variation of ${context.beatForge.activePattern.name} using its current groove and locks.`, detail: `${context.beatForge.activePattern.name} uses ${context.beatForge.activeGroove || "no named groove"} at ${context.beatForge.bpm || "an unset BPM"}.` });
+  if (!context.harmonyLab.melody && (context.beatForge.activePattern || loadedDecks.some((deck) => deck.key))) suggestions.push({ id: "harmony", type: "Harmony Lab", title: "Harmony Space Available", confidence: evidenceConfidence([context.project.key, context.beatForge.activePattern, loadedDecks.length]), prompt: "Generate a Harmony Lab idea from the current key, decks, and Beat Forge material.", detail: `No Harmony Lab material exists${context.project.key ? `; the current key evidence is ${context.project.key}` : " and the project key is not analyzed"}.` });
+  if (!context.stems.availableStemTypes.length && loadedDecks.length) suggestions.push({ id: "stem", type: "Stem Lab", title: "Stem Opportunity", confidence: evidenceConfidence([loadedDecks[0]?.loadedTrack, loadedDecks[0]?.analysis, context.project.bpm]), prompt: "Evaluate the loaded deck for a stem-based transition or bridge.", detail: `${loadedDecks[0].loadedTrack.name} is loaded and no separated stems currently exist.` });
+  if (analyzedTracks.length >= 2) suggestions.push({ id: "ditc", type: "DITC", title: "Review Track Roles", confidence: Math.min(100, Math.round(analyzedTracks.length / Math.max(2, context.ditc.totalTracks) * 100)), prompt: "Review analyzed DITC and deck tracks for intro, transition, and closing roles.", detail: `${analyzedTracks.length} of ${context.ditc.totalTracks + loadedDecks.length} available track references have analysis evidence.` });
+  suggestions.forEach((suggestion) => { suggestion.contextVersion = context.contextVersion; });
   return suggestions.filter((item) => !producerStudioState.dismissedSuggestions.has(item.id));
 }
 
@@ -8150,7 +8505,7 @@ function renderProducerSuggestions(context) {
   const suggestions = buildProducerSuggestions(context);
   grid.innerHTML = suggestions.length ? suggestions.map((item) => {
     const applied = producerStudioState.appliedSuggestions.has(item.id);
-    return `<article class="producer-suggestion-card" data-suggestion-id="${item.id}">
+    return `<article class="producer-suggestion-card" data-suggestion-id="${item.id}" data-context-version="${item.contextVersion}">
       <div class="producer-card-meta"><span>${escapeHtml(item.type)}</span><strong>${item.confidence}%</strong></div>
       <h4>${escapeHtml(item.title)}</h4><p>${escapeHtml(item.detail)}</p>
       <p class="producer-card-explanation" hidden>Why: this recommendation uses the current shared project context and remains a reversible working plan.</p>
@@ -8209,36 +8564,105 @@ function renderProducerPromptLibrary() {
 }
 
 function recordProducerEvent(action, options = {}) {
-  const entry = { id: createId(), action, timestamp: Date.now(), undoable: Boolean(options.undo) };
-  producerStudioState.timeline.unshift(entry);
+  const entry = ProjectIntelligenceEngine.recordDecision({
+    id: options.id || createId(),
+    timestamp: new Date().toISOString(),
+    domain: options.domain || "AI",
+    action: options.action || action,
+    summary: options.summary || action,
+    before: options.before,
+    after: options.after,
+    undoRef: options.undo ? "runtime" : null,
+    initiatedBy: options.initiatedBy || "user"
+  });
   if (options.undo) producerStudioState.undoActions.set(entry.id, options.undo);
-  producerStudioState.timeline = producerStudioState.timeline.slice(0, 80);
   writeProducerStudioStorage();
   renderProducerTimeline();
   return entry;
 }
 
+function producerTimelineGroup(timestamp) {
+  const value = new Date(timestamp);
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startYesterday = new Date(startToday.getTime() - 86400000);
+  if (value >= startToday) return "Today";
+  if (value >= startYesterday) return "Yesterday";
+  return "Earlier";
+}
+
 function renderProducerTimeline() {
   const timeline = document.querySelector("#producerTimeline");
   if (!timeline) return;
-  timeline.innerHTML = producerStudioState.timeline.length ? producerStudioState.timeline.map((entry) => `<article class="producer-timeline-entry"><span class="producer-timeline-dot"></span><div><time datetime="${new Date(entry.timestamp).toISOString()}">${new Date(entry.timestamp).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</time><strong>${escapeHtml(entry.action)}</strong></div>${entry.undoable && producerStudioState.undoActions.has(entry.id) ? `<button data-producer-timeline-undo="${entry.id}">Undo</button>` : ""}</article>`).join("") : `<div class="producer-empty-state">Your creative actions will appear here.</div>`;
+  const allEntries = ProjectIntelligenceEngine.getProjectContext().aiHistory?.decisions || [];
+  const entries = producerStudioState.timelineFilter === "all" ? allEntries : allEntries.filter((entry) => entry.domain.toLowerCase() === producerStudioState.timelineFilter);
+  const filters = document.querySelector("#producerTimelineFilters");
+  const domains = ["all", "DITC", "Decks", "Smart Mix", "Pads", "Beat Forge", "Harmony Lab", "Stems", "Arrangement", "AI"];
+  if (filters) filters.innerHTML = domains.map((domain) => `<button data-producer-timeline-filter="${domain.toLowerCase()}" class="${producerStudioState.timelineFilter === domain.toLowerCase() ? "is-active" : ""}">${domain}</button>`).join("");
+  if (!entries.length) { timeline.innerHTML = `<div class="producer-empty-state">No meaningful ${producerStudioState.timelineFilter === "all" ? "project" : escapeHtml(producerStudioState.timelineFilter)} activity has been recorded.</div>`; return; }
+  const grouped = entries.reduce((result, entry) => { const group = producerTimelineGroup(entry.timestamp); (result[group] ||= []).push(entry); return result; }, {});
+  timeline.innerHTML = ["Today", "Yesterday", "Earlier"].filter((group) => grouped[group]?.length).map((group) => `<section class="producer-timeline-group"><h4>${group}</h4>${grouped[group].map((entry) => `<article class="producer-timeline-entry"><span class="producer-timeline-dot"></span><div><time datetime="${entry.timestamp}">${new Date(entry.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · ${escapeHtml(entry.domain)}</time><strong>${escapeHtml(entry.summary)}</strong></div>${producerStudioState.undoActions.has(entry.id) ? `<button data-producer-timeline-undo="${entry.id}">Undo</button>` : ""}</article>`).join("")}</section>`).join("");
 }
 
 function renderProducerIntelligence(context) {
   const graph = document.querySelector("#producerProjectGraph");
   if (!graph) return;
   const nodes = [
-    ["DITC", context.ditc.trackCount], ["Decks", context.decks.filter((deck) => deck.loaded).length], ["Beat Forge", context.beatForge.activeSteps],
-    ["Harmony", context.harmonyLab.noteCount], ["Pads", context.pads.loadedCount], ["Stems", context.stemLab.stemCount], ["Arrangement", context.arrangement.clipCount]
+    ["DITC", context.ditc.totalTracks || 0], ["Decks", context.decks.filter((deck) => deck.loadedTrack).length], ["Beat Forge", context.beatForge.activePattern ? 1 : 0],
+    ["Harmony", context.harmonyLab.melody ? 1 : 0], ["Pads", context.pads.assignedPadCount || 0], ["Stems", context.stems.availableStemTypes?.length || 0], ["Arrangement", context.arrangement.clipCount || 0]
   ];
-  graph.innerHTML = `<div class="project-graph-core"><span>${escapeHtml(context.project.name)}</span><strong>${context.project.progress}%</strong></div>${nodes.map(([label, count]) => `<div class="project-graph-node"><span>${escapeHtml(label)}</span><strong>${count}</strong></div>`).join("")}`;
-  const confidence = Math.min(96, 46 + nodes.filter(([, count]) => count > 0).length * 7);
+  graph.innerHTML = `<div class="project-graph-core"><span>${escapeHtml(context.project.projectName || "Not set")}</span><strong>v${context.contextVersion}</strong></div>${nodes.map(([label, count]) => `<div class="project-graph-node"><span>${escapeHtml(label)}</span><strong>${count}</strong></div>`).join("")}`;
+  const confidence = context.systemStatus.confidence || 0;
   document.querySelector("#producerConfidence").textContent = `Confidence · ${confidence}%`;
-  document.querySelector("#producerReasoning").textContent = `Recommendations currently use ${nodes.filter(([, count]) => count > 0).length} active project systems, ${context.project.bpm} BPM, ${context.project.key}, ${context.project.genre}, and ${context.project.progress}% progress. Preview and undo remain available before manual workflows are changed.`;
+  document.querySelector("#producerReasoning").textContent = `Context v${context.contextVersion} uses ${context.systemStatus.activeModules.length} active module${context.systemStatus.activeModules.length === 1 ? "" : "s"}. Identity confidence is evidence-weighted; missing and conflicting fields remain visible instead of being invented.`;
+  const renderList = (selector, items, empty) => { const element = document.querySelector(selector); if (element) element.innerHTML = items.length ? items.map((item) => `<div>${item}</div>`).join("") : `<span class="fine-print">${escapeHtml(empty)}</span>`; };
+  renderList("#producerPriorities", context.systemStatus.currentCreativePriorities.map((item) => escapeHtml(item)), "No priority inferred yet.");
+  renderList("#producerActiveModules", context.systemStatus.activeModules.map((item) => `<span>${escapeHtml(item)}</span>`), "No active creative modules detected.");
+  document.querySelector("#producerIntelligenceUpdated").textContent = context.timestamps.updatedAt ? `Last updated ${new Date(context.timestamps.updatedAt).toLocaleString()}` : "No context updates yet.";
+  renderList("#producerProgressFactors", (context.project.progressFactors || []).map((factor) => `<span class="${factor.complete ? "is-complete" : ""}">${factor.complete ? "✓" : "○"} ${escapeHtml(factor.label)}</span><small>${escapeHtml(factor.detail)}</small>`), "No progress factors available.");
+  renderList("#producerIdentityProvenance", Object.entries(context.project.identity || {}).map(([field, evidence]) => `<span>${escapeHtml(field.replace(/([A-Z])/g, " $1"))}: ${escapeHtml(evidence.value == null ? "Not set" : Array.isArray(evidence.value) ? evidence.value.join(", ") : evidence.value)}</span><small>${evidence.confidence}% · ${escapeHtml(evidence.source)}${evidence.userConfirmed ? " · Confirmed" : " · Inferred"}</small>`), "No identity evidence available.");
+  renderList("#producerMissingContext", (context.systemStatus.missingContext || []).map((item) => `<span>${escapeHtml(item)}</span>`), "No required context is missing.");
+  renderList("#producerContextConflicts", (context.systemStatus.conflictingContext || []).map((item) => `<span>${escapeHtml(item.field)}: ${escapeHtml(item.value)}</span><small>${escapeHtml(item.source)}</small>`), "No conflicting evidence detected.");
+  renderList("#producerContextRisks", (context.systemStatus.currentRisks || []).map((risk) => `<span>${escapeHtml(risk.summary)}</span><small>${escapeHtml(risk.domain)} · ${escapeHtml(risk.severity)}</small>`), "No supported risks detected.");
+  renderList("#producerRecentDecisions", (context.aiHistory?.decisions || []).slice(0, 8).map((decision) => `<span>${escapeHtml(decision.summary)}</span><small>${escapeHtml(decision.domain)} · ${new Date(decision.timestamp).toLocaleString()}</small>`), "No decisions recorded.");
 }
 
-function renderProducerStudio() {
-  const context = refreshProjectContext();
+function selectedPromptContextDomains() {
+  return Object.entries(producerStudioState.promptDomains).filter(([, included]) => included).map(([domain]) => domain);
+}
+
+function renderPromptContextPreview() {
+  const preview = document.querySelector("#producerContextPreview");
+  if (!preview) return;
+  const summary = ProjectIntelligenceEngine.getContextSummary({ include: ["project", ...selectedPromptContextDomains()] });
+  preview.textContent = JSON.stringify(summary, null, 2);
+  document.querySelector("#producerContextVersionLabel").textContent = `v${summary.contextVersion}`;
+}
+
+function resetPromptContextDomains() {
+  Object.keys(producerStudioState.promptDomains).forEach((domain) => { producerStudioState.promptDomains[domain] = true; });
+  document.querySelectorAll("[data-prompt-context-domain]").forEach((input) => { input.checked = true; });
+  renderPromptContextPreview();
+}
+
+function renderProducerWelcome(context) {
+  const summary = context.aiHistory?.recentSummary;
+  const container = document.querySelector("#producerWelcomeSummary");
+  if (!container) return;
+  const events = summary?.events || [];
+  container.innerHTML = events.length ? `<strong>Last session</strong><ul>${events.map((event) => `<li>${escapeHtml(event)}</li>`).join("")}</ul><p><span>Suggested next step</span><b>${escapeHtml(summary.suggestedNextStep || "Review today's suggestions")}</b></p>` : "No meaningful project events have been recorded yet.";
+  document.querySelector("#producerWelcomeVersion").textContent = `Context v${context.contextVersion}`;
+}
+
+function renderProjectIntelligenceDiagnostics() {
+  const details = document.querySelector("#projectIntelligenceDiagnostics");
+  if (details) details.hidden = !DECKFORGE_DEVELOPMENT;
+  const output = document.querySelector("#projectIntelligenceDiagnosticsOutput");
+  if (output && DECKFORGE_DEVELOPMENT) output.textContent = JSON.stringify(ProjectIntelligenceEngine.getDiagnostics(), null, 2);
+}
+
+function renderProducerStudio(options = {}) {
+  const context = refreshProjectContext(options);
   const studio = document.querySelector("#ai");
   if (!studio) return;
   studio.dataset.producerMode = producerStudioState.mode;
@@ -8253,9 +8677,12 @@ function renderProducerStudio() {
   renderProducerMissions();
   renderProducerTimeline();
   renderProducerIntelligence(context);
+  renderProducerWelcome(context);
+  renderPromptContextPreview();
+  renderProjectIntelligenceDiagnostics();
   renderAiContext();
   const sync = document.querySelector("#producerSyncStatus");
-  if (sync) sync.textContent = `Context synced · ${new Date(context.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  if (sync) sync.textContent = context.timestamps.lastMeaningfulUpdate ? `Project context updated · v${context.contextVersion} · ${new Date(context.timestamps.lastMeaningfulUpdate).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : `Context v${context.contextVersion} · No meaningful updates yet`;
 }
 
 function previewProducerPrompt(prompt, sourceLabel) {
@@ -8264,6 +8691,36 @@ function previewProducerPrompt(prompt, sourceLabel) {
   generateAiPlan();
   recordProducerEvent(`Previewed ${sourceLabel}`);
   document.querySelector("#aiPlanOutput")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function showStaleRecommendationDialog(action) {
+  producerStudioState.pendingStaleAction = action;
+  const dialog = document.querySelector("#staleRecommendationDialog");
+  const detail = document.querySelector("#staleRecommendationDetail");
+  if (detail) detail.textContent = `${action.label || "This recommendation"} used an older context version. Recalculate it from context v${ProjectIntelligenceEngine.getContextVersion()}, apply it anyway, or cancel.`;
+  if (dialog?.showModal) dialog.showModal();
+}
+
+function closeStaleRecommendationDialog() {
+  document.querySelector("#staleRecommendationDialog")?.close();
+  producerStudioState.pendingStaleAction = null;
+}
+
+function applyProducerSuggestion(suggestion, options = {}) {
+  if (!options.force && !ProjectIntelligenceEngine.isContextVersionCurrent(suggestion.contextVersion)) {
+    showStaleRecommendationDialog({
+      label: suggestion.title,
+      recalculate: () => { renderProducerStudio({ sync: false }); previewProducerPrompt(suggestion.prompt, suggestion.title); },
+      applyAnyway: () => applyProducerSuggestion(suggestion, { force: true })
+    });
+    return;
+  }
+  const previousPrompt = document.querySelector("#aiPrompt").value;
+  document.querySelector("#aiPrompt").value = suggestion.prompt;
+  generateAiPlan();
+  producerStudioState.appliedSuggestions.set(suggestion.id, { previousPrompt, contextVersion: aiPlanState.contextVersion });
+  recordProducerEvent(`Applied ${suggestion.title} to the working plan`, { domain: "AI", action: "Recommendation accepted", summary: `Accepted ${suggestion.title}`, initiatedBy: "user", before: { prompt: previousPrompt }, after: { prompt: suggestion.prompt, contextVersion: aiPlanState.contextVersion }, undo: () => { document.querySelector("#aiPrompt").value = previousPrompt; aiPlanState = null; document.querySelector("#aiPlanOutput").textContent = "Plan undone. Generate a new plan when ready."; producerStudioState.appliedSuggestions.delete(suggestion.id); renderProducerStudio({ sync: false }); } });
+  renderProducerStudio({ sync: false });
 }
 
 function setupProducerStudioEvents() {
@@ -8275,6 +8732,12 @@ function setupProducerStudioEvents() {
   document.querySelector("#producerSuggestedPrompts").addEventListener("click", (event) => {
     const button = event.target.closest("[data-producer-prompt-value]");
     if (button) document.querySelector("#aiPrompt").value = button.dataset.producerPromptValue;
+  });
+  document.querySelector("#producerContextDomains").addEventListener("change", (event) => {
+    const input = event.target.closest("[data-prompt-context-domain]");
+    if (!input) return;
+    producerStudioState.promptDomains[input.dataset.promptContextDomain] = input.checked;
+    renderPromptContextPreview();
   });
   document.querySelector(".producer-prompt-library").addEventListener("click", (event) => {
     const favorite = event.target.closest("[data-producer-favorite-index]");
@@ -8311,19 +8774,12 @@ function setupProducerStudioEvents() {
     const context = refreshProjectContext();
     const suggestion = buildProducerSuggestions(context).find((item) => item.id === card.dataset.suggestionId);
     if (!suggestion) return;
+    suggestion.contextVersion = Number(card.dataset.contextVersion);
     const action = button.dataset.suggestionAction;
     if (action === "explain") { const explanation = card.querySelector(".producer-card-explanation"); explanation.hidden = !explanation.hidden; return; }
-    if (action === "dismiss") { producerStudioState.dismissedSuggestions.add(suggestion.id); writeProducerStudioStorage(); renderProducerSuggestions(context); recordProducerEvent(`Dismissed ${suggestion.title}`); return; }
+    if (action === "dismiss") { producerStudioState.dismissedSuggestions.add(suggestion.id); writeProducerStudioStorage(); recordProducerEvent(`Rejected ${suggestion.title}`, { domain: "AI", action: "Recommendation rejected", summary: `Rejected ${suggestion.title}`, initiatedBy: "user", before: { contextVersion: suggestion.contextVersion } }); renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext()); return; }
     if (action === "preview") { previewProducerPrompt(suggestion.prompt, suggestion.title); return; }
-    if (action === "apply") {
-      const previousPrompt = document.querySelector("#aiPrompt").value;
-      document.querySelector("#aiPrompt").value = suggestion.prompt;
-      generateAiPlan();
-      producerStudioState.appliedSuggestions.set(suggestion.id, { previousPrompt });
-      recordProducerEvent(`Applied ${suggestion.title} to the working plan`, { undo: () => { document.querySelector("#aiPrompt").value = previousPrompt; aiPlanState = null; document.querySelector("#aiPlanOutput").textContent = "Plan undone. Generate a new plan when ready."; producerStudioState.appliedSuggestions.delete(suggestion.id); renderProducerStudio(); } });
-      renderProducerStudio();
-      return;
-    }
+    if (action === "apply") { applyProducerSuggestion(suggestion); return; }
     if (action === "undo") {
       const applied = producerStudioState.appliedSuggestions.get(suggestion.id);
       if (!applied) return;
@@ -8331,8 +8787,8 @@ function setupProducerStudioEvents() {
       aiPlanState = null;
       document.querySelector("#aiPlanOutput").textContent = "Suggestion removed from the working plan.";
       producerStudioState.appliedSuggestions.delete(suggestion.id);
-      recordProducerEvent(`Undid ${suggestion.title}`);
-      renderProducerStudio();
+      recordProducerEvent(`Undid ${suggestion.title}`, { domain: "AI", action: "Recommendation undone", summary: `Undid ${suggestion.title}` });
+      renderProducerStudio({ sync: false });
     }
   });
   document.querySelector("#refreshProducerSuggestions").addEventListener("click", () => {
@@ -8346,15 +8802,24 @@ function setupProducerStudioEvents() {
     if (!undo) return;
     undo(); producerStudioState.undoActions.delete(button.dataset.producerTimelineUndo); renderProducerTimeline();
   });
+  document.querySelector("#producerTimelineFilters").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-producer-timeline-filter]");
+    if (!button) return;
+    producerStudioState.timelineFilter = button.dataset.producerTimelineFilter;
+    renderProducerTimeline();
+  });
   document.querySelector("#clearProducerTimeline").addEventListener("click", () => {
-    producerStudioState.timeline = [];
     producerStudioState.undoActions.clear();
+    ProjectIntelligenceEngine.updateProjectContext("aiHistory", { decisions: [], recentSummary: null }, { type: "decision-log-cleared", summary: "Creative decision log cleared" });
     writeProducerStudioStorage();
     renderProducerTimeline();
   });
-  document.querySelector("#globalBpm").addEventListener("input", () => {
-    if (document.querySelector("#ai")?.classList.contains("is-active")) renderProducerStudio();
+  document.querySelector("#globalBpm").addEventListener("change", (event) => {
+    emitProjectContextChange("project", "project-bpm-changed", { summary: `Project BPM changed to ${event.target.value}`, decision: { domain: "Project", action: "BPM changed", summary: `Set project BPM to ${event.target.value}`, initiatedBy: "user" } });
   });
+  document.querySelector("#recalculateStaleRecommendation").addEventListener("click", () => { const action = producerStudioState.pendingStaleAction; closeStaleRecommendationDialog(); action?.recalculate?.(); });
+  document.querySelector("#applyStaleRecommendationAnyway").addEventListener("click", () => { const action = producerStudioState.pendingStaleAction; closeStaleRecommendationDialog(); action?.applyAnyway?.(); });
+  document.querySelector("#cancelStaleRecommendation").addEventListener("click", closeStaleRecommendationDialog);
 }
 
 function switchView(target) {
@@ -9393,6 +9858,7 @@ function setupEvents() {
     }
     renderAiContext();
     renderSources();
+    emitProjectContextChange("ditc", "selection-changed", { summary: `DITC selection changed to ${crateSelection.local.size + crateSelection.saved.size} track${crateSelection.local.size + crateSelection.saved.size === 1 ? "" : "s"}` });
   });
   document.querySelector("#sourceList").addEventListener("input", (event) => {
     const notes = event.target.closest("[data-crate-note-kind]");
@@ -9662,6 +10128,7 @@ function addLocalSourceFile(file, options = {}) {
     renderEditorSourceBin();
     renderAiContext();
   }
+  emitProjectContextChange("ditc", "track-imported", { summary: `Imported ${file.name} into DITC`, decision: { domain: "DITC", action: "Track imported", summary: `Imported ${file.name}`, after: { name: file.name, folderPath }, initiatedBy: "user" } });
   return true;
 }
 
@@ -9730,6 +10197,7 @@ async function analyzeSelectedCrateTracks() {
   setSourceStatus("Selected crate analysis complete.");
   renderSources();
   renderAiContext();
+  emitProjectContextChange("ditc", "tracks-analyzed", { summary: `Analyzed ${selected.length} selected crate track${selected.length === 1 ? "" : "s"}`, decision: { domain: "DITC", action: "Tracks analyzed", summary: `Analyzed ${selected.length} selected crate track${selected.length === 1 ? "" : "s"}`, after: { analyzedCount: selected.length }, initiatedBy: "user" } });
 }
 
 function analyzeAudioBuffer(buffer, name) {
@@ -9827,9 +10295,11 @@ async function handleSourceFileAction(action, id) {
     return;
   }
   if (action === "favorite") {
+    const before = item.favorite;
     item.favorite = !item.favorite;
     persistDitcTrack(item);
     renderSources();
+    emitProjectContextChange("ditc", "track-favorite-changed", { summary: `${item.favorite ? "Favorited" : "Unfavorited"} ${item.name}`, decision: { domain: "DITC", action: item.favorite ? "Track favorited" : "Track unfavorited", summary: `${item.favorite ? "Favorited" : "Unfavorited"} ${item.name}`, before: { favorite: before }, after: { favorite: item.favorite }, initiatedBy: "user" } });
     return;
   }
   if (action === "stop-preview") {
@@ -9870,6 +10340,7 @@ async function handleSourceFileAction(action, id) {
     persistDitcTrack(item);
     setSourceStatus(`Analyzed ${item.name}.`);
     renderSources();
+    emitProjectContextChange("ditc", "track-analyzed", { summary: `Analyzed ${item.name}`, decision: { domain: "DITC", action: "Track analyzed", summary: `Analyzed ${item.name}`, after: { name: item.name, bpm: item.analysis.bpm || null, key: item.analysis.key || null }, initiatedBy: "user" } });
     return;
   }
   if (action === "smartmix") {
@@ -9971,6 +10442,7 @@ function deleteLocalSourceFile(id) {
   setSourceStatus(`Removed ${removed.name} from this DITC session.`);
   renderSources();
   renderAiContext();
+  emitProjectContextChange("ditc", "track-removed", { summary: `Removed ${removed.name} from DITC`, decision: { domain: "DITC", action: "Track removed", summary: `Removed ${removed.name}`, before: { id: removed.id, name: removed.name }, initiatedBy: "user" } });
 }
 
 function deleteSavedSource(index) {
@@ -10029,6 +10501,7 @@ function addDitcTag(id, value, options = {}) {
     setSourceStatus(`Added “${tag}” to ${track.title}.`);
     renderSources();
   }
+  emitProjectContextChange("ditc", "track-tagged", { summary: `Tagged ${track.title} with ${tag}`, decision: { domain: "DITC", action: "Track tagged", summary: `Added ${tag} to ${track.title}`, after: { tag }, initiatedBy: "user" } });
   return true;
 }
 
@@ -10038,6 +10511,7 @@ function removeDitcTag(id, value) {
   track.tags = (track.tags || []).filter((tag) => tag !== value);
   persistDitcTrack(track);
   renderSources();
+  emitProjectContextChange("ditc", "track-tag-removed", { summary: `Removed ${value} from ${track.title}` });
 }
 
 async function searchAudioSections() {
@@ -10424,7 +10898,7 @@ renderPresetOptions();
 if (drums.restored) renderBeatForge(); else applyDrumPreset(drums.preset);
 renderSources();
 renderAiContext();
-if (!producerStudioState.timeline.length) recordProducerEvent("Producer Studio project context created");
+initializeProjectIntelligence();
 renderProducerStudio();
 renderEditor();
 drawWaveform("a");

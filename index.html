@@ -750,6 +750,14 @@
             </div>
           </div>
 
+          <section class="producer-section producer-welcome producer-advanced-only" aria-labelledby="producerWelcomeTitle">
+            <div class="producer-section-heading">
+              <div><p class="eyebrow">Welcome Back</p><h3 id="producerWelcomeTitle">Recent Project Context</h3></div>
+              <span id="producerWelcomeVersion" class="producer-context-note">Context v0</span>
+            </div>
+            <div id="producerWelcomeSummary" class="producer-welcome-summary">No meaningful project events have been recorded yet.</div>
+          </section>
+
           <section class="producer-section project-overview" aria-labelledby="projectOverviewTitle">
             <div class="producer-section-heading">
               <div><p class="eyebrow">Live Project State</p><h3 id="projectOverviewTitle">Project Overview</h3></div>
@@ -775,6 +783,23 @@
               <button id="saveProducerPrompt" class="secondary-button">Save Prompt</button>
               <button id="clearAiPrompt" class="secondary-button">Clear</button>
             </div>
+            <details id="producerContextUsed" class="producer-context-used">
+              <summary>Context Used <span id="producerContextVersionLabel">v0</span></summary>
+              <p class="fine-print">These temporary controls affect only the next Producer Studio prompt.</p>
+              <div id="producerContextDomains" class="producer-context-domains">
+                <label><input type="checkbox" data-prompt-context-domain="ditc" checked> DITC</label>
+                <label><input type="checkbox" data-prompt-context-domain="decks" checked> Decks</label>
+                <label><input type="checkbox" data-prompt-context-domain="smartMix" checked> Smart Mix</label>
+                <label><input type="checkbox" data-prompt-context-domain="beatForge" checked> Beat Forge</label>
+                <label><input type="checkbox" data-prompt-context-domain="harmonyLab" checked> Harmony Lab</label>
+                <label><input type="checkbox" data-prompt-context-domain="pads" checked> Pads</label>
+                <label><input type="checkbox" data-prompt-context-domain="stems" checked> Stems</label>
+                <label><input type="checkbox" data-prompt-context-domain="arrangement" checked> Arrangement</label>
+                <label><input type="checkbox" data-prompt-context-domain="mixtape" checked> Mixtape</label>
+                <label><input type="checkbox" data-prompt-context-domain="aiHistory" checked> Recent Decisions</label>
+              </div>
+              <pre id="producerContextPreview" class="producer-context-preview"></pre>
+            </details>
             <article class="ai-plan-panel producer-plan-output">
               <div class="producer-plan-heading"><span>Generated Plan</span><small>Review before applying</small></div>
               <div id="aiPlanOutput" class="ai-plan-output">No plan generated yet.</div>
@@ -795,7 +820,7 @@
             <div id="producerSuggestionGrid" class="producer-card-grid" aria-live="polite"></div>
           </section>
 
-          <section class="producer-section creative-missions" aria-labelledby="creativeMissionsTitle">
+          <section class="producer-section creative-missions producer-advanced-only" aria-labelledby="creativeMissionsTitle">
             <div class="producer-section-heading">
               <div><p class="eyebrow">One-click Starting Points</p><h3 id="creativeMissionsTitle">Creative Missions</h3></div>
               <span class="producer-context-note">Previewable and editable</span>
@@ -805,9 +830,10 @@
 
           <section class="producer-section project-timeline" aria-labelledby="projectTimelineTitle">
             <div class="producer-section-heading">
-              <div><p class="eyebrow">Creative Journal</p><h3 id="projectTimelineTitle">Project Timeline</h3></div>
-              <button id="clearProducerTimeline" class="secondary-button">Clear Journal</button>
+              <div><p class="eyebrow">Creative Journal</p><h3 id="projectTimelineTitle">Recent Activity</h3></div>
+              <button id="clearProducerTimeline" class="secondary-button producer-advanced-only">Clear Journal</button>
             </div>
+            <div id="producerTimelineFilters" class="producer-timeline-filters producer-advanced-only" aria-label="Activity filters"></div>
             <div id="producerTimeline" class="producer-timeline" aria-live="polite"></div>
           </section>
 
@@ -824,13 +850,24 @@
               <article class="producer-intelligence-card">
                 <h4>AI Reasoning</h4>
                 <p id="producerReasoning">Producer Studio is waiting for project signals.</p>
-                <h4>Future Integrations</h4>
-                <p class="fine-print">Arrangement scoring · deeper stem opportunities · connected project sources</p>
+                <p id="producerIntelligenceUpdated" class="fine-print">No context updates yet.</p>
+                <h4>Active Modules</h4>
+                <div id="producerActiveModules" class="producer-intelligence-list"></div>
+                <h4>Current Priorities</h4>
+                <div id="producerPriorities" class="producer-intelligence-list"></div>
               </article>
               <article class="ai-context-panel">
                 <h4>Detailed Context</h4>
                 <div id="aiContext" class="ai-context-list"></div>
               </article>
+            </div>
+            <div class="producer-intelligence-details">
+              <article><h4>Progress Calculation</h4><div id="producerProgressFactors" class="producer-intelligence-list"></div></article>
+              <article><h4>Identity &amp; Provenance</h4><div id="producerIdentityProvenance" class="producer-intelligence-list"></div></article>
+              <article><h4>Missing Context</h4><div id="producerMissingContext" class="producer-intelligence-list"></div></article>
+              <article><h4>Conflicts</h4><div id="producerContextConflicts" class="producer-intelligence-list"></div></article>
+              <article><h4>Current Risks</h4><div id="producerContextRisks" class="producer-intelligence-list"></div></article>
+              <article><h4>Recent Decisions</h4><div id="producerRecentDecisions" class="producer-intelligence-list"></div></article>
             </div>
             <div class="producer-legacy-tools">
               <details class="producer-tool-drawer">
@@ -857,8 +894,21 @@
                   <div id="mixtapeAnalysisOutput" class="mixtape-analysis-output">No mixtape inspiration analysis yet.</div>
                 </div>
               </details>
+              <details id="projectIntelligenceDiagnostics" class="producer-tool-drawer" hidden>
+                <summary>Project Intelligence diagnostics</summary>
+                <pre id="projectIntelligenceDiagnosticsOutput"></pre>
+              </details>
             </div>
           </section>
+          <dialog id="staleRecommendationDialog" class="stale-recommendation-dialog" aria-labelledby="staleRecommendationTitle">
+            <h3 id="staleRecommendationTitle">The project changed since this recommendation was generated.</h3>
+            <p id="staleRecommendationDetail">Recalculate it from the current project context, apply the older plan anyway, or cancel.</p>
+            <div class="ai-actions">
+              <button id="recalculateStaleRecommendation" class="primary-button">Recalculate</button>
+              <button id="applyStaleRecommendationAnyway" class="secondary-button">Apply Anyway</button>
+              <button id="cancelStaleRecommendation" class="secondary-button">Cancel</button>
+            </div>
+          </dialog>
         </section>
 
         <section id="sources" class="view" aria-labelledby="sourcesTitle">
@@ -928,6 +978,7 @@
     </div>
 
     <script src="src/audio/playback-registry.js"></script>
+    <script src="src/project-intelligence.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
