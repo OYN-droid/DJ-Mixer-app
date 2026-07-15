@@ -1336,6 +1336,9 @@ input[type="range"] {
 .producer-favorite-toggle { width: 28px; padding: 0; border: 0; background: transparent; color: var(--producer-orange); }
 
 .producer-card-grid { display: grid; grid-template-columns: repeat(3, minmax(210px, 1fr)); gap: 10px; }
+.producer-recommendation-filters { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
+.producer-recommendation-filters button { min-height: 29px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 0.65rem; }
+.producer-recommendation-filters button.is-active { border-color: rgba(167, 123, 255, 0.48); background: rgba(167, 123, 255, 0.1); color: #d2c0ff; }
 .producer-suggestion-card {
   display: grid;
   min-height: 210px;
@@ -1347,12 +1350,25 @@ input[type="range"] {
   background: linear-gradient(145deg, rgba(167, 123, 255, 0.07), transparent 45%), #10141a;
   transition: border-color 150ms ease, transform 150ms ease;
 }
+.producer-suggestion-card:focus { outline: 2px solid var(--producer-purple); outline-offset: 2px; }
+.producer-suggestion-card.priority-needs-attention { border-color: rgba(255, 138, 61, 0.42); }
+.producer-suggestion-card.is-applied { border-color: rgba(105, 224, 133, 0.42); background: linear-gradient(145deg, rgba(105, 224, 133, 0.08), transparent 45%), #10141a; }
 .producer-suggestion-card:hover { border-color: rgba(167, 123, 255, 0.38); transform: translateY(-2px); }
 .producer-card-meta { justify-content: space-between; color: var(--muted); font-size: 0.63rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; }
-.producer-card-meta strong { color: #c2a4ff; }
+.producer-card-meta strong { color: #c2a4ff; text-align: right; }
+.producer-card-meta b { color: var(--producer-purple); font-size: 0.85rem; }
 .producer-suggestion-card h4 { margin: 0; color: var(--ink); font-size: 0.96rem; text-transform: none; letter-spacing: -0.01em; }
 .producer-suggestion-card p { color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
 .producer-card-explanation { padding: 8px; border-left: 2px solid var(--producer-purple); background: rgba(167, 123, 255, 0.06); color: #c6b6e6 !important; }
+.producer-card-explanation p { color: #c6b6e6; }
+.producer-card-explanation > small { display: block; margin-top: 8px; color: var(--muted); }
+.producer-expected-impact { display: grid; gap: 2px; padding: 7px 8px; border-radius: 6px; background: rgba(53, 223, 208, 0.055); color: #b7dedb !important; }
+.producer-expected-impact span { color: var(--producer-cyan); font-size: 0.61rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; }
+.recommendation-affected { color: var(--muted); font-size: 0.64rem; }
+.recommendation-evidence { display: grid; gap: 4px; margin-top: 8px; list-style: none; }
+.recommendation-evidence li { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 0.67rem; }
+.recommendation-evidence strong { color: var(--ink-soft); text-align: right; }
+.recommendation-warning { color: #ffc199 !important; font-size: 0.68rem !important; }
 .producer-card-actions { flex-wrap: wrap; gap: 5px; }
 .producer-card-actions button {
   min-height: 29px;
@@ -1365,6 +1381,11 @@ input[type="range"] {
 }
 .producer-card-actions button:hover:not(:disabled) { border-color: rgba(255, 138, 61, 0.45); color: var(--ink); }
 .producer-card-actions button.is-primary { border-color: rgba(255, 138, 61, 0.35); background: var(--producer-orange-soft); color: #ffc199; }
+.producer-see-more { display: block; margin: 12px auto 0; }
+.producer-see-more[hidden] { display: none; }
+.recommendation-empty-state p { margin-bottom: 12px; }
+.producer-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.producer-empty-actions button { min-height: 30px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.025); color: var(--ink-soft); }
 
 .producer-mission-grid { display: grid; grid-template-columns: repeat(4, minmax(170px, 1fr)); gap: 9px; }
 .producer-mission {

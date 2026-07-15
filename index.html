@@ -817,7 +817,11 @@
               <div><p class="eyebrow">AI Leads</p><h3 id="producerSuggestionsTitle">Today’s Suggestions</h3></div>
               <button id="refreshProducerSuggestions" class="secondary-button">Refresh</button>
             </div>
+            <div id="producerRecommendationFilters" class="producer-recommendation-filters producer-advanced-only" aria-label="Recommendation filters"></div>
+            <p id="producerRecommendationStatus" class="sr-only" aria-live="polite"></p>
             <div id="producerSuggestionGrid" class="producer-card-grid" aria-live="polite"></div>
+            <button id="showMoreProducerSuggestions" class="secondary-button producer-see-more" hidden>See More Suggestions</button>
+            <button id="undoDismissedRecommendation" class="secondary-button producer-see-more" hidden>Undo Dismiss</button>
           </section>
 
           <section class="producer-section creative-missions producer-advanced-only" aria-labelledby="creativeMissionsTitle">
@@ -898,6 +902,10 @@
                 <summary>Project Intelligence diagnostics</summary>
                 <pre id="projectIntelligenceDiagnosticsOutput"></pre>
               </details>
+              <details id="recommendationEngineDiagnostics" class="producer-tool-drawer" hidden>
+                <summary>Recommendation Engine diagnostics</summary>
+                <pre id="recommendationEngineDiagnosticsOutput"></pre>
+              </details>
             </div>
           </section>
           <dialog id="staleRecommendationDialog" class="stale-recommendation-dialog" aria-labelledby="staleRecommendationTitle">
@@ -905,8 +913,22 @@
             <p id="staleRecommendationDetail">Recalculate it from the current project context, apply the older plan anyway, or cancel.</p>
             <div class="ai-actions">
               <button id="recalculateStaleRecommendation" class="primary-button">Recalculate</button>
+              <button id="recalculateAllStaleRecommendations" class="secondary-button">Recalculate All</button>
               <button id="applyStaleRecommendationAnyway" class="secondary-button">Apply Anyway</button>
               <button id="cancelStaleRecommendation" class="secondary-button">Cancel</button>
+            </div>
+          </dialog>
+          <dialog id="rejectRecommendationDialog" class="stale-recommendation-dialog" aria-labelledby="rejectRecommendationTitle">
+            <h3 id="rejectRecommendationTitle">Why isn’t this recommendation useful?</h3>
+            <p>Your answer stays with this project and prevents the same evidence from resurfacing immediately.</p>
+            <label for="rejectRecommendationReason">Reason</label>
+            <select id="rejectRecommendationReason">
+              <option>Not my style</option><option>Already handled</option><option>Too complex</option><option>Too subtle</option>
+              <option>Too aggressive</option><option>Wrong timing</option><option>Wrong track</option><option>Do not suggest this again</option><option>Other</option>
+            </select>
+            <div class="ai-actions">
+              <button id="confirmRejectRecommendation" class="primary-button">Reject Recommendation</button>
+              <button id="cancelRejectRecommendation" class="secondary-button">Cancel</button>
             </div>
           </dialog>
         </section>
@@ -979,6 +1001,7 @@
 
     <script src="src/audio/playback-registry.js"></script>
     <script src="src/project-intelligence.js"></script>
+    <script src="src/recommendation-engine.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

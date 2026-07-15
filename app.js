@@ -165,6 +165,7 @@ const mixtapeReferenceState = {
 
 const PRODUCER_STUDIO_KEY = "deckforge-producer-studio";
 const ProjectIntelligenceEngine = window.ProjectIntelligence;
+const RecommendationEngine = window.ContextualRecommendations;
 const projectContext = ProjectIntelligenceEngine.getProjectContext();
 window.DeckForgeProjectContext = projectContext;
 
@@ -183,15 +184,18 @@ const producerStudioState = {
   createdAt: new Date().toISOString(),
   history: [],
   savedPrompts: [],
-  dismissedSuggestions: new Set(),
-  appliedSuggestions: new Map(),
   undoActions: new Map(),
   timelineFilter: "all",
+  recommendationFilter: "all",
+  showAllRecommendations: false,
+  pendingRecommendationRejectionId: null,
+  lastDismissedRecommendationId: null,
   promptDomains: { ditc: true, decks: true, smartMix: true, beatForge: true, harmonyLab: true, pads: true, stems: true, arrangement: true, mixtape: true, aiHistory: true },
   pendingStaleAction: null,
   contextUnsubscribe: null
 };
 let projectIntelligenceReady = false;
+let recommendationEngineReady = false;
 
 const AudioIdentificationService = {
   providers: [],
@@ -3274,14 +3278,79 @@ function generateEditorAiSuggestions() {
   `).join("");
 }
 
-function generateAiPlan() {
+function renderRecommendationPromptResponse(prompt, recommendation, steps) {
+  aiPlanState = {
+    prompt,
+    steps,
+    tags: {},
+    contextVersion: ProjectIntelligenceEngine.getContextVersion(),
+    includedContextDomains: ["recommendations"],
+    recommendationId: recommendation?.recommendationId || null
+  };
+  renderAiPlan(aiPlanState);
+  document.querySelector("#applyAiPlan").disabled = true;
+  document.querySelector("#startAiMix").disabled = true;
+  rememberProducerPrompt(prompt);
+}
+
+async function handleRecommendationPromptCommand(prompt) {
+  if (!recommendationEngineReady || !/suggestion|recommendation|safer transition|everything except/i.test(prompt)) return false;
+  const recommendation = RecommendationEngine.resolveReference(prompt);
+  const lower = prompt.toLowerCase();
+  if (/everything except/.test(lower)) {
+    const excluded = /drum|beat/.test(lower) ? "Beat Forge" : /harmony|chord/.test(lower) ? "Harmony Lab" : /pad/.test(lower) ? "Pads" : null;
+    const candidates = RecommendationEngine.getRecommendations().filter((item) => item.applyCapability.available && item.domain !== excluded);
+    renderRecommendationPromptResponse(prompt, null, [{ title: "Review required", detail: `${candidates.length} applicable recommendation${candidates.length === 1 ? "" : "s"} remain${excluded ? ` after excluding ${excluded}` : ""}. DeckForge will not change several systems from one ambiguous command; apply each reviewed card explicitly.` }, ...candidates.map((item) => ({ title: item.title, detail: `${item.domain}: ${item.summary}` }))]);
+    return true;
+  }
+  if (!recommendation) {
+    renderRecommendationPromptResponse(prompt, null, [{ title: "Recommendation not found", detail: "Reference a visible card by number, exact title, or recommendation ID, then try again." }]);
+    return true;
+  }
+  if (/save/.test(lower)) {
+    RecommendationEngine.saveRecommendation(recommendation.recommendationId);
+    renderRecommendationPromptResponse(prompt, recommendation, [{ title: "Saved for later", detail: `${recommendation.title} remains available in the Saved for Later filter.` }]);
+    return true;
+  }
+  if (/alternative|other option/.test(lower)) {
+    const alternatives = recommendation.alternativeActions.length ? recommendation.alternativeActions.map((item) => ({ title: item.label, detail: `Alternative action for ${recommendation.title}.` })) : [{ title: "No additional executable alternative", detail: recommendation.explanation }];
+    renderRecommendationPromptResponse(prompt, recommendation, alternatives);
+    return true;
+  }
+  if (/explain|why|beginner/.test(lower)) {
+    renderRecommendationPromptResponse(prompt, recommendation, [
+      { title: recommendation.title, detail: recommendation.explanation },
+      ...recommendation.evidence.map((item) => ({ title: item.label, detail: String(item.value) })),
+      ...(recommendation.learningNote ? [{ title: "Learning note", detail: recommendation.learningNote }] : [])
+    ]);
+    return true;
+  }
+  if (/preview/.test(lower)) {
+    const result = await runContextualRecommendationAction(recommendation.recommendationId, "preview");
+    renderRecommendationPromptResponse(prompt, recommendation, [{ title: result?.success ? "Preview started" : "Preview unavailable", detail: result?.result?.message || result?.reason || "The recommendation preview could not start." }]);
+    return true;
+  }
+  if (/apply|accept|do it|use the/.test(lower)) {
+    const mode = recommendation.applyCapability.available ? "apply" : "navigate";
+    const result = await runContextualRecommendationAction(recommendation.recommendationId, mode);
+    renderRecommendationPromptResponse(prompt, recommendation, [{ title: result?.success ? "Recommendation completed" : "Action needs attention", detail: result?.result?.message || result?.message || result?.reason || "The recommendation action could not complete." }]);
+    return true;
+  }
+  renderRecommendationPromptResponse(prompt, recommendation, [{ title: recommendation.title, detail: recommendation.summary }, { title: "Primary action", detail: recommendation.suggestedAction?.label || "Guidance only" }]);
+  return true;
+}
+
+async function generateAiPlan() {
   const prompt = document.querySelector("#aiPrompt").value.trim();
   if (!prompt) return;
+  if (await handleRecommendationPromptCommand(prompt)) return;
   emitProjectContextChange("AI", "prompt-submitted", { summary: "Submitted a Producer Studio prompt", decision: { domain: "AI", action: "Prompt submitted", summary: prompt, initiatedBy: "user" } });
   const includedDomains = selectedPromptContextDomains();
   const intelligenceSummary = ProjectIntelligenceEngine.getContextSummary({ include: ["project", ...includedDomains] });
+  intelligenceSummary.recommendations = recommendationEngineReady ? RecommendationEngine.getPromptSummary() : [];
   const context = collectAiContext();
   context.projectIntelligence = intelligenceSummary;
+  context.recommendations = intelligenceSummary.recommendations;
   aiPlanState = buildLocalAiPlan(prompt, context);
   aiPlanState.contextVersion = intelligenceSummary.contextVersion;
   aiPlanState.projectContext = intelligenceSummary;
@@ -8087,9 +8156,8 @@ function readProducerStudioStorage() {
     producerStudioState.createdAt = saved.createdAt || producerStudioState.createdAt;
     producerStudioState.history = Array.isArray(saved.history) ? saved.history : [];
     producerStudioState.savedPrompts = Array.isArray(saved.savedPrompts) ? saved.savedPrompts : [];
-    producerStudioState.dismissedSuggestions = new Set(saved.dismissedSuggestions || []);
   } catch {
-    producerStudioState.dismissedSuggestions = new Set();
+    // Producer Studio stays usable with default in-memory UI state.
   }
 }
 
@@ -8109,8 +8177,7 @@ function writeProducerStudioStorage() {
       tags: producerStudioState.tags,
       createdAt: producerStudioState.createdAt,
       history: producerStudioState.history.slice(0, 20),
-      savedPrompts: producerStudioState.savedPrompts.slice(0, 20),
-      dismissedSuggestions: [...producerStudioState.dismissedSuggestions]
+      savedPrompts: producerStudioState.savedPrompts.slice(0, 20)
     }));
   } catch {
     // Producer Studio stays usable when local persistence is unavailable.
@@ -8404,7 +8471,7 @@ function buildProjectIntelligenceSnapshot() {
       recordingStatus: AudioEngine.recorder?.state === "recording" ? "Recording" : AudioEngine.mixUrl ? "Take ready" : "Not recording"
     },
     aiHistory: { ...previousHistory, recentSummary },
-    creativePreferences: { transitionPreference: tempoSafetyPreferences.transitionPreference, preferredTempoShift: tempoSafetyPreferences.preferredShift, preserveIncomingBpm: tempoSafetyPreferences.preserveIncomingBpm },
+    creativePreferences: { transitionPreference: tempoSafetyPreferences.transitionPreference, preferredTempoShift: tempoSafetyPreferences.preferredShift, warningThreshold: tempoSafetyPreferences.warningThreshold, absoluteMaximumShift: tempoSafetyPreferences.absoluteMaximumShift, preserveIncomingBpm: tempoSafetyPreferences.preserveIncomingBpm },
     systemStatus: {
       activeModules: [sourceFiles.length && "DITC", (deckState.a.buffer || deckState.b.buffer) && "Decks", autoMixState.running && "Smart Mix", assignedPads.length && "Pads", drums.source !== "Preset" && "Beat Forge", instrument.pattern.notes.length && "Harmony Lab", stemState.stems.length && "Stems", arrangement.clipCount && "Arrangement", mixtapeInspirationState && "Mixtape Analyzer"].filter(Boolean),
       missingContext,
@@ -8422,8 +8489,114 @@ function initializeProjectIntelligence() {
   projectIntelligenceReady = true;
   ProjectIntelligenceEngine.syncFromAdapter({ domain: "systemStatus", type: "context-initialized", summary: "Project context initialized", meaningful: false, force: true });
   producerStudioState.contextUnsubscribe = ProjectIntelligenceEngine.subscribeToProjectContext(() => {
+    if (recommendationEngineReady) RecommendationEngine.scheduleRefresh("Project context updated");
     if (document.querySelector("#ai")?.classList.contains("is-active")) renderProducerStudio({ sync: false });
     renderProjectIntelligenceDiagnostics();
+  });
+}
+
+function removeRecommendationArrangementClip(clipId) {
+  if (!clipId || !editorState.clips.some((clip) => clip.id === clipId)) return false;
+  editorState.clips = editorState.clips.filter((clip) => clip.id !== clipId);
+  if (editorState.selectedClipId === clipId) editorState.selectedClipId = null;
+  renderEditor();
+  emitProjectContextChange("arrangement", "recommendation-undone", { summary: "Removed a recommendation-created arrangement clip" });
+  return true;
+}
+
+async function executeContextualRecommendationAction(actionId, recommendation, options = {}) {
+  const mode = options.mode || "apply";
+  if (mode === "undo") {
+    const token = options.undoToken || {};
+    if (token.kind === "arrangement-clip") return { success: removeRecommendationArrangementClip(token.clipId), message: "Removed the recommendation-created arrangement clip." };
+    if (token.kind === "beat-edit") { undoBeatEdit(); return { success: true, message: "Restored the previous Beat Forge pattern." }; }
+    if (token.kind === "harmony-edit") { undoHarmony(); return { success: true, message: "Restored the previous Harmony Lab pattern." }; }
+    if (token.kind === "recording" && AudioEngine.recorder?.state === "recording") { toggleMixRecording(); return { success: true, message: "Stopped the recommendation-started recording." }; }
+    return { success: false, message: "No reversible before-state is available for this action." };
+  }
+  if (actionId === "open-ditc") { switchView("sources"); return { success: true, message: "Opened DITC." }; }
+  if (actionId === "open-pads") { switchView("sampler"); return { success: true, message: "Opened Pads." }; }
+  if (actionId === "open-smart-mix") { switchView("decks"); document.querySelector("#smartMixPrompt")?.focus(); return { success: true, message: "Opened Smart Mix transition planning." }; }
+  if (actionId === "open-arrangement") { switchView("editor"); return { success: true, message: "Opened Arrangement." }; }
+  if (actionId === "open-project-intelligence") { producerStudioState.mode = "advanced"; switchView("ai"); document.querySelector("#projectIntelligenceTitle")?.scrollIntoView({ block: "start" }); return { success: true, message: "Opened Project Intelligence." }; }
+  if (actionId === "open-mixtape-analysis") { producerStudioState.mode = "advanced"; switchView("ai"); document.querySelector("#mixtapeInspirationNotes")?.closest("details")?.setAttribute("open", ""); return { success: true, message: "Opened the reference mixtape blueprint." }; }
+  if (actionId === "smart-safe-transition") {
+    switchView("decks");
+    document.querySelector("#smartMixPrompt").value = "Use a short filter handoff or quick cut at original tempo in 8 bars. Keep the active deck tempo and avoid a long blend.";
+    planSmartPrompt();
+    if (!smartPromptState.plan) return { success: false, message: "Smart Mix could not build a transition plan from the current decks." };
+    if (smartPromptState.plan.requiresSaferPlan) {
+      const alternatives = generateSaferTransitionPlans(smartPromptState.plan);
+      if (!alternatives[0]) return { success: false, message: "No executable safer transition is available." };
+      if (mode === "preview") { selectSaferTransitionPlan(alternatives[0].id, false); setSmartMixStatus("Recommendation preview: safer transition plan prepared. No audio was changed."); return { success: true, message: "Prepared a safer Smart Mix plan without changing audio." }; }
+      selectSaferTransitionPlan(alternatives[0].id, false);
+      const started = await applySmartPromptPlan();
+      return { success: Boolean(started), message: started ? "Applied the safer plan through the existing Smart Mix transition controller." : "Smart Mix could not start the safer transition plan." };
+    }
+    if (mode === "preview") { setSmartMixStatus(`Recommendation preview: ${smartPromptState.plan.transitionStyleLabel}. No audio was changed.`); return { success: true, message: "Prepared a Smart Mix plan without changing audio." }; }
+    const started = await applySmartPromptPlan();
+    return { success: Boolean(started), message: started ? "Applied the recommendation through the existing Smart Mix transition controller." : "Smart Mix could not start the recommended transition." };
+  }
+  if (actionId === "beat-match") {
+    renderBeatMatch();
+    if (!drums.beatMatch) return { success: false, message: "Beat Match requires a loaded deck." };
+    if (mode === "preview") { await previewBeatMatch(); return { success: true, message: "Previewing the Beat Forge Match candidate." }; }
+    applyBeatMatch();
+    return { success: true, message: "Applied the lighter pattern through Beat Forge.", undoToken: { kind: "beat-edit" } };
+  }
+  if (actionId === "beat-to-arrangement") {
+    const beforeIds = new Set(editorState.clips.map((clip) => clip.id));
+    sendBeatToArrangement();
+    const clip = editorState.clips.find((item) => !beforeIds.has(item.id));
+    return clip ? { success: true, message: "Added the canonical Beat Forge pattern to Arrangement.", undoToken: { kind: "arrangement-clip", clipId: clip.id } } : { success: false, message: "No Beat Forge clip was added." };
+  }
+  if (actionId === "harmony-match") {
+    renderHarmonyMatch();
+    if (!instrument.matchPlan) return { success: false, message: "Harmony Match could not create a supported candidate." };
+    if (mode === "preview") { await previewHarmonyPattern(instrument.matchPlan); return { success: true, message: "Previewing the Harmony Match candidate." }; }
+    applyHarmonyPlan(instrument.matchPlan);
+    return { success: true, message: "Applied the candidate through Harmony Lab.", undoToken: { kind: "harmony-edit" } };
+  }
+  if (actionId === "harmony-to-arrangement") {
+    const beforeIds = new Set(editorState.clips.map((clip) => clip.id));
+    sendHarmonyToArrangement();
+    const clip = editorState.clips.find((item) => !beforeIds.has(item.id));
+    return clip ? { success: true, message: "Added the Harmony Lab pattern to Arrangement.", undoToken: { kind: "arrangement-clip", clipId: clip.id } } : { success: false, message: "No Harmony clip was added." };
+  }
+  if (actionId === "stop-pad-loops") { stopPadLoops(); return { success: true, message: "Stopped active pad loops without changing the bank." }; }
+  if (actionId === "preview-pad") {
+    const padNumber = Number(recommendation.relatedPadIds?.[0]);
+    if (!padNumber || !sampler.buffers[padNumber - 1]) return { success: false, message: "The recommended pad is no longer playable." };
+    await AudioEngine.init(); triggerPad(padNumber - 1); return { success: true, message: `Previewing Pad ${padNumber}. Global Stop remains available.` };
+  }
+  if (actionId === "preview-stem") {
+    const name = recommendation.evidence.find((item) => item.label === "Suggested preview")?.value;
+    const stem = stemState.stems.find((item) => item.name === name);
+    if (!stem) return { success: false, message: "The recommended stem is no longer available." };
+    await handleStemAction("preview", stem.id); return { success: true, message: `Previewing the ${stem.name} stem. Global Stop remains available.` };
+  }
+  if (actionId === "start-mix-recording") {
+    await AudioEngine.init();
+    if (AudioEngine.recorder?.state === "recording") return { success: false, message: "A mix recording is already active." };
+    toggleMixRecording();
+    return { success: AudioEngine.recorder?.state === "recording", message: "Started a test mix recording.", undoToken: { kind: "recording" } };
+  }
+  if (actionId === "download-mix") {
+    const button = document.querySelector("#downloadMix");
+    if (!AudioEngine.mixUrl || button?.disabled) return { success: false, message: "No completed mix recording is available." };
+    button.click(); return { success: true, message: "Downloaded the completed test mix." };
+  }
+  return { success: false, message: `Unsupported recommendation action: ${actionId}` };
+}
+
+function initializeRecommendationEngine() {
+  RecommendationEngine.configure({ projectId: producerStudioState.projectId, getContext: () => ProjectIntelligenceEngine.getProjectContext(), executeAction: executeContextualRecommendationAction });
+  recommendationEngineReady = true;
+  RecommendationEngine.subscribe((recommendations, meta) => {
+    if (document.querySelector("#ai")?.classList.contains("is-active")) renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext(), recommendations);
+    renderRecommendationDiagnostics();
+    const status = document.querySelector("#producerRecommendationStatus");
+    if (status && meta?.type !== "refreshed") status.textContent = `Recommendation ${meta?.type?.replace(/-/g, " ") || "updated"}.`;
   });
 }
 
@@ -8473,51 +8646,75 @@ function renderProjectOverview(context) {
     </article>`).join("");
 }
 
-function evidenceConfidence(values) {
-  const available = values.filter(Boolean).length;
-  return values.length ? Math.round(available / values.length * 100) : 0;
+const RECOMMENDATION_FILTERS = ["All", "Needs Attention", "Next Steps", "Creative Ideas", "DITC", "Decks", "Smart Mix", "Pads", "Beat Forge", "Harmony Lab", "Stems", "Arrangement", "Beginner Friendly", "Advanced", "High Confidence", "Saved for Later"];
+
+function recommendationMatchesFilter(item, filter) {
+  if (filter === "all") return true;
+  if (filter === "needs attention") return item.priority === "Needs Attention";
+  if (filter === "next steps") return item.priority === "Recommended Next";
+  if (filter === "creative ideas") return ["Creative Opportunity", "Optional Experiment"].includes(item.priority);
+  if (filter === "beginner friendly") return item.beginnerFriendly;
+  if (filter === "advanced") return !item.beginnerFriendly || item.difficulty === "Advanced";
+  if (filter === "high confidence") return item.confidenceLabel === "High Confidence";
+  if (filter === "saved for later") return item.savedForLater;
+  if (filter === "stems") return item.domain === "Stem Lab";
+  return item.domain.toLowerCase() === filter;
 }
 
-function buildProducerSuggestions(context) {
-  const loadedDecks = context.decks.filter((deck) => deck.loadedTrack);
-  const emptyPads = 16 - (context.pads.assignedPadCount || 0);
-  const analyzedTracks = [...loadedDecks.filter((deck) => deck.bpm || deck.key), ...sourceFiles.filter((track) => track.analysis)];
-  const suggestions = [];
-  if (context.arrangement.clipCount && context.arrangement.introStatus === "Not planned") suggestions.push({ id: "intro", type: "Arrangement", title: "Intro Is Missing", confidence: 100, prompt: "Plan an intro using the current arrangement, loaded tracks, and project identity.", detail: `The arrangement contains ${context.arrangement.clipCount} clips but no clip is identified as an intro.` });
-  if (context.arrangement.clipCount && context.arrangement.outroStatus === "Not planned") suggestions.push({ id: "outro", type: "Arrangement", title: "Finish the Outro", confidence: 100, prompt: "Create an outro plan for the current arrangement without replacing existing clips.", detail: `The ${formatTime(context.arrangement.timelineLength)} arrangement has no clip identified as an outro.` });
-  if (loadedDecks.length === 2) {
-    const [a, b] = loadedDecks;
-    const confidence = evidenceConfidence([a.bpm, b.bpm, a.key, b.key]);
-    suggestions.push({ id: "transition", type: "Smart Mix", title: "Transition Opportunity", confidence, prompt: "Plan the safest editable transition between the two loaded decks.", detail: `Deck A has ${a.bpm ? `${a.bpm} BPM` : "no BPM analysis"}; Deck B has ${b.bpm ? `${b.bpm} BPM` : "no BPM analysis"}.` });
-  }
-  if (emptyPads > 0 && context.ditc.playableTracks > 0) suggestions.push({ id: "pad", type: "Pads", title: "Prepare Open Pad Slots", confidence: evidenceConfidence([context.pads.activeBank, context.pads.activeScene, context.ditc.playableTracks]), prompt: "Build a project-aware pad plan from the currently playable DITC tracks.", detail: `${emptyPads} slots are open in Bank ${context.pads.activeBank}; ${context.ditc.playableTracks} playable DITC track${context.ditc.playableTracks === 1 ? " is" : "s are"} available.` });
-  if (context.beatForge.activePattern) suggestions.push({ id: "groove", type: "Beat Forge", title: "Develop the Active Groove", confidence: evidenceConfidence([context.beatForge.activePattern, context.beatForge.activeGroove, context.beatForge.bpm]), prompt: `Create a non-destructive variation of ${context.beatForge.activePattern.name} using its current groove and locks.`, detail: `${context.beatForge.activePattern.name} uses ${context.beatForge.activeGroove || "no named groove"} at ${context.beatForge.bpm || "an unset BPM"}.` });
-  if (!context.harmonyLab.melody && (context.beatForge.activePattern || loadedDecks.some((deck) => deck.key))) suggestions.push({ id: "harmony", type: "Harmony Lab", title: "Harmony Space Available", confidence: evidenceConfidence([context.project.key, context.beatForge.activePattern, loadedDecks.length]), prompt: "Generate a Harmony Lab idea from the current key, decks, and Beat Forge material.", detail: `No Harmony Lab material exists${context.project.key ? `; the current key evidence is ${context.project.key}` : " and the project key is not analyzed"}.` });
-  if (!context.stems.availableStemTypes.length && loadedDecks.length) suggestions.push({ id: "stem", type: "Stem Lab", title: "Stem Opportunity", confidence: evidenceConfidence([loadedDecks[0]?.loadedTrack, loadedDecks[0]?.analysis, context.project.bpm]), prompt: "Evaluate the loaded deck for a stem-based transition or bridge.", detail: `${loadedDecks[0].loadedTrack.name} is loaded and no separated stems currently exist.` });
-  if (analyzedTracks.length >= 2) suggestions.push({ id: "ditc", type: "DITC", title: "Review Track Roles", confidence: Math.min(100, Math.round(analyzedTracks.length / Math.max(2, context.ditc.totalTracks) * 100)), prompt: "Review analyzed DITC and deck tracks for intro, transition, and closing roles.", detail: `${analyzedTracks.length} of ${context.ditc.totalTracks + loadedDecks.length} available track references have analysis evidence.` });
-  suggestions.forEach((suggestion) => { suggestion.contextVersion = context.contextVersion; });
-  return suggestions.filter((item) => !producerStudioState.dismissedSuggestions.has(item.id));
+function renderRecommendationFilters() {
+  const container = document.querySelector("#producerRecommendationFilters");
+  if (!container) return;
+  container.innerHTML = RECOMMENDATION_FILTERS.map((filter) => `<button data-recommendation-filter="${filter.toLowerCase()}" class="${producerStudioState.recommendationFilter === filter.toLowerCase() ? "is-active" : ""}">${filter}</button>`).join("");
 }
 
-function renderProducerSuggestions(context) {
+function recommendationEmptyState(context) {
+  const projectEmpty = !context.ditc.totalTracks && !context.decks.some((deck) => deck.loadedTrack) && !context.arrangement.clipCount && !context.beatForge.activePattern && !context.harmonyLab.melody && !context.pads.assignedPadCount;
+  const message = projectEmpty ? "Add tracks or begin a project to receive contextual suggestions." : "No current recommendations match this view. New evidence or a manual refresh may produce more.";
+  return `<div class="producer-empty-state recommendation-empty-state"><p>${message}</p><div class="producer-empty-actions"><button data-recommendation-empty-action="sources">Import Tracks</button><button data-recommendation-empty-action="decks">Load a Deck</button><button data-recommendation-empty-action="drums">Generate a Beat</button><button data-recommendation-empty-action="keys">Open Harmony Lab</button><button data-recommendation-empty-action="sampler">Create a Pad Bank</button><button data-recommendation-empty-action="editor">Start an Arrangement</button></div></div>`;
+}
+
+function renderProducerSuggestions(context, suppliedRecommendations = null) {
   const grid = document.querySelector("#producerSuggestionGrid");
   if (!grid) return;
-  const suggestions = buildProducerSuggestions(context);
-  grid.innerHTML = suggestions.length ? suggestions.map((item) => {
-    const applied = producerStudioState.appliedSuggestions.has(item.id);
-    return `<article class="producer-suggestion-card" data-suggestion-id="${item.id}" data-context-version="${item.contextVersion}">
-      <div class="producer-card-meta"><span>${escapeHtml(item.type)}</span><strong>${item.confidence}%</strong></div>
-      <h4>${escapeHtml(item.title)}</h4><p>${escapeHtml(item.detail)}</p>
-      <p class="producer-card-explanation" hidden>Why: this recommendation uses the current shared project context and remains a reversible working plan.</p>
+  renderRecommendationFilters();
+  const all = suppliedRecommendations || (recommendationEngineReady ? RecommendationEngine.getRecommendations() : []);
+  const filtered = all.filter((item) => recommendationMatchesFilter(item, producerStudioState.recommendationFilter));
+  let visible = filtered;
+  if (producerStudioState.mode === "simple" && !producerStudioState.showAllRecommendations) {
+    visible = [...filtered.filter((item) => item.priority !== "Optional Experiment").slice(0, 3), ...filtered.filter((item) => item.priority === "Optional Experiment").slice(0, 2)];
+  }
+  const seeMore = document.querySelector("#showMoreProducerSuggestions");
+  if (seeMore) {
+    seeMore.hidden = producerStudioState.mode !== "simple" || producerStudioState.showAllRecommendations || visible.length >= filtered.length;
+    seeMore.textContent = `See More Suggestions (${filtered.length - visible.length})`;
+  }
+  grid.innerHTML = visible.length ? visible.map((item, index) => {
+    const applied = item.status === "Applied";
+    const evidence = item.evidence.map((entry) => `<li><span>${escapeHtml(entry.label)}</span><strong>${escapeHtml(entry.value)}</strong></li>`).join("");
+    const advanced = Object.entries(item.advancedDetails || {}).map(([key, value]) => `<li><span>${escapeHtml(key.replace(/([A-Z])/g, " $1"))}</span><strong>${escapeHtml(value)}</strong></li>`).join("");
+    const alternatives = item.alternativeActions.map((action) => `<li><span>Alternative</span><strong>${escapeHtml(action.label)}</strong></li>`).join("");
+    const primary = item.applyCapability.available
+      ? `<button data-suggestion-action="apply" class="is-primary">${escapeHtml(applied ? "Applied" : item.applyCapability.label || "Apply")}</button>`
+      : item.suggestedAction ? `<button data-suggestion-action="navigate" class="is-primary">${escapeHtml(item.suggestedAction.label)}</button>` : "";
+    return `<article class="producer-suggestion-card priority-${item.priority.toLowerCase().replace(/\s+/g, "-")}${applied ? " is-applied" : ""}" data-suggestion-id="${escapeHtml(item.recommendationId)}" data-context-version="${item.contextVersion}" tabindex="0" aria-labelledby="recommendation-title-${index}">
+      <div class="producer-card-meta"><span><b aria-hidden="true">${item.domainIcon}</b> ${escapeHtml(item.domain)} · ${escapeHtml(item.priority)}</span><strong>${escapeHtml(item.confidenceLabel)}</strong></div>
+      <h4 id="recommendation-title-${index}">${escapeHtml(item.title)}</h4><p>${escapeHtml(item.summary)}</p>
+      <p class="producer-expected-impact"><span>Expected effect</span>${escapeHtml(item.expectedImpact)}</p>
+      ${item.applyCapability.available ? `<small class="recommendation-affected">Affects: ${escapeHtml((item.suggestedAction?.affectedDomains || [item.domain]).join(", "))}</small>` : ""}
+      <div class="producer-card-explanation" hidden><p><strong>Why it matters:</strong> ${escapeHtml(item.explanation)}</p><ul class="recommendation-evidence">${evidence}${alternatives}</ul>${item.learningNote ? `<p><strong>Learning note:</strong> ${escapeHtml(item.learningNote)}</p>` : ""}${advanced ? `<ul class="recommendation-evidence producer-advanced-only">${advanced}</ul>` : ""}${!item.previewCapability.available ? `<p><strong>Preview unavailable:</strong> ${escapeHtml(item.previewCapability.reason)}</p>` : ""}<small>Context v${item.contextVersion} · ${escapeHtml(item.confidenceBasis)}</small></div>
+      ${item.warnings.length ? `<p class="recommendation-warning">${escapeHtml(item.warnings.join(" "))}</p>` : ""}
       <div class="producer-card-actions">
-        <button data-suggestion-action="preview">Preview</button>
-        <button data-suggestion-action="apply" class="is-primary">${applied ? "Applied" : "Apply"}</button>
+        ${item.previewCapability.available ? `<button data-suggestion-action="preview">${escapeHtml(item.previewCapability.label || "Preview")}</button>` : ""}
+        ${primary}
         <button data-suggestion-action="explain">Explain</button>
+        ${item.alternativeActions.length ? `<button data-suggestion-action="alternatives">Other Options</button>` : ""}
+        <button data-suggestion-action="save">${item.savedForLater ? "Saved" : "Save for Later"}</button>
+        <button data-suggestion-action="reject">Reject</button>
         <button data-suggestion-action="dismiss">Dismiss</button>
-        <button data-suggestion-action="undo" ${applied ? "" : "disabled"}>Undo</button>
+        ${applied && item.undoCapability.available ? `<button data-suggestion-action="undo">${escapeHtml(item.undoCapability.label || "Undo")}</button>` : ""}
       </div>
     </article>`;
-  }).join("") : `<div class="producer-empty-state">All suggestions are cleared for today. Refresh to bring them back.</div>`;
+  }).join("") : recommendationEmptyState(context);
 }
 
 const PRODUCER_MISSIONS = [
@@ -8635,6 +8832,7 @@ function renderPromptContextPreview() {
   const preview = document.querySelector("#producerContextPreview");
   if (!preview) return;
   const summary = ProjectIntelligenceEngine.getContextSummary({ include: ["project", ...selectedPromptContextDomains()] });
+  summary.recommendations = recommendationEngineReady ? RecommendationEngine.getPromptSummary() : [];
   preview.textContent = JSON.stringify(summary, null, 2);
   document.querySelector("#producerContextVersionLabel").textContent = `v${summary.contextVersion}`;
 }
@@ -8661,6 +8859,13 @@ function renderProjectIntelligenceDiagnostics() {
   if (output && DECKFORGE_DEVELOPMENT) output.textContent = JSON.stringify(ProjectIntelligenceEngine.getDiagnostics(), null, 2);
 }
 
+function renderRecommendationDiagnostics() {
+  const details = document.querySelector("#recommendationEngineDiagnostics");
+  if (details) details.hidden = !DECKFORGE_DEVELOPMENT;
+  const output = document.querySelector("#recommendationEngineDiagnosticsOutput");
+  if (output && DECKFORGE_DEVELOPMENT && recommendationEngineReady) output.textContent = JSON.stringify(RecommendationEngine.getDiagnostics(), null, 2);
+}
+
 function renderProducerStudio(options = {}) {
   const context = refreshProjectContext(options);
   const studio = document.querySelector("#ai");
@@ -8680,6 +8885,7 @@ function renderProducerStudio(options = {}) {
   renderProducerWelcome(context);
   renderPromptContextPreview();
   renderProjectIntelligenceDiagnostics();
+  renderRecommendationDiagnostics();
   renderAiContext();
   const sync = document.querySelector("#producerSyncStatus");
   if (sync) sync.textContent = context.timestamps.lastMeaningfulUpdate ? `Project context updated · v${context.contextVersion} · ${new Date(context.timestamps.lastMeaningfulUpdate).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : `Context v${context.contextVersion} · No meaningful updates yet`;
@@ -8697,7 +8903,9 @@ function showStaleRecommendationDialog(action) {
   producerStudioState.pendingStaleAction = action;
   const dialog = document.querySelector("#staleRecommendationDialog");
   const detail = document.querySelector("#staleRecommendationDetail");
-  if (detail) detail.textContent = `${action.label || "This recommendation"} used an older context version. Recalculate it from context v${ProjectIntelligenceEngine.getContextVersion()}, apply it anyway, or cancel.`;
+  if (detail) detail.textContent = `This recommendation was created before the project changed. Refresh it from context v${ProjectIntelligenceEngine.getContextVersion()}, recalculate all suggestions, ${action.forceLabel || "apply it anyway"}, or cancel.`;
+  const forceButton = document.querySelector("#applyStaleRecommendationAnyway");
+  if (forceButton) forceButton.textContent = action.forceButtonLabel || "Apply Anyway";
   if (dialog?.showModal) dialog.showModal();
 }
 
@@ -8706,21 +8914,39 @@ function closeStaleRecommendationDialog() {
   producerStudioState.pendingStaleAction = null;
 }
 
-function applyProducerSuggestion(suggestion, options = {}) {
-  if (!options.force && !ProjectIntelligenceEngine.isContextVersionCurrent(suggestion.contextVersion)) {
+async function runContextualRecommendationAction(recommendationId, mode, options = {}) {
+  const recommendation = RecommendationEngine.getRecommendation(recommendationId);
+  if (!recommendation) return { success: false, reason: "The recommendation is no longer available." };
+  let result;
+  if (mode === "navigate") {
+    const validation = RecommendationEngine.validateRecommendation(recommendation, ProjectIntelligenceEngine.getProjectContext(), { allowStale: options.force });
+    if (!validation.valid) result = { success: false, ...validation, recommendation };
+    else result = await executeContextualRecommendationAction(recommendation.suggestedAction.actionId, recommendation, { mode: "navigate", force: options.force });
+  } else if (mode === "preview") result = await RecommendationEngine.previewRecommendation(recommendationId, { force: options.force });
+  else if (mode === "apply") result = await RecommendationEngine.applyRecommendation(recommendationId, { force: options.force });
+  else if (mode === "undo") result = await RecommendationEngine.undoRecommendation(recommendationId);
+  if (result?.stale) {
     showStaleRecommendationDialog({
-      label: suggestion.title,
-      recalculate: () => { renderProducerStudio({ sync: false }); previewProducerPrompt(suggestion.prompt, suggestion.title); },
-      applyAnyway: () => applyProducerSuggestion(suggestion, { force: true })
+      label: recommendation.title,
+      forceLabel: mode === "preview" ? "preview it anyway" : mode === "navigate" ? "open it anyway" : "apply it anyway",
+      forceButtonLabel: mode === "preview" ? "Preview Anyway" : mode === "navigate" ? "Open Anyway" : "Apply Anyway",
+      recalculate: () => { RecommendationEngine.refreshRecommendations({ reason: `Refreshed stale recommendation: ${recommendation.title}` }); renderProducerStudio({ sync: false }); },
+      applyAnyway: () => runContextualRecommendationAction(recommendationId, mode, { force: true })
     });
-    return;
+    return result;
   }
-  const previousPrompt = document.querySelector("#aiPrompt").value;
-  document.querySelector("#aiPrompt").value = suggestion.prompt;
-  generateAiPlan();
-  producerStudioState.appliedSuggestions.set(suggestion.id, { previousPrompt, contextVersion: aiPlanState.contextVersion });
-  recordProducerEvent(`Applied ${suggestion.title} to the working plan`, { domain: "AI", action: "Recommendation accepted", summary: `Accepted ${suggestion.title}`, initiatedBy: "user", before: { prompt: previousPrompt }, after: { prompt: suggestion.prompt, contextVersion: aiPlanState.contextVersion }, undo: () => { document.querySelector("#aiPrompt").value = previousPrompt; aiPlanState = null; document.querySelector("#aiPlanOutput").textContent = "Plan undone. Generate a new plan when ready."; producerStudioState.appliedSuggestions.delete(suggestion.id); renderProducerStudio({ sync: false }); } });
-  renderProducerStudio({ sync: false });
+  if (!result?.success) {
+    const status = document.querySelector("#producerRecommendationStatus");
+    if (status) status.textContent = result?.reason || result?.message || "Recommendation action failed.";
+    renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext());
+    return result;
+  }
+  if (mode === "apply") recordProducerEvent(`Applied ${recommendation.title}`, { domain: recommendation.domain, action: "Recommendation applied", summary: `Applied ${recommendation.title}`, initiatedBy: "user", before: { contextVersion: recommendation.contextVersion }, after: { affectedDomains: recommendation.suggestedAction?.affectedDomains || [] } });
+  if (mode === "undo") recordProducerEvent(`Undid ${recommendation.title}`, { domain: recommendation.domain, action: "Recommendation undone", summary: `Undid ${recommendation.title}`, initiatedBy: "user" });
+  renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext());
+  const card = document.querySelector(`[data-suggestion-id="${CSS.escape(recommendationId)}"]`);
+  card?.focus();
+  return result;
 }
 
 function setupProducerStudioEvents() {
@@ -8771,30 +8997,46 @@ function setupProducerStudioEvents() {
     const button = event.target.closest("[data-suggestion-action]");
     const card = event.target.closest("[data-suggestion-id]");
     if (!button || !card) return;
-    const context = refreshProjectContext();
-    const suggestion = buildProducerSuggestions(context).find((item) => item.id === card.dataset.suggestionId);
-    if (!suggestion) return;
-    suggestion.contextVersion = Number(card.dataset.contextVersion);
     const action = button.dataset.suggestionAction;
-    if (action === "explain") { const explanation = card.querySelector(".producer-card-explanation"); explanation.hidden = !explanation.hidden; return; }
-    if (action === "dismiss") { producerStudioState.dismissedSuggestions.add(suggestion.id); writeProducerStudioStorage(); recordProducerEvent(`Rejected ${suggestion.title}`, { domain: "AI", action: "Recommendation rejected", summary: `Rejected ${suggestion.title}`, initiatedBy: "user", before: { contextVersion: suggestion.contextVersion } }); renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext()); return; }
-    if (action === "preview") { previewProducerPrompt(suggestion.prompt, suggestion.title); return; }
-    if (action === "apply") { applyProducerSuggestion(suggestion); return; }
-    if (action === "undo") {
-      const applied = producerStudioState.appliedSuggestions.get(suggestion.id);
-      if (!applied) return;
-      document.querySelector("#aiPrompt").value = applied.previousPrompt;
-      aiPlanState = null;
-      document.querySelector("#aiPlanOutput").textContent = "Suggestion removed from the working plan.";
-      producerStudioState.appliedSuggestions.delete(suggestion.id);
-      recordProducerEvent(`Undid ${suggestion.title}`, { domain: "AI", action: "Recommendation undone", summary: `Undid ${suggestion.title}` });
-      renderProducerStudio({ sync: false });
+    if (action === "explain" || action === "alternatives") { const explanation = card.querySelector(".producer-card-explanation"); explanation.hidden = !explanation.hidden; return; }
+    if (action === "preview" || action === "apply" || action === "navigate" || action === "undo") { runContextualRecommendationAction(card.dataset.suggestionId, action); return; }
+    if (action === "save") { RecommendationEngine.saveRecommendation(card.dataset.suggestionId); renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext()); return; }
+    if (action === "reject") { producerStudioState.pendingRecommendationRejectionId = card.dataset.suggestionId; document.querySelector("#rejectRecommendationDialog")?.showModal(); return; }
+    if (action === "dismiss") {
+      const recommendation = RecommendationEngine.getRecommendation(card.dataset.suggestionId);
+      if (!recommendation) return;
+      RecommendationEngine.dismissRecommendation(recommendation.recommendationId);
+      producerStudioState.lastDismissedRecommendationId = recommendation.recommendationId;
+      const undo = document.querySelector("#undoDismissedRecommendation");
+      if (undo) { undo.hidden = false; undo.textContent = `Undo Dismiss: ${recommendation.title}`; }
+      recordProducerEvent(`Dismissed ${recommendation.title}`, { domain: recommendation.domain, action: "Recommendation dismissed", summary: `Dismissed ${recommendation.title}`, initiatedBy: "user" });
+      renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext());
     }
   });
   document.querySelector("#refreshProducerSuggestions").addEventListener("click", () => {
-    producerStudioState.dismissedSuggestions.clear();
-    writeProducerStudioStorage();
-    renderProducerStudio();
+    producerStudioState.showAllRecommendations = false;
+    RecommendationEngine.refreshRecommendations({ reason: "User requested refresh" });
+    renderProducerStudio({ sync: false });
+  });
+  document.querySelector("#producerRecommendationFilters").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-recommendation-filter]");
+    if (!button) return;
+    producerStudioState.recommendationFilter = button.dataset.recommendationFilter;
+    producerStudioState.showAllRecommendations = false;
+    renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext());
+  });
+  document.querySelector("#showMoreProducerSuggestions").addEventListener("click", () => { producerStudioState.showAllRecommendations = true; renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext()); });
+  document.querySelector("#undoDismissedRecommendation").addEventListener("click", () => {
+    const id = producerStudioState.lastDismissedRecommendationId;
+    if (id && RecommendationEngine.restoreRecommendation(id)) {
+      producerStudioState.lastDismissedRecommendationId = null;
+      document.querySelector("#undoDismissedRecommendation").hidden = true;
+      renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext());
+    }
+  });
+  document.querySelector("#producerSuggestionGrid").addEventListener("click", (event) => {
+    const action = event.target.closest("[data-recommendation-empty-action]")?.dataset.recommendationEmptyAction;
+    if (action) switchView(action);
   });
   document.querySelector("#producerTimeline").addEventListener("click", (event) => {
     const button = event.target.closest("[data-producer-timeline-undo]");
@@ -8818,8 +9060,19 @@ function setupProducerStudioEvents() {
     emitProjectContextChange("project", "project-bpm-changed", { summary: `Project BPM changed to ${event.target.value}`, decision: { domain: "Project", action: "BPM changed", summary: `Set project BPM to ${event.target.value}`, initiatedBy: "user" } });
   });
   document.querySelector("#recalculateStaleRecommendation").addEventListener("click", () => { const action = producerStudioState.pendingStaleAction; closeStaleRecommendationDialog(); action?.recalculate?.(); });
+  document.querySelector("#recalculateAllStaleRecommendations").addEventListener("click", () => { closeStaleRecommendationDialog(); RecommendationEngine.refreshRecommendations({ reason: "Recalculated all stale recommendations" }); renderProducerStudio({ sync: false }); });
   document.querySelector("#applyStaleRecommendationAnyway").addEventListener("click", () => { const action = producerStudioState.pendingStaleAction; closeStaleRecommendationDialog(); action?.applyAnyway?.(); });
   document.querySelector("#cancelStaleRecommendation").addEventListener("click", closeStaleRecommendationDialog);
+  document.querySelector("#confirmRejectRecommendation").addEventListener("click", () => {
+    const id = producerStudioState.pendingRecommendationRejectionId;
+    const recommendation = id && RecommendationEngine.getRecommendation(id);
+    const reason = document.querySelector("#rejectRecommendationReason").value;
+    if (recommendation && RecommendationEngine.rejectRecommendation(id, reason)) recordProducerEvent(`Rejected ${recommendation.title}`, { domain: recommendation.domain, action: "Recommendation rejected", summary: `Rejected ${recommendation.title}: ${reason}`, initiatedBy: "user", before: { contextVersion: recommendation.contextVersion }, after: { reason, evidenceFingerprint: recommendation.fingerprint } });
+    producerStudioState.pendingRecommendationRejectionId = null;
+    document.querySelector("#rejectRecommendationDialog")?.close();
+    renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext());
+  });
+  document.querySelector("#cancelRejectRecommendation").addEventListener("click", () => { producerStudioState.pendingRecommendationRejectionId = null; document.querySelector("#rejectRecommendationDialog")?.close(); });
 }
 
 function switchView(target) {
@@ -10899,6 +11152,7 @@ if (drums.restored) renderBeatForge(); else applyDrumPreset(drums.preset);
 renderSources();
 renderAiContext();
 initializeProjectIntelligence();
+initializeRecommendationEngine();
 renderProducerStudio();
 renderEditor();
 drawWaveform("a");
