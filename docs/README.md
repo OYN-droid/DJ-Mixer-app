@@ -1,8 +1,35 @@
 # DeckForge documentation
 
-This directory is the DeckForge v2 recovery and design baseline. It records observed code behavior. Browser audio behavior remains subject to manual testing.
+This directory contains the DeckForge Design Bible and the recovery and implementation records for DeckForge v2. The Design Bible defines intended product behavior. Recovery records document observed implementation and manual verification, so they should not be read as promises that every designed capability is already available.
 
-## Documents
+## DeckForge Design Bible
+
+1. [Vision](<00 Vision.md>)
+2. [Product Philosophy](<01 Product Philosophy.md>)
+3. [Core Principles](<02 Core Principles.md>)
+4. [User Experience](<03 User Experience.md>)
+5. [Information Architecture](<04 Information Architecture.md>)
+6. [Design System](<05 Design System.md>)
+7. [Navigation](<06 Navigation.md>)
+8. [DJ Workflow](<07 DJ Workflow.md>)
+9. [Producer Workflow](<08 Producer Workflow.md>)
+10. [AI Philosophy](<09 AI Philosophy.md>)
+11. [Project Intelligence](<10 Project Intelligence.md>)
+12. [Smart Mix](<11 Smart Mix.md>)
+13. [DITC](<12 DITC.md>)
+14. [Beat Forge](<13 Beat Forge.md>)
+15. [Harmony Lab](<14 Harmony Lab.md>)
+16. [Pads](<15 Pads.md>)
+17. [Stem Lab](<16 Stem Lab.md>)
+18. [Producer Studio](<17 Producer Studio.md>)
+19. [Mixtape Intelligence](<18 Mixtape Intelligence.md>)
+20. [Connected Sources](<19 Connected Sources.md>)
+21. [Audio Architecture](<20 Audio Architecture.md>)
+22. [Coding Standards](<21 Coding Standards.md>)
+23. [Git Workflow](<22 Git Workflow.md>)
+24. [Roadmap](<23 Roadmap.md>)
+
+## Recovery and implementation records
 
 1. [Current state audit](00-current-state-audit.md)
 2. [Feature inventory](01-feature-inventory.md)
@@ -32,6 +59,7 @@ This directory is the DeckForge v2 recovery and design baseline. It records obse
 26. [Pads regression checklist](25-pads-regression-checklist.md)
 27. [Working Beat Forge baseline](26-working-beat-forge-baseline.md)
 28. [Beat Forge regression checklist](27-beat-forge-regression-checklist.md)
+29. [Producer Studio regression checklist](28-producer-studio-regression-checklist.md)
 
 ## Recovery snapshot
 

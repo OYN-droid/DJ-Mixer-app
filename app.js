@@ -162,6 +162,38 @@ const mixtapeReferenceState = {
   artworkAnalysis: null
 };
 
+const PRODUCER_STUDIO_KEY = "deckforge-producer-studio";
+const projectContext = {
+  version: 1,
+  updatedAt: null,
+  project: {},
+  decks: [],
+  ditc: {},
+  smartMix: {},
+  beatForge: {},
+  harmonyLab: {},
+  pads: {},
+  stemLab: {},
+  arrangement: {},
+  mixtapeAnalyzer: {},
+  tags: []
+};
+window.DeckForgeProjectContext = projectContext;
+
+const producerStudioState = {
+  mode: "simple",
+  projectName: "DeckForge Session",
+  genre: "Open Format",
+  subgenre: "Live Remix",
+  tags: ["DJ set", "in progress"],
+  history: [],
+  savedPrompts: [],
+  timeline: [],
+  dismissedSuggestions: new Set(),
+  appliedSuggestions: new Map(),
+  undoActions: new Map()
+};
+
 const AudioIdentificationService = {
   providers: [],
 
@@ -1038,16 +1070,37 @@ const instrument = {
   preset: "rapKeys",
   machine: "polyAnalog",
   bassMode: false,
+  workspaceMode: "simple",
+  key: "C",
+  scale: "minor",
+  chordMode: "minor7",
+  sustain: false,
+  pitchBend: 0,
+  modulation: 0,
+  velocity: 0.82,
+  recording: false,
+  patternPlaying: false,
+  patternPaused: false,
+  patternLoop: true,
+  patternTimer: null,
+  patternStartedAt: 0,
+  patternPlayhead: 0,
+  pattern: { id: "harmony-a1", name: "Harmony A1", bars: 4, stepsPerBar: 16, notes: [], version: 1, source: "Manual", type: "chords" },
+  selectedNoteId: null,
+  patterns: [],
+  undoStack: [],
+  promptHistory: [],
+  pendingPlan: null,
+  favorites: [],
+  instrumentCategory: "All",
+  selectedInstrumentIndex: 0,
+  arpeggiator: { enabled: false, rate: "1/8", direction: "up", octaves: 1 },
+  lastError: "None",
+  midiEnabled: false,
+  midiInputs: [],
   activeVoices: [],
   keyboard: [
-    { label: "C", key: "A", offset: 0 },
-    { label: "D", key: "S", offset: 2 },
-    { label: "Eb", key: "D", offset: 3, black: true },
-    { label: "F", key: "F", offset: 5 },
-    { label: "G", key: "G", offset: 7 },
-    { label: "Ab", key: "H", offset: 8, black: true },
-    { label: "Bb", key: "J", offset: 10, black: true },
-    { label: "C", key: "K", offset: 12 }
+    { label: "C", key: "A", offset: 0 }, { label: "C#", key: "W", offset: 1, black: true }, { label: "D", key: "S", offset: 2 }, { label: "Eb", key: "E", offset: 3, black: true }, { label: "E", key: "D", offset: 4 }, { label: "F", key: "F", offset: 5 }, { label: "F#", key: "T", offset: 6, black: true }, { label: "G", key: "G", offset: 7 }, { label: "Ab", key: "Y", offset: 8, black: true }, { label: "A", key: "H", offset: 9 }, { label: "Bb", key: "U", offset: 10, black: true }, { label: "B", key: "J", offset: 11 }, { label: "C", key: "K", offset: 12 }
   ],
   bass: [
     { label: "C", offset: -12 },
@@ -1060,14 +1113,24 @@ const instrument = {
     { label: "C", offset: 0 }
   ],
   chords: {
+    major: [0, 4, 7],
+    minor: [0, 3, 7],
+    seventh: [0, 4, 7, 10],
     minor7: [0, 3, 7, 10],
     major7: [0, 4, 7, 11],
     ninth: [0, 3, 7, 10, 14],
     sus: [0, 5, 7, 10],
+    neoSoul: [0, 3, 7, 10, 14, 17],
+    house: [0, 3, 7, 12],
+    jazz: [0, 4, 7, 11, 14],
     stab: [0, 7, 12],
     octave: [0, 12]
   }
 };
+
+const harmonyScales = { major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10], dorian: [0, 2, 3, 5, 7, 9, 10], pentatonic: [0, 3, 5, 7, 10], chromatic: Array.from({ length: 12 }, (_, index) => index) };
+const harmonyRoots = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+const harmonyInstrumentCategories = ["All", "Piano", "Rhodes", "Wurlitzer", "Organ", "Strings", "Pads", "Choirs", "Bass", "Synth Leads", "Plucks", "House Stabs", "Boom Bap Keys", "Neo Soul", "Vintage", "Lo-Fi", "Generated Instruments", "Favorites", "Recently Used"];
 
 function createDeckState(id) {
   return {
@@ -1824,6 +1887,7 @@ function animationLoop() {
   }
   animateMeters();
   updatePadProgress();
+  updateHarmonyPosition();
   monitorSmartMixHandoff();
   if (!autoMixState.lastPanelRender || performance.now() - autoMixState.lastPanelRender > 500) {
     autoMixState.lastPanelRender = performance.now();
@@ -3188,6 +3252,7 @@ function generateAiPlan() {
   if (!prompt) return;
   const context = collectAiContext();
   aiPlanState = buildLocalAiPlan(prompt, context);
+  rememberProducerPrompt(prompt);
   renderAiPlan(aiPlanState);
   document.querySelector("#applyAiPlan").disabled = false;
   document.querySelector("#startAiMix").disabled = !(aiPlanState.tags.mixtape || aiPlanState.tags.liveSet);
@@ -4564,6 +4629,8 @@ async function applyAiPlan() {
   if (aiPlanState.tags.mixtape || aiPlanState.tags.liveSet) {
     document.querySelector("#startAiMix").disabled = false;
   }
+  recordProducerEvent("Applied a Prompt Studio plan to the project");
+  renderProducerStudio();
 }
 
 async function preparePromptStemSplit() {
@@ -6562,7 +6629,7 @@ function initializePlaybackRegistry() {
   registry.register({ id: "ditc-preview", type: "preview", displayName: "DITC Preview", preview: true, stop: stopDitcPreview, getState: () => ({ playing: Boolean(ditcState.previewTrackId && stemState.previewSource), metadata: { name: sourceFiles.find((item) => item.id === ditcState.previewTrackId)?.title || "DITC track", elapsed: 0 } }) });
   registry.register({ id: "pads", type: "performance", displayName: "Pads", overlapAllowed: true, stop: stopAllPads, getState: () => { const active = sampler.active.map((source, index) => source ? index : -1).filter((index) => index >= 0); const loops = active.filter((index) => sampler.active[index]?.source.loop); const held = active.filter((index) => sampler.held.has(index)); const latest = active.at(-1); return { playing: active.length > 0, looping: loops.length > 0, recording: Boolean(editorState.recording), metadata: { name: active.length ? `Pads, ${active.length} active${loops.length ? `, ${loops.length} loops` : ""}${held.length ? `, ${held.length} held` : ""}${latest !== undefined ? ` · Pad ${latest + 1}, ${sampler.names[latest]}` : ""}` : "Pads idle", elapsed: 0, activePads: active, loopingPads: loops, heldPads: held, chokeGroups: sampler.chokes } }; } });
   registry.register({ id: "drums", type: "performance", displayName: "Beat Forge", overlapAllowed: true, stop: () => { stopDrums(); stopBeatPreview(); }, pause: pauseDrums, resume: startDrums, restart: () => { stopDrums(); drums.step = 0; startDrums(); }, getState: () => ({ playing: drums.playing || drums.previewing, paused: drums.paused, looping: drums.playing && drums.loop, recording: drums.recording, preview: drums.previewing, metadata: { name: drums.previewing ? "Beat Forge preview" : drums.recording ? `Beat Forge, recording · ${drums.name}` : `Beat Forge, ${drums.name}`, elapsed: drums.step * (60 / (Number(document.querySelector("#globalBpm")?.value) || 124) / 4), pattern: drums.patternId, schedulerActive: Boolean(drums.timer), patternVersion: drums.version } }) });
-  registry.register({ id: "keys", type: "performance", displayName: "Keys", overlapAllowed: true, stop: stopAllInstrumentVoices, getState: () => ({ playing: instrument.activeVoices.length > 0, metadata: { name: `${instrument.activeVoices.length} live voices`, elapsed: 0 } }) });
+  registry.register({ id: "keys", type: "performance", displayName: "Harmony Lab", overlapAllowed: true, stop: stopHarmonyPattern, pause: pauseHarmonyPattern, resume: playHarmonyPattern, restart: () => { stopHarmonyPattern(); instrument.patternPlayhead = 0; playHarmonyPattern(); }, getState: () => ({ playing: instrument.patternPlaying || instrument.activeVoices.length > 0, paused: instrument.patternPaused, looping: instrument.patternPlaying && instrument.patternLoop, recording: instrument.recording, preview: instrument.previewing, metadata: { name: instrument.previewing ? "Harmony Lab preview" : instrument.recording ? `Harmony Lab recording · ${instrument.pattern.name}` : instrument.patternPlaying ? `Harmony Lab · ${instrument.pattern.name}` : `${instrument.activeVoices.length} live Harmony voice${instrument.activeVoices.length === 1 ? "" : "s"}`, elapsed: instrument.patternPlayhead, key: instrument.key, scale: instrument.scale, patternVersion: instrument.pattern.version } }) });
   registry.register({ id: "stems-preview", type: "preview", displayName: "Stem Preview", preview: true, stop: stopStemPreview, getState: () => ({ playing: Boolean(stemState.previewSource && !ditcState.previewTrackId), metadata: { name: stemState.sourceName || "Stem preview", elapsed: 0 } }) });
   registry.register({ id: "arrangement", type: "timeline", displayName: "Arrangement", stop: stopEditorArrangement, pause: pauseEditorArrangement, resume: playEditorArrangement, restart: () => { stopEditorArrangement(); editorState.playhead = 0; playEditorArrangement(); }, getState: () => ({ playing: editorState.playing, paused: editorState.paused, metadata: { name: `Arrangement at ${formatTime(editorState.playhead)}`, elapsed: editorState.playhead } }) });
   registry.register({ id: "smart-mix", type: "automation", displayName: "Smart Mix", stop: () => stopAiMix({ keepDecks: true }), getState: () => ({ playing: autoMixState.running, automated: autoMixState.running, metadata: { name: autoMixState.state, elapsed: 0 } }) });
@@ -6654,9 +6721,14 @@ function renderKeyboard() {
 
   instrument.keyboard.forEach((note) => {
     const button = document.createElement("button");
-    button.className = `key-button${note.black ? " is-black" : ""}`;
+    const rootIndex = harmonyRoots.indexOf(instrument.key);
+    const relative = (note.offset - rootIndex + 12) % 12;
+    const inScale = harmonyScales[instrument.scale]?.includes(relative);
+    button.className = `key-button${note.black ? " is-black" : ""}${note.offset % 12 === rootIndex ? " is-root" : inScale ? " is-scale" : ""}`;
     button.innerHTML = `<strong>${note.label}</strong><small>${note.key}</small>`;
-    button.addEventListener("pointerdown", () => playInstrumentNote(note.offset, false, button));
+    button.addEventListener("pointerdown", async (event) => { event.preventDefault(); button.setPointerCapture(event.pointerId); button._harmonyVoice = await playInstrumentNote(note.offset, false, button, instrument.sustain ? 30 : 4, event.pressure || instrument.velocity); });
+    button.addEventListener("pointerup", () => { if (!instrument.sustain) releaseSynthVoice(button._harmonyVoice); button._harmonyVoice = null; });
+    button.addEventListener("pointercancel", () => { if (!instrument.sustain) releaseSynthVoice(button._harmonyVoice); button._harmonyVoice = null; });
     keyboard.appendChild(button);
   });
 
@@ -6664,7 +6736,8 @@ function renderKeyboard() {
     const button = document.createElement("button");
     button.className = "bass-button";
     button.innerHTML = `<strong>${note.label}</strong><small>Bass</small>`;
-    button.addEventListener("pointerdown", () => playInstrumentNote(note.offset, true, button));
+    button.addEventListener("pointerdown", async (event) => { button._harmonyVoice = await playInstrumentNote(note.offset, true, button, instrument.sustain ? 30 : 4, event.pressure || instrument.velocity); });
+    button.addEventListener("pointerup", () => { if (!instrument.sustain) releaseSynthVoice(button._harmonyVoice); button._harmonyVoice = null; });
     bassKeys.appendChild(button);
   });
 }
@@ -6677,33 +6750,46 @@ function setBassMode(enabled) {
   button.textContent = enabled ? "Bass On" : "Bass Mode";
 }
 
-async function playInstrumentNote(offset, forceBass = false, button = null, duration = 0.7) {
+async function playInstrumentNote(offset, forceBass = false, button = null, duration = 0.7, velocity = instrument.velocity) {
   await AudioEngine.init();
   const preset = getInstrumentPreset();
   const isBass = forceBass || instrument.bassMode;
-  const midi = preset.root + offset + (isBass ? -12 : 12);
+  let playableOffset = offset;
+  if (document.querySelector("#harmonyScaleAssist")?.checked) { const rootIndex = harmonyRoots.indexOf(instrument.key); const scale = harmonyScales[instrument.scale] || harmonyScales.chromatic; const relative = (offset - rootIndex + 12) % 12; if (!scale.includes(relative)) playableOffset += scale.find((degree) => degree > relative) !== undefined ? scale.find((degree) => degree > relative) - relative : 12 - relative; }
+  const midi = preset.root + playableOffset + (isBass ? -12 : 12);
+  if (document.querySelector("#oneFingerChords")?.checked && !isBass) { await playInstrumentChord(instrument.chordMode, offset); return null; }
   const frequency = midiToFrequency(midi);
-  recordEditorPerformanceEvent({ kind: "key", midi, isBass, duration, presetId: preset.id, machineId: instrument.machine, velocity: isBass ? 0.95 : 0.82 });
-  playSynthVoice(frequency, preset, isBass, duration);
+  const effectiveVelocity = Math.max(.05, Math.min(1, isBass ? Math.max(velocity, .82) : velocity));
+  recordEditorPerformanceEvent({ kind: "key", midi, isBass, duration, presetId: preset.id, machineId: instrument.machine, velocity: effectiveVelocity, sustain: instrument.sustain, pitchBend: instrument.pitchBend, modulation: instrument.modulation });
+  if (instrument.recording) recordHarmonyNote(midi, effectiveVelocity, isBass, duration);
+  const voice = playSynthVoice(frequency, preset, isBass, duration, 0, effectiveVelocity);
   flashInstrumentButton(button);
+  renderHarmonyDiagnostics();
+  return voice;
 }
 
-async function playInstrumentChord(type) {
+async function playInstrumentChord(type, rootOverride = null) {
   await AudioEngine.init();
   const preset = getInstrumentPreset();
   const chord = instrument.chords[type] || instrument.chords.minor7;
-  const rootOffset = instrument.bassMode ? -12 : 0;
-  chord.forEach((offset, index) => {
+  const rootOffset = rootOverride ?? (instrument.bassMode ? -12 : harmonyRoots.indexOf(instrument.key));
+  let orderedChord = [...chord];
+  if (instrument.arpeggiator.enabled && instrument.arpeggiator.direction === "down") orderedChord.reverse();
+  if (instrument.arpeggiator.enabled && instrument.arpeggiator.direction === "updown") orderedChord = [...orderedChord, ...orderedChord.slice(1, -1).reverse()];
+  const arpStep = instrument.arpeggiator.rate === "1/16" ? harmonyStepSeconds() : harmonyStepSeconds() * 2;
+  orderedChord.forEach((offset, index) => {
     const midi = preset.root + rootOffset + offset + 12;
     const frequency = midiToFrequency(midi);
-    recordEditorPerformanceEvent({ kind: "key", midi, isBass: false, duration: type === "stab" ? 0.22 : 0.95, presetId: preset.id, machineId: instrument.machine, velocity: 0.74, chord: type });
-    playSynthVoice(frequency, preset, false, type === "stab" ? 0.22 : 0.95, index * 0.006);
+    const duration = instrument.arpeggiator.enabled ? arpStep * .82 : type === "stab" ? .22 : .95;
+    recordEditorPerformanceEvent({ kind: "key", midi, isBass: false, duration, presetId: preset.id, machineId: instrument.machine, velocity: instrument.velocity, chord: type, arpeggiated: instrument.arpeggiator.enabled });
+    if (instrument.recording) recordHarmonyNote(midi, instrument.velocity, false, duration);
+    playSynthVoice(frequency, preset, false, instrument.sustain ? 30 : duration, instrument.arpeggiator.enabled ? index * arpStep : index * .006, instrument.velocity);
   });
   const button = document.querySelector(`[data-chord="${type}"]`);
   flashInstrumentButton(button);
 }
 
-function playSynthVoice(frequency, preset, isBass, duration, delay = 0, velocityScale = 1) {
+function playSynthVoice(frequency, preset, isBass, duration, delay = 0, velocityScale = 1, options = {}) {
   const ctx = AudioEngine.context;
   const machine = getSynthMachine();
   const now = ctx.currentTime + delay;
@@ -6728,7 +6814,13 @@ function playSynthVoice(frequency, preset, isBass, duration, delay = 0, velocity
   subGain.gain.setValueAtTime(isBass ? machine.subMix : machine.subMix * 0.45, now);
 
   filter.type = "lowpass";
-  filter.frequency.setValueAtTime(isBass ? Math.min(900, preset.filter * machine.filterBoost) : preset.filter * machine.filterBoost, now);
+  const voicePitchBend = options.pitchBend ?? instrument.pitchBend;
+  const voiceModulation = options.modulation ?? instrument.modulation;
+  const bentFrequency = frequency * 2 ** (voicePitchBend / 12);
+  oscA.frequency.setValueAtTime(bentFrequency, now);
+  oscB.frequency.setValueAtTime(bentFrequency, now);
+  subOsc.frequency.setValueAtTime(bentFrequency * 0.5, now);
+  filter.frequency.setValueAtTime((isBass ? Math.min(900, preset.filter * machine.filterBoost) : preset.filter * machine.filterBoost) * (1 + voiceModulation * .8), now);
   filter.Q.setValueAtTime(isBass ? Math.max(4, machine.q) : machine.q, now);
   output.gain.setValueAtTime(0.0001, now);
   output.gain.exponentialRampToValueAtTime(gain, now + attack);
@@ -6742,7 +6834,7 @@ function playSynthVoice(frequency, preset, isBass, duration, delay = 0, velocity
   subGain.connect(filter);
   filter.connect(output);
   output.connect(AudioEngine.masterAnalyser);
-  const voice = { oscA, oscB, subOsc, output };
+  const voice = { oscA, oscB, subOsc, output, filter, baseFrequency: frequency, preset, isBass, released: false };
   instrument.activeVoices.push(voice);
   const cleanup = () => {
     instrument.activeVoices = instrument.activeVoices.filter((activeVoice) => activeVoice !== voice);
@@ -6754,11 +6846,19 @@ function playSynthVoice(frequency, preset, isBass, duration, delay = 0, velocity
   oscA.stop(now + duration + release + 0.04);
   oscB.stop(now + duration + release + 0.04);
   subOsc.stop(now + duration + release + 0.04);
+  return voice;
+}
+
+function releaseSynthVoice(voice) {
+  if (!voice || voice.released || !AudioEngine.context) return;
+  voice.released = true; const now = AudioEngine.context.currentTime;
+  try { voice.output.gain.cancelScheduledValues(now); voice.output.gain.setValueAtTime(Math.max(.0001, voice.output.gain.value), now); voice.output.gain.exponentialRampToValueAtTime(.0001, now + .12); voice.oscA.stop(now + .14); voice.oscB.stop(now + .14); voice.subOsc.stop(now + .14); } catch { /* Voice may already have ended. */ }
 }
 
 function stopAllInstrumentVoices() {
   const voices = [...instrument.activeVoices];
   instrument.activeVoices = [];
+  instrument.heldComputerVoices?.clear();
   voices.forEach((voice) => {
     voice.oscA.onended = null;
     try {
@@ -6771,6 +6871,7 @@ function stopAllInstrumentVoices() {
       /* Voice may already have ended. */
     }
   });
+  renderHarmonyDiagnostics();
 }
 
 function midiToFrequency(midi) {
@@ -6782,6 +6883,109 @@ function flashInstrumentButton(button) {
   button.classList.add("is-active");
   setTimeout(() => button.classList.remove("is-active"), 150);
 }
+
+function snapshotHarmony(label = "Edit") {
+  instrument.undoStack.push({ label, pattern: JSON.parse(JSON.stringify(instrument.pattern)), preset: instrument.preset, machine: instrument.machine, key: instrument.key, scale: instrument.scale });
+  if (instrument.undoStack.length > 30) instrument.undoStack.shift();
+}
+
+function touchHarmony(source = "Manual") {
+  instrument.pattern.version += 1; instrument.pattern.source = source; saveHarmonyState(); renderHarmonyLab();
+}
+
+function renderHarmonyLab() {
+  document.querySelector("#keys")?.setAttribute("data-harmony-mode", instrument.workspaceMode);
+  const values = { harmonyMode: instrument.workspaceMode, harmonyKey: instrument.key, harmonyScale: instrument.scale, harmonyChordMode: instrument.chordMode, harmonyVelocity: instrument.velocity, harmonyPitchBend: instrument.pitchBend, harmonyModulation: instrument.modulation, harmonyArpRate: instrument.arpeggiator.rate, harmonyArpDirection: instrument.arpeggiator.direction };
+  Object.entries(values).forEach(([id, value]) => { const control = document.querySelector(`#${id}`); if (control) control.value = value; });
+  document.querySelector("#oneFingerChords").checked = Boolean(instrument.oneFingerChords); document.querySelector("#harmonyArp").checked = instrument.arpeggiator.enabled;
+  document.querySelector("#harmonyPatternName").textContent = instrument.pattern.name;
+  renderKeyboard(); renderHarmonyEditor(); renderHarmonyInstrumentBrowser(); renderHarmonyMatch(); renderHarmonyDiagnostics();
+}
+
+function instrumentCategory(preset) {
+  const text = `${preset.name} ${preset.notes}`.toLowerCase();
+  if (/bass|sub|reese/.test(text)) return "Bass"; if (/organ/.test(text)) return "Organ"; if (/string/.test(text)) return "Strings"; if (/house/.test(text)) return "House Stabs"; if (/electric|r&b/.test(text)) return "Rhodes"; if (/pad|atmos/.test(text)) return "Pads"; if (/pluck|clav/.test(text)) return "Plucks"; if (/rap|boom/.test(text)) return "Boom Bap Keys"; if (/soul/.test(text)) return "Neo Soul"; if (/new wave|vintage/.test(text)) return "Vintage"; return "Synth Leads";
+}
+
+function renderHarmonyInstrumentBrowser() {
+  const categories = document.querySelector("#harmonyInstrumentCategories"); const results = document.querySelector("#harmonyInstrumentResults"); if (!categories || !results) return;
+  categories.innerHTML = harmonyInstrumentCategories.map((category) => `<button type="button" class="secondary-button harmony-category${instrument.instrumentCategory === category ? " is-active" : ""}" data-harmony-category="${category}">${category}</button>`).join("");
+  const query = document.querySelector("#harmonyInstrumentSearch")?.value.trim().toLowerCase() || "";
+  const filtered = instrumentPresets.filter((preset) => { const category = instrumentCategory(preset); const matches = instrument.instrumentCategory === "All" || instrument.instrumentCategory === category || (instrument.instrumentCategory === "Favorites" && instrument.favorites.includes(preset.id)) || (instrument.instrumentCategory === "Recently Used" && preset.id === instrument.preset); return matches && (!query || `${preset.name} ${preset.notes}`.toLowerCase().includes(query)); });
+  instrument.filteredPresets = filtered; if (instrument.selectedInstrumentIndex >= filtered.length) instrument.selectedInstrumentIndex = 0;
+  results.innerHTML = filtered.length ? filtered.map((preset, index) => `<button type="button" class="harmony-instrument-result${preset.id === instrument.preset || index === instrument.selectedInstrumentIndex ? " is-active" : ""}" data-harmony-instrument-index="${index}"><strong>${preset.name}</strong><small>${instrumentCategory(preset)} · ${instrument.favorites.includes(preset.id) ? "Favorite · " : ""}${preset.notes}</small></button>`).join("") : `<p class="fine-print">No built-in instrument matches this category. Generated and custom sample instruments are Coming Soon.</p>`;
+}
+
+async function previewHarmonyInstrument() {
+  const preset = instrument.filteredPresets?.[instrument.selectedInstrumentIndex]; if (!preset) return; await AudioEngine.init(); stopAllInstrumentVoices(); const old = instrument.preset; instrument.preset = preset.id; [0, 4, 7, 11].forEach((offset, index) => playSynthVoice(midiToFrequency(preset.root + 12 + offset), preset, false, .55, index * .18, .55)); instrument.preset = old;
+}
+
+function loadHarmonyInstrument() {
+  const preset = instrument.filteredPresets?.[instrument.selectedInstrumentIndex]; if (!preset) return; instrument.preset = preset.id; document.querySelector("#instrumentPreset").value = preset.id; updateInstrumentNotes(); saveHarmonyState(); renderHarmonyInstrumentBrowser();
+}
+
+function harmonyStepSeconds() { return 60 / (Number(document.querySelector("#globalBpm")?.value) || 124) / 4; }
+
+function recordHarmonyNote(midi, velocity, isBass, durationSeconds) {
+  if (!instrument.recording || !AudioEngine.context) return;
+  const elapsed = AudioEngine.context.currentTime - instrument.recordStartedAt; const step = Math.max(0, Math.min(instrument.pattern.bars * 16 - 1, Math.round(elapsed / harmonyStepSeconds()) % (instrument.pattern.bars * 16)));
+  instrument.pattern.notes.push({ id: createId(), midi, start: step, duration: Math.max(1, Math.round(durationSeconds / harmonyStepSeconds())), velocity, type: isBass ? "bass" : "melody", automation: { modulation: instrument.modulation, pitchBend: instrument.pitchBend } }); touchHarmony("Live Recording");
+}
+
+function renderHarmonyEditor() {
+  const editor = document.querySelector("#harmonyEditor"); if (!editor) return; const root = getInstrumentPreset().root; const pitches = Array.from({ length: 13 }, (_, index) => root + 24 - index);
+  editor.innerHTML = "";
+  pitches.forEach((midi) => { const row = document.createElement("div"); row.className = "harmony-note-grid"; row.innerHTML = `<span>${harmonyRoots[midi % 12]}${Math.floor(midi / 12) - 1}</span>`; for (let localStep = 0; localStep < 16; localStep += 1) { const note = instrument.pattern.notes.find((item) => item.midi === midi && item.start === localStep); if (instrument.harmonyView === "velocity" || instrument.harmonyView === "automation") { const input = document.createElement("input"); input.type = "range"; input.min = instrument.harmonyView === "velocity" ? .05 : 0; input.max = 1; input.step = .01; input.value = instrument.harmonyView === "velocity" ? note?.velocity || .05 : note?.automation?.modulation || 0; input.disabled = !note; input.className = "harmony-velocity-cell"; input.ariaLabel = `${instrument.harmonyView} for ${harmonyRoots[midi % 12]} step ${localStep + 1}`; input.addEventListener("input", () => { if (instrument.harmonyView === "velocity") note.velocity = Number(input.value); else { note.automation ||= {}; note.automation.modulation = Number(input.value); } instrument.selectedNoteId = note.id; touchHarmony(); }); row.appendChild(input); continue; } const cell = document.createElement("button"); cell.type = "button"; cell.className = `harmony-note-cell${note ? " is-on" : ""}`; cell.ariaLabel = `${harmonyRoots[midi % 12]} step ${localStep + 1}${note ? ", active" : ""}`; cell.addEventListener("click", () => { snapshotHarmony("Piano roll edit"); if (note) { instrument.selectedNoteId = note.id; } else { const created = { id: createId(), midi, start: localStep, duration: 1, velocity: instrument.velocity, type: "melody", automation: { modulation: instrument.modulation, pitchBend: instrument.pitchBend } }; instrument.pattern.notes.push(created); instrument.selectedNoteId = created.id; } touchHarmony(); }); row.appendChild(cell); } editor.appendChild(row); });
+  const selected = instrument.pattern.notes.find((note) => note.id === instrument.selectedNoteId); const duration = document.querySelector("#harmonyNoteDuration"); if (duration) { duration.value = selected?.duration || 1; duration.disabled = !selected; }
+}
+
+function scheduleHarmonyPattern(pattern = instrument.pattern, preview = false) {
+  if (!AudioEngine.context || !pattern.notes.length) return 0; const startAt = AudioEngine.context.currentTime + .04; const stepSeconds = harmonyStepSeconds(); const preset = getInstrumentPreset();
+  pattern.notes.forEach((note) => playSynthVoice(midiToFrequency(note.midi), preset, note.type === "bass", Math.max(.08, note.duration * stepSeconds * .92), note.start * stepSeconds + .04, note.velocity, note.automation || {}));
+  if (preview) instrument.previewing = true;
+  return pattern.bars * 16 * stepSeconds;
+}
+
+async function playHarmonyPattern() {
+  if (instrument.patternPlaying || instrument.patternTimer) return; await AudioEngine.init(); if (!instrument.pattern.notes.length) { document.querySelector("#harmonyAiMessage").textContent = "Add or generate notes before playing the Harmony pattern."; return; }
+  instrument.patternPlaying = true; instrument.patternPaused = false; instrument.patternStartedAt = AudioEngine.context.currentTime; const duration = scheduleHarmonyPattern(); document.querySelector("#harmonyPlay").textContent = "Playing";
+  instrument.patternTimer = setTimeout(() => { instrument.patternTimer = null; if (instrument.patternLoop && instrument.patternPlaying) { instrument.patternPlaying = false; playHarmonyPattern(); } else stopHarmonyPattern(); }, duration * 1000);
+  renderHarmonyDiagnostics();
+}
+
+function stopHarmonyPattern() { clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = false; instrument.previewing = false; instrument.recording = false; stopAllInstrumentVoices(); const play = document.querySelector("#harmonyPlay"); if (play) play.textContent = "Play Pattern"; const record = document.querySelector("#harmonyRecord"); if (record) { record.textContent = "Record"; record.classList.remove("is-active"); } renderHarmonyDiagnostics(); }
+function pauseHarmonyPattern() { clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = true; stopAllInstrumentVoices(); document.querySelector("#harmonyPlay").textContent = "Resume"; }
+
+function updateHarmonyPosition() { if (!instrument.patternPlaying || !AudioEngine.context) return; const elapsed = AudioEngine.context.currentTime - instrument.patternStartedAt; const step = Math.floor(elapsed / harmonyStepSeconds()) % (instrument.pattern.bars * 16); instrument.patternPlayhead = step * harmonyStepSeconds(); const display = document.querySelector("#harmonyPosition"); if (display) display.textContent = `Bar ${Math.floor(step / 16) + 1} · Beat ${Math.floor((step % 16) / 4) + 1}`; }
+
+function generateHarmonyNotes(kind = "composer", variation = false) {
+  const prompt = document.querySelector("#harmonyPrompt")?.value.trim() || "Create soulful minor chords"; const lower = prompt.toLowerCase(); const root = getInstrumentPreset().root + harmonyRoots.indexOf(instrument.key); const bars = 4; const seed = (Date.now() % 100000) + (variation ? 37 : 0); const random = createSeededGenerator(seed); const notes = [];
+  const bass = kind === "bass" || /bass|808/.test(lower); const pad = /pad|cinematic|transition/.test(lower); const progression = lower.includes("dark") ? [0, -2, -5, -7] : lower.includes("house") ? [0, 5, 7, 3] : [0, 5, 3, 7];
+  if (bass) { for (let step = 0; step < bars * 16; step += 4) { const degree = progression[Math.floor(step / 16) % progression.length]; notes.push({ id: createId(), midi: root - 12 + degree + (random() > .72 ? 7 : 0), start: step, duration: lower.includes("808") ? 4 : 2, velocity: .72 + random() * .25, type: "bass", automation: {} }); } }
+  else progression.forEach((degree, bar) => { const chord = lower.includes("major") ? instrument.chords.major7 : lower.includes("sus") ? instrument.chords.sus : instrument.chords.minor7; chord.forEach((offset) => notes.push({ id: createId(), midi: root + 12 + degree + offset, start: bar * 16, duration: pad ? 15 : 8, velocity: pad ? .52 : .66 + random() * .16, type: pad ? "pad" : "chord", automation: {} })); });
+  return { id: createId(), name: bass ? `${document.querySelector("#bassGeneratorStyle")?.value || "Bass"} Idea` : `${instrument.key} ${instrument.scale} ${pad ? "Pad" : "Chords"}`, bars, stepsPerBar: 16, notes, version: instrument.pattern.version + 1, source: kind === "match" ? "Harmony Match" : "AI Composer", type: bass ? "bass" : pad ? "pad" : "chords", seed, prompt };
+}
+
+function buildHarmonyPlan(variation = false) { const pattern = generateHarmonyNotes("composer", variation); instrument.pendingPlan = pattern; instrument.lastPrompt = pattern.prompt; document.querySelector("#harmonyPlanOutput").textContent = JSON.stringify({ type: pattern.type, key: instrument.key, scale: instrument.scale, bars: pattern.bars, notes: pattern.notes.length, instrument: getInstrumentPreset().name, BPM: Number(document.querySelector("#globalBpm")?.value) || 124, source: pattern.source, explanation: pattern.type === "bass" ? "Root movement follows a four-bar project pocket and leaves space between attacks." : "Four-bar voice leading uses the selected key and scale with stable chord tones.", seed: pattern.seed }, null, 2); ["previewHarmonyPlan", "explainHarmonyPlan", "applyHarmonyPlan"].forEach((id) => { document.querySelector(`#${id}`).disabled = false; }); }
+
+async function previewHarmonyPattern(pattern = instrument.pendingPlan) { if (!pattern) return; await AudioEngine.init(); stopHarmonyPattern(); const duration = scheduleHarmonyPattern(pattern, true); instrument.patternTimer = setTimeout(stopHarmonyPattern, duration * 1000); }
+function applyHarmonyPlan(pattern = instrument.pendingPlan) { if (!pattern) return; snapshotHarmony("Apply composition plan"); instrument.pattern = JSON.parse(JSON.stringify(pattern)); instrument.selectedNoteId = null; instrument.pendingPlan = null; touchHarmony(pattern.source); document.querySelector("#harmonyAiMessage").textContent = `Applied ${pattern.name}. Manual editing and Undo remain available.`; }
+
+function generateBassPlan(variation = false) { const field = document.querySelector("#harmonyPrompt"); const old = field.value; field.value = `${document.querySelector("#bassGeneratorStyle").value}${variation ? " variation" : ""} in ${instrument.key} ${instrument.scale}`; instrument.pendingBass = generateHarmonyNotes("bass", variation); field.value = old; document.querySelector("#harmonyAiMessage").textContent = `Prepared ${instrument.pendingBass.name}. Preview or Apply when ready.`; }
+
+function undoHarmony() { const previous = instrument.undoStack.pop(); if (!previous) return; instrument.pattern = previous.pattern; instrument.preset = previous.preset; instrument.machine = previous.machine; instrument.key = previous.key; instrument.scale = previous.scale; saveHarmonyState(); renderInstrumentOptions(); renderHarmonyLab(); }
+
+function sendHarmonyToArrangement() { const bpm = Number(document.querySelector("#globalBpm")?.value) || 124; const stepSeconds = 60 / bpm / 4; const events = instrument.pattern.notes.map((note) => ({ kind: "key", midi: note.midi, isBass: note.type === "bass", time: note.start * stepSeconds, duration: note.duration * stepSeconds, velocity: note.velocity, presetId: instrument.preset, machineId: instrument.machine, automation: note.automation })); const clip = { id: createId(), sourceKind: "performance", type: "keys", name: instrument.pattern.name, trackIndex: 1, start: editorState.playhead, duration: instrument.pattern.bars * 16 * stepSeconds, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0, stretch: 1, loop: true, muted: false, solo: false, filter: 16000, eq: 0, effect: "none", color: editorClipColor("keys"), events }; editorState.clips.push(clip); editorState.selectedClipId = clip.id; renderEditor(); editorStatus(`Sent ${instrument.pattern.name} from Harmony Lab to Arrangement.`); }
+
+function renderHarmonyMatch() { const deck = deckState.a.buffer ? deckState.a : deckState.b.buffer ? deckState.b : null; const output = document.querySelector("#harmonyMatchSuggestion"); if (!output) return; const deckKey = deck?.analysis?.key || instrument.key; const bpm = deck?.analysis?.bpm || Number(document.querySelector("#globalBpm")?.value) || 124; const groove = activeDrumGroove()?.name || "current Beat Forge groove"; instrument.matchPlan = generateHarmonyNotes("match", false); output.textContent = deck ? `Deck ${deck.id.toUpperCase()} is near ${Math.round(bpm)} BPM${deckKey ? ` in ${deckKey}` : ""}. Try ${getInstrumentPreset().name} chords with a sparse bass counterline over ${groove}.` : `Beat Forge suggests a ${groove} pocket. Use restrained ${instrument.key} ${instrument.scale} harmony to preserve rhythmic space.`; }
+
+async function enableHarmonyMidi() { if (!navigator.requestMIDIAccess) { instrument.lastError = "Web MIDI is unavailable in this browser."; renderHarmonyDiagnostics(); return; } try { const access = await navigator.requestMIDIAccess(); instrument.midiEnabled = true; instrument.midiInputs = [...access.inputs.values()].map((input) => input.name); access.inputs.forEach((input) => { input.onmidimessage = (event) => { const [status, note, velocity] = event.data; const command = status & 0xf0; if (command === 0x90 && velocity > 0) playInstrumentNote(note - getInstrumentPreset().root - 12, false, null, instrument.sustain ? 30 : 4, velocity / 127); if (command === 0x80 || (command === 0x90 && velocity === 0)) { if (!instrument.sustain) stopAllInstrumentVoices(); } if (command === 0xe0) { instrument.pitchBend = (((velocity << 7) | note) - 8192) / 4096; updateHarmonyVoiceModulation(); } if (command === 0xb0 && note === 1) { instrument.modulation = velocity / 127; updateHarmonyVoiceModulation(); } }; }); document.querySelector("#enableHarmonyMidi").textContent = `MIDI On (${instrument.midiInputs.length})`; } catch (error) { instrument.lastError = error.message; } renderHarmonyDiagnostics(); }
+
+function updateHarmonyVoiceModulation() { instrument.activeVoices.forEach((voice) => { const now = AudioEngine.context.currentTime; const bent = voice.baseFrequency * 2 ** (instrument.pitchBend / 12); voice.oscA.frequency.setTargetAtTime(bent, now, .01); voice.oscB.frequency.setTargetAtTime(bent, now, .01); voice.subOsc.frequency.setTargetAtTime(bent * .5, now, .01); voice.filter.frequency.setTargetAtTime(Math.min(18000, voice.preset.filter * (1 + instrument.modulation * .8)), now, .02); }); }
+
+function saveHarmonyState() { localStorage.setItem("deckforge-harmony-lab", JSON.stringify({ preset: instrument.preset, machine: instrument.machine, workspaceMode: instrument.workspaceMode, key: instrument.key, scale: instrument.scale, chordMode: instrument.chordMode, pattern: instrument.pattern, patterns: instrument.patterns.slice(-30), promptHistory: instrument.promptHistory.slice(-30), favorites: instrument.favorites, arpeggiator: instrument.arpeggiator })); }
+function restoreHarmonyState() { try { const saved = JSON.parse(localStorage.getItem("deckforge-harmony-lab") || "null"); if (!saved) return; Object.assign(instrument, saved, { activeVoices: [], patternPlaying: false, patternPaused: false, patternTimer: null, undoStack: [], pendingPlan: null }); } catch (error) { instrument.lastError = error.message; } }
+function renderHarmonyDiagnostics() { const details = document.querySelector("#harmonyDiagnostics"); if (details) details.hidden = !DECKFORGE_DEVELOPMENT; const output = document.querySelector("#harmonyDiagnosticsOutput"); if (!output || !DECKFORGE_DEVELOPMENT) return; output.textContent = JSON.stringify({ instrument: getInstrumentPreset().name, engine: getSynthMachine().name, key: instrument.key, scale: instrument.scale, activeVoices: instrument.activeVoices.length, sustain: instrument.sustain, pitchBend: instrument.pitchBend, modulation: instrument.modulation, pattern: instrument.pattern.name, patternVersion: instrument.pattern.version, notes: instrument.pattern.notes.length, playing: instrument.patternPlaying, recording: instrument.recording, loop: instrument.patternLoop, midiEnabled: instrument.midiEnabled, midiInputs: instrument.midiInputs, pendingPlan: instrument.pendingPlan?.name || null, lastError: instrument.lastError }, null, 2); }
 
 async function loadStemFile(file) {
   if (!isSupportedAudioFile(file)) return;
@@ -7782,6 +7986,8 @@ function toggleMixRecording() {
   if (AudioEngine.recorder && AudioEngine.recorder.state === "recording") {
     AudioEngine.recorder.stop();
     recordButton.textContent = "●";
+    recordProducerEvent("Finished mix recording");
+    renderProducerStudio();
     return;
   }
   AudioEngine.chunks = [];
@@ -7795,6 +8001,360 @@ function toggleMixRecording() {
   };
   AudioEngine.recorder.start();
   recordButton.textContent = "■";
+  recordProducerEvent("Started mix recording");
+  renderProducerStudio();
+}
+
+function readProducerStudioStorage() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PRODUCER_STUDIO_KEY) || "null");
+    if (!saved) return;
+    producerStudioState.mode = saved.mode === "advanced" ? "advanced" : "simple";
+    producerStudioState.projectName = saved.projectName || producerStudioState.projectName;
+    producerStudioState.genre = saved.genre || producerStudioState.genre;
+    producerStudioState.subgenre = saved.subgenre || producerStudioState.subgenre;
+    producerStudioState.tags = Array.isArray(saved.tags) ? saved.tags : producerStudioState.tags;
+    producerStudioState.history = Array.isArray(saved.history) ? saved.history : [];
+    producerStudioState.savedPrompts = Array.isArray(saved.savedPrompts) ? saved.savedPrompts : [];
+    producerStudioState.timeline = Array.isArray(saved.timeline) ? saved.timeline : [];
+    producerStudioState.dismissedSuggestions = new Set(saved.dismissedSuggestions || []);
+  } catch {
+    producerStudioState.timeline = [];
+  }
+}
+
+function writeProducerStudioStorage() {
+  try {
+    localStorage.setItem(PRODUCER_STUDIO_KEY, JSON.stringify({
+      mode: producerStudioState.mode,
+      projectName: producerStudioState.projectName,
+      genre: producerStudioState.genre,
+      subgenre: producerStudioState.subgenre,
+      tags: producerStudioState.tags,
+      history: producerStudioState.history.slice(0, 20),
+      savedPrompts: producerStudioState.savedPrompts.slice(0, 20),
+      timeline: producerStudioState.timeline.slice(0, 80),
+      dismissedSuggestions: [...producerStudioState.dismissedSuggestions]
+    }));
+  } catch {
+    // Producer Studio stays usable when local persistence is unavailable.
+  }
+}
+
+function projectMixLength() {
+  const arrangementLength = editorState.clips.reduce((max, clip) => Math.max(max, Number(clip.start || 0) + Number(clip.duration || 0)), 0);
+  const deckLength = [deckState.a, deckState.b].reduce((max, deck) => Math.max(max, Number(deck.buffer?.duration || 0)), 0);
+  return Math.max(arrangementLength, deckLength);
+}
+
+function deriveProjectGenre() {
+  const analyzed = [deckState.a.analysis, deckState.b.analysis, ...sourceFiles.map((source) => source.analysis)].filter(Boolean);
+  return analyzed.find((analysis) => analysis.genre)?.genre || producerStudioState.genre;
+}
+
+function deriveProjectKey() {
+  return deckState.a.analysis?.key || deckState.b.analysis?.key || `${instrument.key} ${instrument.scale}`;
+}
+
+function projectProgress() {
+  const signals = [
+    sourceFiles.length > 0,
+    Boolean(deckState.a.buffer || deckState.b.buffer),
+    drums.pattern.flat().some(Boolean),
+    instrument.pattern.notes.length > 0,
+    sampler.buffers.some(Boolean),
+    editorState.clips.length > 0,
+    Boolean(AudioEngine.mixUrl)
+  ];
+  return Math.round((signals.filter(Boolean).length / signals.length) * 100);
+}
+
+function refreshProjectContext() {
+  const aiContext = collectAiContext();
+  const loadedDecks = aiContext.decks.filter((deck) => deck.loaded);
+  const currentGenre = deriveProjectGenre();
+  producerStudioState.genre = currentGenre;
+  Object.assign(projectContext, {
+    updatedAt: new Date().toISOString(),
+    project: {
+      name: producerStudioState.projectName,
+      bpm: aiContext.bpm,
+      key: deriveProjectKey(),
+      genre: currentGenre,
+      subgenre: producerStudioState.subgenre,
+      progress: projectProgress(),
+      mixLength: projectMixLength(),
+      referenceMixtape: mixtapeReferenceState.name || mixtapeInspirationState?.structure?.name || "None",
+      recordingStatus: AudioEngine.recorder?.state === "recording" ? "Recording" : AudioEngine.mixUrl ? "Take ready" : "Not recording",
+      aiStatus: autoMixState.running ? autoMixState.state : aiPlanState ? "Plan ready" : "Ready"
+    },
+    decks: aiContext.decks.map((deck) => ({ ...deck, playing: deckState[deck.id].playing, bpm: deckState[deck.id].analysis?.bpm || null, key: deckState[deck.id].analysis?.key || null })),
+    ditc: { trackCount: aiContext.crate.length, selectedCount: aiContext.selectedCrate.length, tracks: aiContext.crate },
+    smartMix: { running: autoMixState.running, state: autoMixState.state, mode: autoMixState.mode, planLength: autoMixState.plan.length },
+    beatForge: { pattern: drums.name, section: drums.section, groove: drums.groove, version: drums.version, activeSteps: drums.pattern.flat().filter(Boolean).length },
+    harmonyLab: { key: instrument.key, scale: instrument.scale, pattern: instrument.pattern.name, noteCount: instrument.pattern.notes.length, version: instrument.pattern.version },
+    pads: { bank: sampler.bank, scene: sampler.scene, loadedCount: aiContext.pads.length, loaded: aiContext.pads },
+    stemLab: { source: stemState.sourceName || "None", stemCount: aiContext.stems.length, stems: aiContext.stems },
+    arrangement: { clipCount: editorState.clips.length, trackCount: editorState.tracks.length, duration: projectMixLength(), playing: editorState.playing },
+    mixtapeAnalyzer: { reference: mixtapeReferenceState.name || "None", analyzed: Boolean(mixtapeInspirationState) },
+    tags: [...producerStudioState.tags]
+  });
+  return projectContext;
+}
+
+function producerOverviewItems(context) {
+  const loaded = context.decks.filter((deck) => deck.loaded);
+  return [
+    ["Project Name", context.project.name, "project"],
+    ["Current BPM", `${context.project.bpm} BPM`, "tempo"],
+    ["Current Key", context.project.key, "harmony"],
+    ["Genre", context.project.genre, "identity"],
+    ["Subgenre", context.project.subgenre, "identity"],
+    ["Project Progress", `${context.project.progress}%`, "progress"],
+    ["Reference Mixtape", context.project.referenceMixtape, "reference"],
+    ["Deck Status", loaded.length ? loaded.map((deck) => `Deck ${deck.id.toUpperCase()}: ${deck.title}`).join(" · ") : "Decks empty", "decks"],
+    ["Current Mix Length", formatTime(context.project.mixLength), "arrangement"],
+    ["Recording Status", context.project.recordingStatus, "recording"],
+    ["Current AI Status", context.project.aiStatus, "ai"]
+  ];
+}
+
+function renderProjectOverview(context) {
+  const grid = document.querySelector("#projectOverviewGrid");
+  if (!grid) return;
+  grid.innerHTML = producerOverviewItems(context).map(([label, value, kind]) => `
+    <article class="project-stat" data-stat-kind="${kind}">
+      <span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong>
+      ${kind === "progress" ? `<div class="project-progress-track"><span style="width:${context.project.progress}%"></span></div>` : ""}
+    </article>`).join("");
+}
+
+function buildProducerSuggestions(context) {
+  const emptyPads = 16 - context.pads.loadedCount;
+  const loadedDecks = context.decks.filter((deck) => deck.loaded);
+  const suggestions = [
+    { id: "intro", type: "Arrangement", title: "Better Intro", confidence: loadedDecks.length ? 86 : 58, prompt: "Build a distinctive 8-bar intro using the current decks, pads, and project identity.", detail: loadedDecks.length ? `Shape an 8-bar cold open around ${loadedDecks[0].title} before the first full-energy section.` : "Start an 8-bar cold open now, then attach the first deck when a track is loaded." },
+    { id: "transition", type: "Smart Mix", title: "Transition Opportunity", confidence: loadedDecks.length === 2 ? 91 : 62, prompt: "Find and plan the best next transition using the current decks and DITC selections.", detail: loadedDecks.length === 2 ? `Compare Deck A and Deck B around ${context.project.bpm} BPM and preserve manual deck control.` : "Load or select a second track to improve transition scoring." },
+    { id: "pad", type: "Pads", title: "Unused Pad Space", confidence: emptyPads ? 82 : 55, prompt: "Build a project-aware pad bank for the intro, transitions, drops, and outro.", detail: emptyPads ? `${emptyPads} pad slots are open in Bank ${context.pads.bank}; reserve them for drops, FX, and transition cues.` : `Bank ${context.pads.bank} is full. Consider a second scene for transition material.` },
+    { id: "groove", type: "Beat Forge", title: "Better Drum Groove", confidence: 88, prompt: `Create a variation of the current ${context.beatForge.groove} groove that supports ${context.project.genre} at ${context.project.bpm} BPM.`, detail: `${context.beatForge.pattern} has ${context.beatForge.activeSteps} active steps. A section-aware variation can add movement without replacing it.` },
+    { id: "harmony", type: "Harmony Lab", title: "Harmony Suggestion", confidence: context.harmonyLab.noteCount ? 84 : 66, prompt: `Generate Rhodes chords in ${context.project.key} that leave space for the current decks and Beat Forge pattern.`, detail: context.harmonyLab.noteCount ? `${context.harmonyLab.pattern} already has ${context.harmonyLab.noteCount} notes; try a contrasting voicing.` : `Establish a four-bar harmonic idea in ${context.project.key}.` },
+    { id: "stem", type: "Stem Lab", title: "Stem Opportunity", confidence: loadedDecks.length ? 79 : 48, prompt: "Find the best stem opportunity for an acapella bridge or instrumental transition.", detail: context.stemLab.stemCount ? `${context.stemLab.stemCount} stems are ready for a bridge or drop.` : "A loaded or selected anchor record can become an acapella or instrumental transition tool." },
+    { id: "ditc", type: "DITC", title: "DITC Recommendation", confidence: context.ditc.trackCount ? 81 : 52, prompt: "Find better opening, transition, and closing songs from the current DITC project.", detail: context.ditc.trackCount ? `Review ${context.ditc.trackCount} crate track${context.ditc.trackCount === 1 ? "" : "s"} against tempo, key, and project arc.` : "Import local tracks to unlock track-specific opening and closing recommendations." }
+  ];
+  return suggestions.filter((item) => !producerStudioState.dismissedSuggestions.has(item.id));
+}
+
+function renderProducerSuggestions(context) {
+  const grid = document.querySelector("#producerSuggestionGrid");
+  if (!grid) return;
+  const suggestions = buildProducerSuggestions(context);
+  grid.innerHTML = suggestions.length ? suggestions.map((item) => {
+    const applied = producerStudioState.appliedSuggestions.has(item.id);
+    return `<article class="producer-suggestion-card" data-suggestion-id="${item.id}">
+      <div class="producer-card-meta"><span>${escapeHtml(item.type)}</span><strong>${item.confidence}%</strong></div>
+      <h4>${escapeHtml(item.title)}</h4><p>${escapeHtml(item.detail)}</p>
+      <p class="producer-card-explanation" hidden>Why: this recommendation uses the current shared project context and remains a reversible working plan.</p>
+      <div class="producer-card-actions">
+        <button data-suggestion-action="preview">Preview</button>
+        <button data-suggestion-action="apply" class="is-primary">${applied ? "Applied" : "Apply"}</button>
+        <button data-suggestion-action="explain">Explain</button>
+        <button data-suggestion-action="dismiss">Dismiss</button>
+        <button data-suggestion-action="undo" ${applied ? "" : "disabled"}>Undo</button>
+      </div>
+    </article>`;
+  }).join("") : `<div class="producer-empty-state">All suggestions are cleared for today. Refresh to bring them back.</div>`;
+}
+
+const PRODUCER_MISSIONS = [
+  ["Build Mixtape", "Create a cohesive mixtape plan using the current project, DITC tracks, decks, pads, and references."],
+  ["Create Live Set", "Create a live set with a clear energy arc and safe transitions using the current project."],
+  ["Generate Intro", "Generate a memorable project intro with an 8-bar structure, DJ drop space, and a clean first transition."],
+  ["Generate Outro", "Generate a strong closing section that resolves the current key, energy arc, and project identity."],
+  ["Improve Energy", "Improve the project energy arc without replacing manual arrangement choices."],
+  ["Generate Beat", "Generate a Beat Forge pattern that fits the current BPM, genre, decks, and arrangement."],
+  ["Compose Harmony", "Compose a Harmony Lab idea that fits the current key, Beat Forge groove, and project space."],
+  ["Find Better Songs", "Find better intro, transition, and closing songs in the current DITC selection."],
+  ["Master Session", "Review this session and create a non-destructive mastering checklist."],
+  ["Build Pad Bank", "Build a project-aware pad bank for intros, drops, transitions, scratches, and the outro."],
+  ["Generate Transition", "Generate a safe, editable transition plan for the current decks and selected songs."]
+];
+
+function renderProducerMissions() {
+  const grid = document.querySelector("#producerMissionGrid");
+  if (!grid) return;
+  grid.innerHTML = PRODUCER_MISSIONS.map(([label, prompt], index) => `<button class="producer-mission" data-producer-mission="${index}"><span>${escapeHtml(label)}</span><small>${escapeHtml(prompt)}</small><b>Start mission →</b></button>`).join("");
+}
+
+function rememberProducerPrompt(prompt, options = {}) {
+  const value = String(prompt || "").trim();
+  if (!value) return;
+  const existing = producerStudioState.history.find((item) => item.prompt === value);
+  const item = { prompt: value, favorite: existing?.favorite || false, createdAt: Date.now() };
+  producerStudioState.history = [item, ...producerStudioState.history.filter((entry) => entry.prompt !== value)].slice(0, 20);
+  if (options.saved && !producerStudioState.savedPrompts.some((entry) => entry.prompt === value)) producerStudioState.savedPrompts.unshift(item);
+  writeProducerStudioStorage();
+  renderProducerPromptLibrary();
+}
+
+function renderProducerPromptLibrary() {
+  const templates = ["Create a DJ Clue intro", "Generate Boom Bap drums", "Generate Rhodes chords", "Create a 20-minute house mix"];
+  const renderButtons = (items, kind) => items.length ? items.map((item, index) => `<span class="producer-library-entry"><button data-producer-prompt-kind="${kind}" data-producer-prompt-index="${index}">${escapeHtml(item.prompt || item)}</button>${kind === "history" ? `<button class="producer-favorite-toggle" data-producer-favorite-index="${index}" aria-label="${item.favorite ? "Remove from" : "Add to"} favorites">${item.favorite ? "★" : "☆"}</button>` : ""}</span>`).join("") : `<small>Nothing here yet.</small>`;
+  const history = document.querySelector("#producerPromptHistory");
+  if (!history) return;
+  history.innerHTML = renderButtons(producerStudioState.history.slice(0, 6), "history");
+  document.querySelector("#producerFavoritePrompts").innerHTML = renderButtons(producerStudioState.history.filter((item) => item.favorite).slice(0, 6), "favorite");
+  document.querySelector("#producerSavedPrompts").innerHTML = renderButtons(producerStudioState.savedPrompts.slice(0, 6), "saved");
+  document.querySelector("#producerPromptTemplates").innerHTML = renderButtons(templates, "template");
+  document.querySelector("#producerSuggestedPrompts").innerHTML = templates.map((prompt) => `<button data-producer-prompt-value="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`).join("");
+}
+
+function recordProducerEvent(action, options = {}) {
+  const entry = { id: createId(), action, timestamp: Date.now(), undoable: Boolean(options.undo) };
+  producerStudioState.timeline.unshift(entry);
+  if (options.undo) producerStudioState.undoActions.set(entry.id, options.undo);
+  producerStudioState.timeline = producerStudioState.timeline.slice(0, 80);
+  writeProducerStudioStorage();
+  renderProducerTimeline();
+  return entry;
+}
+
+function renderProducerTimeline() {
+  const timeline = document.querySelector("#producerTimeline");
+  if (!timeline) return;
+  timeline.innerHTML = producerStudioState.timeline.length ? producerStudioState.timeline.map((entry) => `<article class="producer-timeline-entry"><span class="producer-timeline-dot"></span><div><time datetime="${new Date(entry.timestamp).toISOString()}">${new Date(entry.timestamp).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</time><strong>${escapeHtml(entry.action)}</strong></div>${entry.undoable && producerStudioState.undoActions.has(entry.id) ? `<button data-producer-timeline-undo="${entry.id}">Undo</button>` : ""}</article>`).join("") : `<div class="producer-empty-state">Your creative actions will appear here.</div>`;
+}
+
+function renderProducerIntelligence(context) {
+  const graph = document.querySelector("#producerProjectGraph");
+  if (!graph) return;
+  const nodes = [
+    ["DITC", context.ditc.trackCount], ["Decks", context.decks.filter((deck) => deck.loaded).length], ["Beat Forge", context.beatForge.activeSteps],
+    ["Harmony", context.harmonyLab.noteCount], ["Pads", context.pads.loadedCount], ["Stems", context.stemLab.stemCount], ["Arrangement", context.arrangement.clipCount]
+  ];
+  graph.innerHTML = `<div class="project-graph-core"><span>${escapeHtml(context.project.name)}</span><strong>${context.project.progress}%</strong></div>${nodes.map(([label, count]) => `<div class="project-graph-node"><span>${escapeHtml(label)}</span><strong>${count}</strong></div>`).join("")}`;
+  const confidence = Math.min(96, 46 + nodes.filter(([, count]) => count > 0).length * 7);
+  document.querySelector("#producerConfidence").textContent = `Confidence · ${confidence}%`;
+  document.querySelector("#producerReasoning").textContent = `Recommendations currently use ${nodes.filter(([, count]) => count > 0).length} active project systems, ${context.project.bpm} BPM, ${context.project.key}, ${context.project.genre}, and ${context.project.progress}% progress. Preview and undo remain available before manual workflows are changed.`;
+}
+
+function renderProducerStudio() {
+  const context = refreshProjectContext();
+  const studio = document.querySelector("#ai");
+  if (!studio) return;
+  studio.dataset.producerMode = producerStudioState.mode;
+  document.querySelectorAll("[data-producer-mode-choice]").forEach((button) => {
+    const active = button.dataset.producerModeChoice === producerStudioState.mode;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  renderProjectOverview(context);
+  renderProducerPromptLibrary();
+  renderProducerSuggestions(context);
+  renderProducerMissions();
+  renderProducerTimeline();
+  renderProducerIntelligence(context);
+  renderAiContext();
+  const sync = document.querySelector("#producerSyncStatus");
+  if (sync) sync.textContent = `Context synced · ${new Date(context.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+}
+
+function previewProducerPrompt(prompt, sourceLabel) {
+  const input = document.querySelector("#aiPrompt");
+  input.value = prompt;
+  generateAiPlan();
+  recordProducerEvent(`Previewed ${sourceLabel}`);
+  document.querySelector("#aiPlanOutput")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function setupProducerStudioEvents() {
+  document.querySelectorAll("[data-producer-mode-choice]").forEach((button) => button.addEventListener("click", () => {
+    producerStudioState.mode = button.dataset.producerModeChoice;
+    writeProducerStudioStorage();
+    renderProducerStudio();
+  }));
+  document.querySelector("#producerSuggestedPrompts").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-producer-prompt-value]");
+    if (button) document.querySelector("#aiPrompt").value = button.dataset.producerPromptValue;
+  });
+  document.querySelector(".producer-prompt-library").addEventListener("click", (event) => {
+    const favorite = event.target.closest("[data-producer-favorite-index]");
+    if (favorite) {
+      const item = producerStudioState.history[Number(favorite.dataset.producerFavoriteIndex)];
+      if (item) item.favorite = !item.favorite;
+      writeProducerStudioStorage(); renderProducerPromptLibrary(); return;
+    }
+    const button = event.target.closest("[data-producer-prompt-kind]");
+    if (!button) return;
+    const kind = button.dataset.producerPromptKind;
+    const index = Number(button.dataset.producerPromptIndex);
+    const templates = ["Create a DJ Clue intro", "Generate Boom Bap drums", "Generate Rhodes chords", "Create a 20-minute house mix"];
+    const collections = { history: producerStudioState.history, favorite: producerStudioState.history.filter((item) => item.favorite), saved: producerStudioState.savedPrompts, template: templates };
+    const item = collections[kind]?.[index];
+    document.querySelector("#aiPrompt").value = item?.prompt || item || "";
+  });
+  document.querySelector("#saveProducerPrompt").addEventListener("click", () => {
+    const prompt = document.querySelector("#aiPrompt").value.trim();
+    if (!prompt) return;
+    rememberProducerPrompt(prompt, { saved: true });
+    recordProducerEvent("Saved a Prompt Studio prompt");
+  });
+  document.querySelector("#producerMissionGrid").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-producer-mission]");
+    if (!button) return;
+    const mission = PRODUCER_MISSIONS[Number(button.dataset.producerMission)];
+    previewProducerPrompt(mission[1], mission[0]);
+  });
+  document.querySelector("#producerSuggestionGrid").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-suggestion-action]");
+    const card = event.target.closest("[data-suggestion-id]");
+    if (!button || !card) return;
+    const context = refreshProjectContext();
+    const suggestion = buildProducerSuggestions(context).find((item) => item.id === card.dataset.suggestionId);
+    if (!suggestion) return;
+    const action = button.dataset.suggestionAction;
+    if (action === "explain") { const explanation = card.querySelector(".producer-card-explanation"); explanation.hidden = !explanation.hidden; return; }
+    if (action === "dismiss") { producerStudioState.dismissedSuggestions.add(suggestion.id); writeProducerStudioStorage(); renderProducerSuggestions(context); recordProducerEvent(`Dismissed ${suggestion.title}`); return; }
+    if (action === "preview") { previewProducerPrompt(suggestion.prompt, suggestion.title); return; }
+    if (action === "apply") {
+      const previousPrompt = document.querySelector("#aiPrompt").value;
+      document.querySelector("#aiPrompt").value = suggestion.prompt;
+      generateAiPlan();
+      producerStudioState.appliedSuggestions.set(suggestion.id, { previousPrompt });
+      recordProducerEvent(`Applied ${suggestion.title} to the working plan`, { undo: () => { document.querySelector("#aiPrompt").value = previousPrompt; aiPlanState = null; document.querySelector("#aiPlanOutput").textContent = "Plan undone. Generate a new plan when ready."; producerStudioState.appliedSuggestions.delete(suggestion.id); renderProducerStudio(); } });
+      renderProducerStudio();
+      return;
+    }
+    if (action === "undo") {
+      const applied = producerStudioState.appliedSuggestions.get(suggestion.id);
+      if (!applied) return;
+      document.querySelector("#aiPrompt").value = applied.previousPrompt;
+      aiPlanState = null;
+      document.querySelector("#aiPlanOutput").textContent = "Suggestion removed from the working plan.";
+      producerStudioState.appliedSuggestions.delete(suggestion.id);
+      recordProducerEvent(`Undid ${suggestion.title}`);
+      renderProducerStudio();
+    }
+  });
+  document.querySelector("#refreshProducerSuggestions").addEventListener("click", () => {
+    producerStudioState.dismissedSuggestions.clear();
+    writeProducerStudioStorage();
+    renderProducerStudio();
+  });
+  document.querySelector("#producerTimeline").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-producer-timeline-undo]");
+    const undo = button && producerStudioState.undoActions.get(button.dataset.producerTimelineUndo);
+    if (!undo) return;
+    undo(); producerStudioState.undoActions.delete(button.dataset.producerTimelineUndo); renderProducerTimeline();
+  });
+  document.querySelector("#clearProducerTimeline").addEventListener("click", () => {
+    producerStudioState.timeline = [];
+    producerStudioState.undoActions.clear();
+    writeProducerStudioStorage();
+    renderProducerTimeline();
+  });
+  document.querySelector("#globalBpm").addEventListener("input", () => {
+    if (document.querySelector("#ai")?.classList.contains("is-active")) renderProducerStudio();
+  });
 }
 
 function switchView(target) {
@@ -7805,7 +8365,7 @@ function switchView(target) {
   const view = document.querySelector(`#${target}`);
   if (button) button.classList.add("is-active");
   if (view) view.classList.add("is-active");
-  if (target === "ai") renderAiContext();
+  if (target === "ai") renderProducerStudio();
   if (target === "editor") renderEditor();
 }
 
@@ -8645,12 +9205,62 @@ function setupEvents() {
   document.querySelector("#explainBeatMatch").addEventListener("click", () => { document.querySelector("#beatMatchSuggestion").textContent = drums.beatMatch ? `${drums.beatMatch.text} This is inferred from deck BPM and keeps the current project pattern editable.` : "No active suggestion to explain."; });
   document.querySelector("#synthMachine").addEventListener("change", (event) => {
     instrument.machine = event.target.value;
-    updateInstrumentNotes();
+    updateInstrumentNotes(); saveHarmonyState();
   });
   document.querySelector("#instrumentPreset").addEventListener("change", (event) => {
     instrument.preset = event.target.value;
-    updateInstrumentNotes();
+    updateInstrumentNotes(); saveHarmonyState(); renderHarmonyInstrumentBrowser();
   });
+  document.querySelector("#harmonyMode").addEventListener("change", (event) => { instrument.workspaceMode = event.target.value; saveHarmonyState(); renderHarmonyLab(); });
+  document.querySelector("#harmonyKey").addEventListener("change", (event) => { instrument.key = event.target.value; saveHarmonyState(); renderKeyboard(); renderHarmonyMatch(); });
+  document.querySelector("#harmonyScale").addEventListener("change", (event) => { instrument.scale = event.target.value; saveHarmonyState(); renderKeyboard(); renderHarmonyMatch(); });
+  document.querySelector("#harmonyChordMode").addEventListener("change", (event) => { instrument.chordMode = event.target.value; saveHarmonyState(); });
+  document.querySelector("#oneFingerChords").addEventListener("change", (event) => { instrument.oneFingerChords = event.target.checked; saveHarmonyState(); });
+  document.querySelector("#harmonyVelocity").addEventListener("input", (event) => { instrument.velocity = Number(event.target.value); });
+  document.querySelector("#harmonyPitchBend").addEventListener("input", (event) => { instrument.pitchBend = Number(event.target.value); updateHarmonyVoiceModulation(); });
+  document.querySelector("#harmonyPitchBend").addEventListener("change", (event) => { event.target.value = 0; instrument.pitchBend = 0; updateHarmonyVoiceModulation(); });
+  document.querySelector("#harmonyModulation").addEventListener("input", (event) => { instrument.modulation = Number(event.target.value); updateHarmonyVoiceModulation(); });
+  document.querySelector("#harmonySustain").addEventListener("click", (event) => { instrument.sustain = !instrument.sustain; event.currentTarget.classList.toggle("is-active", instrument.sustain); event.currentTarget.setAttribute("aria-pressed", String(instrument.sustain)); if (!instrument.sustain) stopAllInstrumentVoices(); renderHarmonyDiagnostics(); });
+  document.querySelector("#harmonyPlay").addEventListener("click", playHarmonyPattern);
+  document.querySelector("#harmonyPause").addEventListener("click", pauseHarmonyPattern);
+  document.querySelector("#harmonyStop").addEventListener("click", stopHarmonyPattern);
+  document.querySelector("#harmonyRestart").addEventListener("click", async () => { stopHarmonyPattern(); await playHarmonyPattern(); });
+  document.querySelector("#harmonyLoop").addEventListener("click", (event) => { instrument.patternLoop = !instrument.patternLoop; event.currentTarget.classList.toggle("is-active", instrument.patternLoop); event.currentTarget.setAttribute("aria-pressed", String(instrument.patternLoop)); });
+  document.querySelector("#harmonyRecord").addEventListener("click", async (event) => { await AudioEngine.init(); instrument.recording = !instrument.recording; if (instrument.recording) { snapshotHarmony("Live recording"); instrument.recordStartedAt = AudioEngine.context.currentTime; } event.currentTarget.classList.toggle("is-active", instrument.recording); event.currentTarget.textContent = instrument.recording ? "Stop Rec" : "Record"; renderHarmonyDiagnostics(); });
+  document.querySelector("#harmonyInstrumentSearch").addEventListener("input", renderHarmonyInstrumentBrowser);
+  document.querySelector("#harmonyInstrumentCategories").addEventListener("click", (event) => { const button = event.target.closest("[data-harmony-category]"); if (!button) return; instrument.instrumentCategory = button.dataset.harmonyCategory; instrument.selectedInstrumentIndex = 0; renderHarmonyInstrumentBrowser(); });
+  document.querySelector("#harmonyInstrumentResults").addEventListener("click", (event) => { const button = event.target.closest("[data-harmony-instrument-index]"); if (!button) return; instrument.selectedInstrumentIndex = Number(button.dataset.harmonyInstrumentIndex); renderHarmonyInstrumentBrowser(); });
+  document.querySelector("#previewHarmonyInstrument").addEventListener("click", previewHarmonyInstrument);
+  document.querySelector("#loadHarmonyInstrument").addEventListener("click", loadHarmonyInstrument);
+  document.querySelector("#favoriteHarmonyInstrument").addEventListener("click", () => { const preset = instrument.filteredPresets?.[instrument.selectedInstrumentIndex]; if (!preset) return; instrument.favorites = instrument.favorites.includes(preset.id) ? instrument.favorites.filter((id) => id !== preset.id) : [...instrument.favorites, preset.id]; saveHarmonyState(); renderHarmonyInstrumentBrowser(); });
+  document.querySelector("#enableHarmonyMidi").addEventListener("click", enableHarmonyMidi);
+  document.querySelector("#harmonyArp").addEventListener("change", (event) => { instrument.arpeggiator.enabled = event.target.checked; saveHarmonyState(); });
+  document.querySelector("#harmonyArpRate").addEventListener("change", (event) => { instrument.arpeggiator.rate = event.target.value; saveHarmonyState(); });
+  document.querySelector("#harmonyArpDirection").addEventListener("change", (event) => { instrument.arpeggiator.direction = event.target.value; saveHarmonyState(); });
+  document.querySelectorAll("[data-harmony-view]").forEach((button) => button.addEventListener("click", () => { instrument.harmonyView = button.dataset.harmonyView; document.querySelectorAll("[data-harmony-view]").forEach((item) => item.classList.toggle("is-active", item === button)); renderHarmonyEditor(); }));
+  document.querySelector("#harmonyNoteDuration").addEventListener("input", (event) => { const note = instrument.pattern.notes.find((item) => item.id === instrument.selectedNoteId); if (!note) return; note.duration = Number(event.target.value); touchHarmony(); });
+  document.querySelector("#duplicateHarmonyNote").addEventListener("click", () => { const note = instrument.pattern.notes.find((item) => item.id === instrument.selectedNoteId); if (!note) return; snapshotHarmony("Duplicate note"); const copy = { ...note, id: createId(), start: Math.min(instrument.pattern.bars * 16 - 1, note.start + note.duration), automation: { ...note.automation } }; instrument.pattern.notes.push(copy); instrument.selectedNoteId = copy.id; touchHarmony(); });
+  document.querySelector("#deleteHarmonyNote").addEventListener("click", () => { if (!instrument.selectedNoteId) return; snapshotHarmony("Delete note"); instrument.pattern.notes = instrument.pattern.notes.filter((note) => note.id !== instrument.selectedNoteId); instrument.selectedNoteId = null; touchHarmony(); });
+  document.querySelector("#quantizeHarmony").addEventListener("click", () => { snapshotHarmony("Quantize"); instrument.pattern.notes.forEach((note) => { note.start = Math.round(note.start); note.duration = Math.max(1, Math.round(note.duration)); }); touchHarmony(); });
+  document.querySelector("#saveHarmonyPattern").addEventListener("click", () => { instrument.patterns = [...instrument.patterns.filter((pattern) => pattern.name !== instrument.pattern.name), JSON.parse(JSON.stringify(instrument.pattern))]; saveHarmonyState(); document.querySelector("#harmonyAiMessage").textContent = `Saved ${instrument.pattern.name} to the local pattern library.`; });
+  document.querySelector("#sendHarmonyArrangement").addEventListener("click", sendHarmonyToArrangement);
+  document.querySelector("#undoHarmony").addEventListener("click", undoHarmony);
+  document.querySelector("#generateHarmonyPlan").addEventListener("click", () => buildHarmonyPlan(false));
+  document.querySelector("#generateHarmonyVariation").addEventListener("click", () => buildHarmonyPlan(true));
+  document.querySelector("#previewHarmonyPlan").addEventListener("click", () => previewHarmonyPattern());
+  document.querySelector("#explainHarmonyPlan").addEventListener("click", () => { if (instrument.pendingPlan) document.querySelector("#harmonyAiMessage").textContent = `${instrument.pendingPlan.type} notes follow ${instrument.key} ${instrument.scale}; spacing leaves room for ${activeDrumGroove().name} and the current deck.`; });
+  document.querySelector("#applyHarmonyPlan").addEventListener("click", () => applyHarmonyPlan());
+  document.querySelector("#saveHarmonyPrompt").addEventListener("click", () => { const prompt = document.querySelector("#harmonyPrompt").value.trim(); if (prompt) { instrument.promptHistory.push(prompt); saveHarmonyState(); document.querySelector("#harmonyAiMessage").textContent = "Composer prompt saved locally."; } });
+  document.querySelector("#clearHarmonyPrompt").addEventListener("click", () => { document.querySelector("#harmonyPrompt").value = ""; instrument.pendingPlan = null; document.querySelector("#harmonyPlanOutput").textContent = "No composition plan yet."; ["previewHarmonyPlan", "explainHarmonyPlan", "applyHarmonyPlan"].forEach((id) => { document.querySelector(`#${id}`).disabled = true; }); });
+  document.querySelector("#generateBassline").addEventListener("click", () => generateBassPlan(false));
+  document.querySelector("#varyBassline").addEventListener("click", () => generateBassPlan(true));
+  document.querySelector("#previewBassline").addEventListener("click", () => previewHarmonyPattern(instrument.pendingBass));
+  document.querySelector("#applyBassline").addEventListener("click", () => applyHarmonyPlan(instrument.pendingBass));
+  document.querySelector("#previewHarmonyMatch").addEventListener("click", () => previewHarmonyPattern(instrument.matchPlan));
+  document.querySelector("#applyHarmonyMatch").addEventListener("click", () => applyHarmonyPlan(instrument.matchPlan));
+  document.querySelector("#rejectHarmonyMatch").addEventListener("click", () => { instrument.matchPlan = null; document.querySelector("#harmonyMatchSuggestion").textContent = "Harmony Match suggestion rejected. Manual performance remains unchanged."; });
+  document.querySelector("#explainHarmonyMatch").addEventListener("click", () => { document.querySelector("#harmonyMatchSuggestion").textContent += " The recommendation uses deck BPM/key when available, Beat Forge groove identity, and the selected Harmony scale."; });
+  document.querySelector("#undoHarmonyMatch").addEventListener("click", undoHarmony);
   document.querySelector("#bassMode").addEventListener("click", () => {
     setBassMode(!instrument.bassMode);
   });
@@ -8694,15 +9304,17 @@ function setupEvents() {
       return;
     }
     const note = instrument.keyboard.find((item) => item.key.toLowerCase() === event.key.toLowerCase());
-    if (!note) return;
+    if (!note || !document.querySelector("#keys")?.classList.contains("is-active")) return;
     event.preventDefault();
     const button = [...document.querySelectorAll(".key-button")][instrument.keyboard.indexOf(note)];
-    playInstrumentNote(note.offset, false, button);
+    instrument.heldComputerVoices ||= new Map();
+    playInstrumentNote(note.offset, false, button, instrument.sustain ? 30 : 4).then((voice) => { if (voice) instrument.heldComputerVoices.set(note.key.toLowerCase(), voice); });
   });
   document.addEventListener("keyup", (event) => {
     const padIndex = PAD_KEYS.indexOf(event.key.toLowerCase());
     if (padIndex >= 0) document.querySelector(`[data-drum-pad="${padIndex}"]`)?.classList.remove("is-hit");
     if (padIndex >= 0) releasePad(padIndex);
+    const harmonyKey = event.key.toLowerCase(); const voice = instrument.heldComputerVoices?.get(harmonyKey); if (voice && !instrument.sustain) releaseSynthVoice(voice); instrument.heldComputerVoices?.delete(harmonyKey);
   });
   document.querySelector("#drumPlay").addEventListener("click", async () => { await AudioEngine.init(); startDrums(); });
   document.querySelector("#drumPause").addEventListener("click", pauseDrums);
@@ -9797,18 +10409,23 @@ function detectPlatform(url) {
 
 restorePadWorkspace();
 restoreBeatForgeState();
+restoreHarmonyState();
+readProducerStudioStorage();
 initializePlaybackRegistry();
 readSmartPromptStorage();
 setupEvents();
+setupProducerStudioEvents();
 renderPads();
 renderPadEditor();
 renderPadWorkspaceControls();
 renderInstrumentOptions();
-renderKeyboard();
+renderHarmonyLab();
 renderPresetOptions();
 if (drums.restored) renderBeatForge(); else applyDrumPreset(drums.preset);
 renderSources();
 renderAiContext();
+if (!producerStudioState.timeline.length) recordProducerEvent("Producer Studio project context created");
+renderProducerStudio();
 renderEditor();
 drawWaveform("a");
 drawWaveform("b");

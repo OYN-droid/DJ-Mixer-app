@@ -20,10 +20,10 @@
           <button class="tab-button is-active" data-target="decks" title="Decks">Decks</button>
           <button class="tab-button" data-target="sampler" title="Sampler">Pads</button>
           <button class="tab-button" data-target="drums" title="Beat Forge drum machine">Beat Forge</button>
-          <button class="tab-button" data-target="keys" title="Keys">Keys</button>
+          <button class="tab-button" data-target="keys" title="Harmony Lab keys and composition">Harmony Lab</button>
           <button class="tab-button" data-target="stems" title="Stems">Stems</button>
           <button class="tab-button" data-target="editor" title="Editor">Editor</button>
-          <button class="tab-button" data-target="ai" title="AI">AI</button>
+          <button class="tab-button" data-target="ai" title="Producer Studio">Studio</button>
           <button class="tab-button" data-target="sources" title="Diggin’ in the Crates">DITC</button>
         </nav>
         <div class="master-meter" aria-label="Master output meter">
@@ -614,36 +614,31 @@
         <section id="keys" class="view" aria-labelledby="keysTitle">
           <div class="section-heading">
             <div>
-              <h2 id="keysTitle">Keys & Bass</h2>
-              <p>Play chords, synth stabs, electric keys, organs, funk bass, post-punk bass, and sub lines into the mix.</p>
+              <p class="eyebrow">Keys, Chords & AI Composition</p>
+              <h2 id="keysTitle">Harmony Lab</h2>
+              <p>Play manually, shape chords and basslines, or preview project-aware composition ideas.</p>
             </div>
+            <label>Workspace <select id="harmonyMode"><option value="simple">Simple</option><option value="advanced">Advanced</option></select></label>
           </div>
-          <div class="preset-panel">
-            <div>
-              <label for="synthMachine">Synth model</label>
-              <select id="synthMachine"></select>
-            </div>
-            <div>
-              <label for="instrumentPreset">Sound preset</label>
-              <select id="instrumentPreset"></select>
-            </div>
-            <button id="bassMode" class="secondary-button" aria-pressed="false">Bass Mode</button>
-            <button id="releaseKeys" class="secondary-button">Release Notes</button>
-            <p id="instrumentNotes"></p>
+          <div class="harmony-transport" aria-label="Harmony Lab transport">
+            <button id="harmonyPlay" class="primary-button">Play Pattern</button><button id="harmonyPause" class="secondary-button">Pause</button><button id="harmonyStop" class="secondary-button">Stop</button><button id="harmonyRestart" class="secondary-button">Restart</button><button id="harmonyRecord" class="secondary-button">Record</button><button id="harmonySustain" class="secondary-button" aria-pressed="false">Sustain</button><button id="harmonyLoop" class="secondary-button is-active" aria-pressed="true">Loop</button><strong id="harmonyPatternName">Harmony A1</strong><span id="harmonyPosition">Bar 1 · Beat 1</span>
           </div>
-          <div class="instrument-layout">
-            <div class="chord-bank" aria-label="Chord bank">
-              <button data-chord="minor7">Minor 7</button>
-              <button data-chord="major7">Major 7</button>
-              <button data-chord="ninth">9th</button>
-              <button data-chord="sus">Sus</button>
-              <button data-chord="stab">Stab</button>
-              <button data-chord="octave">Octave</button>
+          <div class="harmony-layout">
+            <aside class="harmony-instrument-browser advanced-harmony-control"><h3>Instrument Library</h3><input id="harmonyInstrumentSearch" type="search" placeholder="Search instruments"><div id="harmonyInstrumentCategories"></div><div id="harmonyInstrumentResults"></div><div class="harmony-actions"><button id="previewHarmonyInstrument" class="secondary-button">Preview</button><button id="loadHarmonyInstrument" class="primary-button">Load</button><button id="favoriteHarmonyInstrument" class="secondary-button">Favorite</button></div></aside>
+            <div class="harmony-center">
+              <div class="preset-panel">
+                <div><label for="synthMachine">Instrument engine</label><select id="synthMachine"></select></div><div><label for="instrumentPreset">Instrument</label><select id="instrumentPreset"></select></div><label>Key <select id="harmonyKey"><option>C</option><option>C#</option><option>D</option><option>Eb</option><option>E</option><option>F</option><option>F#</option><option>G</option><option>Ab</option><option>A</option><option>Bb</option><option>B</option></select></label><label>Scale <select id="harmonyScale"><option value="major">Major</option><option value="minor" selected>Minor</option><option value="dorian">Dorian</option><option value="pentatonic">Pentatonic</option><option value="chromatic">Chromatic</option></select></label><button id="bassMode" class="secondary-button" aria-pressed="false">Bass Mode</button><button id="releaseKeys" class="secondary-button">Release Notes</button><p id="instrumentNotes"></p>
+              </div>
+              <div class="harmony-performance-controls"><label>Velocity <input id="harmonyVelocity" type="range" min="0.1" max="1" step="0.01" value="0.82"></label><label>Pitch Bend <input id="harmonyPitchBend" type="range" min="-2" max="2" step="0.01" value="0"></label><label>Modulation <input id="harmonyModulation" type="range" min="0" max="1" step="0.01" value="0"></label><button id="enableHarmonyMidi" class="secondary-button advanced-harmony-control">Enable MIDI</button></div>
+              <div class="chord-bank" aria-label="Chord bank"><button data-chord="major">Major</button><button data-chord="minor">Minor</button><button data-chord="seventh">7th</button><button data-chord="minor7">Minor 7</button><button data-chord="major7">Major 7</button><button data-chord="ninth">9th</button><button data-chord="sus">Sus</button><button data-chord="neoSoul">Neo Soul</button><button data-chord="house">House</button><button data-chord="jazz">Jazz</button><button data-chord="stab">Stab</button><button data-chord="octave">Octave</button></div>
+              <div id="keyboard" class="keyboard" aria-label="Playable Harmony Lab keyboard"></div><div id="bassKeys" class="bass-keys" aria-label="Bass keys"></div><p class="fine-print">Computer keys A through K and the upper-row accidentals play notes. Root, scale, and active notes have distinct labels and states.</p>
+              <div class="harmony-view-tabs advanced-harmony-control"><button class="secondary-button is-active" data-harmony-view="piano">Piano Roll</button><button class="secondary-button" data-harmony-view="velocity">Velocity</button><button class="secondary-button" data-harmony-view="automation">Automation</button></div><div id="harmonyEditor" class="harmony-editor advanced-harmony-control"></div><div class="harmony-actions advanced-harmony-control"><label>Selected duration <input id="harmonyNoteDuration" type="range" min="1" max="16" step="1" value="1"></label><button id="duplicateHarmonyNote" class="secondary-button">Duplicate Note</button><button id="deleteHarmonyNote" class="secondary-button">Delete Note</button><button id="quantizeHarmony" class="secondary-button">Quantize</button><button id="saveHarmonyPattern" class="secondary-button">Save Pattern</button><button id="sendHarmonyArrangement" class="secondary-button">Send to Arrangement</button><button id="undoHarmony" class="secondary-button">Undo</button></div>
             </div>
-            <div id="keyboard" class="keyboard" aria-label="Playable keyboard"></div>
-            <div id="bassKeys" class="bass-keys" aria-label="Bass keys"></div>
-            <p class="fine-print">Computer keys A-K play the keyboard. Hold Bass Mode for lower notes, or use the bass row for quick low-end lines.</p>
+            <aside class="harmony-tools advanced-harmony-control"><h3>Composition Tools</h3><label>Chord Mode <select id="harmonyChordMode"><option value="major">Major</option><option value="minor">Minor</option><option value="seventh">7ths</option><option value="ninth">9ths</option><option value="sus">Sus</option><option value="neoSoul">Neo Soul</option><option value="house">House</option><option value="jazz">Jazz</option></select></label><label><input id="oneFingerChords" type="checkbox"> One Finger Chords</label><label><input id="harmonyScaleAssist" type="checkbox" checked> Scale Assist</label><h4>Arpeggiator</h4><label><input id="harmonyArp" type="checkbox"> Enabled</label><label>Rate <select id="harmonyArpRate"><option value="1/8">1/8</option><option value="1/16">1/16</option></select></label><label>Direction <select id="harmonyArpDirection"><option value="up">Up</option><option value="down">Down</option><option value="updown">Up/Down</option></select></label><h4>Bass Generator</h4><select id="bassGeneratorStyle"><option>Root Bassline</option><option>Walking Bass</option><option>808 Pattern</option><option>Synth Bass</option><option>Boom Bap Bass</option><option>House Bass</option></select><div class="harmony-actions"><button id="generateBassline" class="ai-button">Generate</button><button id="varyBassline" class="secondary-button">Variation</button><button id="previewBassline" class="secondary-button">Preview</button><button id="applyBassline" class="primary-button">Apply</button></div></aside>
           </div>
+          <section class="harmony-ai"><div><p class="eyebrow">AI Music Producer</p><h3>AI Composer</h3><p id="harmonyAiMessage">Describe chords, bass, melody, pad, hook, or transition ideas. Preview always comes before Apply.</p></div><textarea id="harmonyPrompt" rows="3" placeholder="Write soulful Rhodes chords for a 92 BPM East Coast mixtape."></textarea><div class="ai-actions"><button id="generateHarmonyPlan" class="ai-button">Generate</button><button id="generateHarmonyVariation" class="ai-button">Generate Another</button><button id="previewHarmonyPlan" class="secondary-button" disabled>Preview</button><button id="explainHarmonyPlan" class="secondary-button" disabled>Explain</button><button id="applyHarmonyPlan" class="primary-button" disabled>Apply</button><button id="saveHarmonyPrompt" class="secondary-button">Save Prompt</button><button id="clearHarmonyPrompt" class="secondary-button">Clear</button></div><pre id="harmonyPlanOutput">No composition plan yet.</pre></section>
+          <section class="harmony-match advanced-harmony-control"><h3>AI Harmony Match</h3><p id="harmonyMatchSuggestion">Load a deck or create a Beat Forge pattern for a project-aware suggestion.</p><div class="ai-actions"><button id="previewHarmonyMatch" class="secondary-button">Preview</button><button id="applyHarmonyMatch" class="primary-button">Apply</button><button id="rejectHarmonyMatch" class="secondary-button">Reject</button><button id="explainHarmonyMatch" class="secondary-button">Explain</button><button id="undoHarmonyMatch" class="secondary-button">Undo</button></div></section>
+          <details id="harmonyDiagnostics" hidden><summary>Harmony Lab diagnostics</summary><pre id="harmonyDiagnosticsOutput"></pre></details>
         </section>
 
         <section id="stems" class="view" aria-labelledby="stemsTitle">
@@ -742,62 +737,128 @@
           </div>
         </section>
 
-        <section id="ai" class="view" aria-labelledby="aiTitle">
-          <div class="section-heading">
+        <section id="ai" class="view producer-studio" data-producer-mode="simple" aria-labelledby="aiTitle">
+          <div class="producer-hero">
             <div>
-              <h2 id="aiTitle">AI Beat Director</h2>
-              <p>Describe the beat, remix, transition, or song direction you want from the loaded decks, stems, pads, and instruments.</p>
+              <p class="eyebrow">Project Intelligence Workspace</p>
+              <h2 id="aiTitle">Producer Studio</h2>
+              <p>Your project-aware creative headquarters. Lead with a prompt or act on focused producer recommendations.</p>
             </div>
-            <button id="applyAiPlan" class="primary-button" disabled>Apply Plan</button>
+            <div class="producer-mode-control" role="group" aria-label="Producer Studio display mode">
+              <button class="producer-mode-button is-active" data-producer-mode-choice="simple" aria-pressed="true">Simple</button>
+              <button class="producer-mode-button" data-producer-mode-choice="advanced" aria-pressed="false">Advanced</button>
+            </div>
           </div>
-          <div class="ai-workspace">
-            <div class="ai-prompt-panel">
-              <label for="aiPrompt">Prompt</label>
-              <textarea id="aiPrompt" rows="7" placeholder="Example: Make a dark jungle remix with chopped vocals, big sub bass, dusty breakbeats, and atmospheric pads. Use the vocal stem as short pad chops and keep the drums frantic but clean."></textarea>
-            <div class="ai-actions">
-                <button id="generateAiPlan" class="primary-button">Generate Plan</button>
-                <button id="analyzeSelectedCrate" class="secondary-button">Analyze Selected</button>
-                <button id="startAiMix" class="secondary-button" disabled>Start Mix</button>
-                <button id="stopAiMix" class="secondary-button" disabled>Stop Mix</button>
-                <button id="clearAiPrompt" class="secondary-button">Clear</button>
-              </div>
-              <div class="ai-search-panel">
-                <label for="aiSectionSearch">Search & Clip</label>
-                <textarea id="aiSectionSearch" rows="4" placeholder="Try: 1:14-1:26, from 0:42 to 0:58, or a lyric/quote saved in crate cue text."></textarea>
-                <div class="ai-actions">
-                  <button id="searchAudioSections" class="primary-button">Find Sections</button>
-                  <button id="clearAudioSearch" class="secondary-button">Clear Search</button>
-                </div>
-                <div id="aiSearchResults" class="ai-search-results">No section search yet.</div>
-              </div>
-              <div class="mixtape-inspiration-panel">
-                <label for="mixtapeInspirationNotes">Mixtape Inspiration</label>
-                <div id="mixtapeReferenceDrop" class="mixtape-reference-drop">
-                  <strong>Load Mixtape for AI Inspiration</strong>
-                  <span>Drop a full mixtape folder, multiple track files, skits/interludes, and optional cover art. These files are analyzed as one reference project, not loaded to the decks.</span>
-                  <label class="file-button">
-                    Choose Files
-                    <input id="mixtapeReferenceFile" type="file" accept="audio/*,image/*" multiple>
-                  </label>
-                </div>
-                <p id="mixtapeReferenceStatus" class="fine-print">No inspiration mixtape project loaded. You can upload a folder, multiple audio files, and cover art, or select a local crate mixtape and click Analyze Mixtape.</p>
-                <textarea id="mixtapeInspirationNotes" rows="4" placeholder="Optional: describe the reference mixtape theme, DJ tags, recurring movie quotes, radio drops, era, region, or atmosphere."></textarea>
-                <div class="ai-actions">
-                  <button id="analyzeMixtapeInspiration" class="primary-button">Analyze Mixtape</button>
-                  <button id="applyMixtapeBlueprint" class="secondary-button" disabled>Use As Plan</button>
-                </div>
-                <div id="mixtapeAnalysisOutput" class="mixtape-analysis-output">No mixtape inspiration analysis yet.</div>
-              </div>
+
+          <section class="producer-section project-overview" aria-labelledby="projectOverviewTitle">
+            <div class="producer-section-heading">
+              <div><p class="eyebrow">Live Project State</p><h3 id="projectOverviewTitle">Project Overview</h3></div>
+              <span id="producerSyncStatus" class="producer-sync-status">Context synced</span>
             </div>
-            <div class="ai-context-panel">
-              <h3>Loaded Material</h3>
-              <div id="aiContext" class="ai-context-list"></div>
+            <div id="projectOverviewGrid" class="project-overview-grid" aria-live="polite"></div>
+          </section>
+
+          <section class="producer-section prompt-studio" aria-labelledby="promptStudioTitle">
+            <div class="producer-section-heading">
+              <div><p class="eyebrow">You Lead</p><h3 id="promptStudioTitle">Prompt Studio</h3></div>
+              <span class="producer-context-note">Current project context is included automatically</span>
             </div>
-            <div class="ai-plan-panel">
-              <h3>Generated Plan</h3>
+            <label class="sr-only" for="aiPrompt">Creative direction</label>
+            <textarea id="aiPrompt" rows="6" placeholder="Tell Producer Studio exactly what you want… Try “Create a DJ Clue intro,” “Generate Rhodes chords,” or “Build a 20-minute house mix.”"></textarea>
+            <div id="producerSuggestedPrompts" class="producer-prompt-chips" aria-label="Suggested prompts"></div>
+            <div class="ai-actions producer-prompt-actions">
+              <button id="generateAiPlan" class="primary-button">Generate Plan</button>
+              <button id="applyAiPlan" class="secondary-button" disabled>Apply Plan</button>
+              <button id="analyzeSelectedCrate" class="secondary-button">Analyze Selected</button>
+              <button id="startAiMix" class="secondary-button" disabled>Start Mix</button>
+              <button id="stopAiMix" class="secondary-button" disabled>Stop Mix</button>
+              <button id="saveProducerPrompt" class="secondary-button">Save Prompt</button>
+              <button id="clearAiPrompt" class="secondary-button">Clear</button>
+            </div>
+            <article class="ai-plan-panel producer-plan-output">
+              <div class="producer-plan-heading"><span>Generated Plan</span><small>Review before applying</small></div>
               <div id="aiPlanOutput" class="ai-plan-output">No plan generated yet.</div>
+            </article>
+            <div class="producer-prompt-library">
+              <div><span>History</span><div id="producerPromptHistory" class="producer-library-items"></div></div>
+              <div><span>Favorites</span><div id="producerFavoritePrompts" class="producer-library-items"></div></div>
+              <div><span>Saved</span><div id="producerSavedPrompts" class="producer-library-items"></div></div>
+              <div><span>Templates</span><div id="producerPromptTemplates" class="producer-library-items"></div></div>
             </div>
-          </div>
+          </section>
+
+          <section class="producer-section producer-suggestions" aria-labelledby="producerSuggestionsTitle">
+            <div class="producer-section-heading">
+              <div><p class="eyebrow">AI Leads</p><h3 id="producerSuggestionsTitle">Today’s Suggestions</h3></div>
+              <button id="refreshProducerSuggestions" class="secondary-button">Refresh</button>
+            </div>
+            <div id="producerSuggestionGrid" class="producer-card-grid" aria-live="polite"></div>
+          </section>
+
+          <section class="producer-section creative-missions" aria-labelledby="creativeMissionsTitle">
+            <div class="producer-section-heading">
+              <div><p class="eyebrow">One-click Starting Points</p><h3 id="creativeMissionsTitle">Creative Missions</h3></div>
+              <span class="producer-context-note">Previewable and editable</span>
+            </div>
+            <div id="producerMissionGrid" class="producer-mission-grid"></div>
+          </section>
+
+          <section class="producer-section project-timeline" aria-labelledby="projectTimelineTitle">
+            <div class="producer-section-heading">
+              <div><p class="eyebrow">Creative Journal</p><h3 id="projectTimelineTitle">Project Timeline</h3></div>
+              <button id="clearProducerTimeline" class="secondary-button">Clear Journal</button>
+            </div>
+            <div id="producerTimeline" class="producer-timeline" aria-live="polite"></div>
+          </section>
+
+          <section class="producer-section project-intelligence producer-advanced-only" aria-labelledby="projectIntelligenceTitle">
+            <div class="producer-section-heading">
+              <div><p class="eyebrow">Shared Context Layer</p><h3 id="projectIntelligenceTitle">Project Intelligence</h3></div>
+              <span id="producerConfidence" class="producer-confidence">Confidence · 0%</span>
+            </div>
+            <div class="producer-intelligence-grid">
+              <article class="producer-intelligence-card">
+                <h4>Project Graph</h4>
+                <div id="producerProjectGraph" class="producer-project-graph"></div>
+              </article>
+              <article class="producer-intelligence-card">
+                <h4>AI Reasoning</h4>
+                <p id="producerReasoning">Producer Studio is waiting for project signals.</p>
+                <h4>Future Integrations</h4>
+                <p class="fine-print">Arrangement scoring · deeper stem opportunities · connected project sources</p>
+              </article>
+              <article class="ai-context-panel">
+                <h4>Detailed Context</h4>
+                <div id="aiContext" class="ai-context-list"></div>
+              </article>
+            </div>
+            <div class="producer-legacy-tools">
+              <details class="producer-tool-drawer">
+                <summary>Search &amp; Clip</summary>
+                <div class="ai-search-panel">
+                  <label for="aiSectionSearch">Find a section</label>
+                  <textarea id="aiSectionSearch" rows="4" placeholder="Try: 1:14-1:26, from 0:42 to 0:58, or a lyric/quote saved in crate cue text."></textarea>
+                  <div class="ai-actions"><button id="searchAudioSections" class="primary-button">Find Sections</button><button id="clearAudioSearch" class="secondary-button">Clear Search</button></div>
+                  <div id="aiSearchResults" class="ai-search-results">No section search yet.</div>
+                </div>
+              </details>
+              <details class="producer-tool-drawer">
+                <summary>Reference Mixtape</summary>
+                <div class="mixtape-inspiration-panel">
+                  <label for="mixtapeInspirationNotes">Mixtape Inspiration</label>
+                  <div id="mixtapeReferenceDrop" class="mixtape-reference-drop">
+                    <strong>Load Mixtape for AI Inspiration</strong>
+                    <span>Drop a mixtape folder, track files, skits, and optional cover art. It stays a reference project and is not loaded to the decks.</span>
+                    <label class="file-button">Choose Files<input id="mixtapeReferenceFile" type="file" accept="audio/*,image/*" multiple></label>
+                  </div>
+                  <p id="mixtapeReferenceStatus" class="fine-print">No inspiration mixtape project loaded.</p>
+                  <textarea id="mixtapeInspirationNotes" rows="4" placeholder="Optional: describe the theme, DJ tags, recurring quotes, era, region, or atmosphere."></textarea>
+                  <div class="ai-actions"><button id="analyzeMixtapeInspiration" class="primary-button">Analyze Mixtape</button><button id="applyMixtapeBlueprint" class="secondary-button" disabled>Use As Plan</button></div>
+                  <div id="mixtapeAnalysisOutput" class="mixtape-analysis-output">No mixtape inspiration analysis yet.</div>
+                </div>
+              </details>
+            </div>
+          </section>
         </section>
 
         <section id="sources" class="view" aria-labelledby="sourcesTitle">
