@@ -705,36 +705,38 @@
         <section id="editor" class="view" aria-labelledby="editorTitle">
           <div class="section-heading">
             <div>
-              <h2 id="editorTitle">Mixtape Editor</h2>
-              <p>Arrange songs, stems, pads, drums, keys, drops, and transitions on a visual timeline.</p>
+              <h2 id="editorTitle">Arrangement Studio</h2>
+              <p>Timeline Editing, Mix Construction, and Performance Recording</p>
             </div>
-            <div class="editor-transport">
+            <div class="editor-mode-toggle" role="group" aria-label="Arrangement workspace mode"><button id="editorSimpleMode" class="secondary-button is-active" aria-pressed="true">Simple</button><button id="editorAdvancedMode" class="secondary-button" aria-pressed="false">Advanced</button></div>
+          </div>
+
+          <div class="editor-toolbar arrangement-top-toolbar">
+            <label>Project <input id="editorProjectName" type="text" value="Main Arrangement" maxlength="80"></label>
             <button id="editorPlay" class="primary-button">Play</button>
             <button id="editorPause" class="secondary-button">Pause</button>
             <button id="editorStop" class="secondary-button">Stop</button>
             <button id="editorRestart" class="secondary-button">Restart</button>
-            <button id="editorRecordPerformance" class="secondary-button">Record Perf</button>
-            <button id="editorOverdubPerformance" class="secondary-button">Overdub</button>
-            <button id="editorAddTrack" class="secondary-button">Add Track</button>
-          </div>
-          </div>
-
-          <div class="editor-toolbar">
+            <button id="editorRecordPerformance" class="record-button">Record</button>
+            <button id="editorOverdubPerformance" class="secondary-button arrangement-advanced-only">Overdub</button>
+            <label><input id="editorLoopRegion" type="checkbox"> Loop</label>
+            <label><input id="editorMetronome" type="checkbox"> Metronome</label>
             <label>Snap
               <select id="editorSnap">
+                <option value="free">Off</option>
+                <option value="second">Seconds</option>
+                <option value="beat">Beats</option>
+                <option value="half-bar">Half Bar</option>
                 <option value="bar">Bar</option>
-                <option value="beat">Beat</option>
-                <option value="phrase">Phrase</option>
-                <option value="free">Free</option>
+                <option value="two-bars">Two Bars</option>
+                <option value="four-bars">Four Bars</option>
               </select>
             </label>
+            <label>BPM <input id="editorBpm" type="number" min="60" max="180" value="124"></label>
             <label>Zoom
               <input id="editorZoom" type="range" min="4" max="18" value="8">
             </label>
-            <label>Playhead
-              <input id="editorPlayhead" type="range" min="0" max="480" value="0">
-            </label>
-            <label>Event Grid
+            <label class="arrangement-advanced-only">Event Grid
               <select id="editorEventQuantize">
                 <option value="snap">Use Snap</option>
                 <option value="bar">Bar</option>
@@ -743,35 +745,58 @@
                 <option value="free">Free</option>
               </select>
             </label>
+            <button id="editorUndo" class="secondary-button" disabled>Undo</button>
+            <button id="editorRedo" class="secondary-button" disabled>Redo</button>
+            <button id="editorSave" class="secondary-button">Save</button>
+            <button id="editorExport" class="secondary-button">Export</button>
+            <span id="editorSaveStatus" role="status">Unsaved Changes</span>
+            <span id="editorTransportReadout">0:00 · Bar 1 Beat 1 · 0:00</span>
+          </div>
+
+          <div class="editor-toolbar arrangement-edit-toolbar">
+            <button id="editorAddTrack" class="secondary-button">Add Track</button>
+            <button id="editorAddBeat" class="secondary-button">Add Beat</button>
+            <button id="editorAddHarmony" class="secondary-button">Add Harmony</button>
+            <button id="editorAddPad" class="secondary-button">Add Pad Recording</button>
+            <button id="editorAddTransition" class="secondary-button">Add Transition</button>
+            <button id="editorAddMarker" class="secondary-button arrangement-advanced-only">Add Marker</button>
             <button id="editorSplit" class="secondary-button">Split</button>
             <button id="editorDuplicate" class="secondary-button">Duplicate</button>
             <button id="editorLoop" class="secondary-button">Loop</button>
-            <button id="editorQuantize" class="secondary-button">Quantize</button>
+            <button id="editorQuantize" class="secondary-button arrangement-advanced-only">Quantize</button>
             <button id="editorDelete" class="secondary-button">Delete</button>
+            <label>Playhead <input id="editorPlayhead" type="range" min="0" max="60" value="0"></label>
           </div>
 
           <div class="editor-workspace">
             <aside class="editor-bin">
               <div>
-                <h3>Source Bin</h3>
-                <p class="fine-print">Drag crate tracks, decks, stems, pads, drums, keys, drops, or files onto the timeline.</p>
+                <h3>Browser</h3>
+                <p class="fine-print">Drag real project content, or use Add for keyboard access.</p>
               </div>
+              <div id="editorBrowserTabs" class="editor-browser-tabs"><button data-editor-browser="all" class="is-active">Recent</button><button data-editor-browser="crate">DITC</button><button data-editor-browser="deck">Decks</button><button data-editor-browser="stem">Stems</button><button data-editor-browser="pad">Pads</button><button data-editor-browser="drums">Beat Forge</button><button data-editor-browser="keys">Harmony</button><button data-editor-browser="transition">Transitions</button></div>
               <div id="editorSourceBin" class="editor-source-bin"></div>
+              <div id="editorEmptyActions" class="editor-empty-actions"><button data-editor-empty="sources">Add Tracks from DITC</button><button data-editor-empty="deck-a">Use Deck A</button><button data-editor-empty="deck-b">Use Deck B</button><button data-editor-empty="beat">Add Beat Forge Pattern</button><button data-editor-empty="harmony">Add Harmony Lab Idea</button><button data-editor-empty="stem">Add Stem</button><button data-editor-empty="record">Record Performance</button><button data-editor-empty="mission">Start Build Mixtape Mission</button></div>
             </aside>
 
             <div class="editor-arranger">
               <div id="editorRuler" class="editor-ruler"></div>
               <div id="editorTimeline" class="editor-timeline" aria-label="Mixtape arrangement timeline"></div>
-              <p id="editorStatus" class="fine-print">Drop clips onto the timeline. Use snap, trim, split, duplicate, fades, and AI suggestions to build an arrangement.</p>
+              <p id="editorStatus" class="fine-print" role="status" aria-live="polite">Build your mix by adding tracks, beats, harmony, stems, or recorded performances.</p>
             </div>
 
             <aside class="editor-inspector">
               <h3>Clip Inspector</h3>
-              <div id="editorInspector" class="editor-inspector-body">Select a clip to edit timing, fades, volume, filter, EQ, and effects.</div>
+              <div id="editorInspector" class="editor-inspector-body">Select a clip to inspect its source and timing.</div>
               <button id="editorAiSuggest" class="primary-button">AI Suggest</button>
               <div id="editorAiOutput" class="editor-ai-output">No editor suggestions yet.</div>
+              <section class="arrangement-advanced-only arrangement-versions"><h3>Versions</h3><div id="editorVersions"></div><button id="editorDuplicateVersion">Duplicate Version</button></section>
+              <section class="arrangement-export-readiness"><h3>Export Readiness</h3><div id="editorExportReadiness">Not checked.</div></section>
             </aside>
           </div>
+          <details id="editorShortcuts"><summary>Keyboard shortcuts</summary><p>Space play/pause · S split · Delete remove · ⌘/Ctrl Z undo · Shift ⌘/Ctrl Z redo · ⌘/Ctrl S save · ⌘/Ctrl C/V copy/paste · ⌘/Ctrl D duplicate · L loop · R record · Escape cancel drag.</p></details>
+          <details id="editorDiagnostics" hidden><summary>Arrangement Studio diagnostics</summary><pre id="editorDiagnosticsOutput"></pre></details>
+          <input id="editorRelinkInput" type="file" accept="audio/*" hidden>
         </section>
 
         <section id="ai" class="view producer-studio" data-producer-mode="simple" aria-labelledby="aiTitle">
@@ -1112,6 +1137,7 @@
     <script src="src/recommendation-engine.js"></script>
     <script src="src/creative-missions.js"></script>
     <script src="src/stem-lab.js"></script>
+    <script src="src/arrangement-studio.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

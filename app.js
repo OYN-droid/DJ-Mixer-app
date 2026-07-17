@@ -118,24 +118,61 @@ const ditcState = {
 };
 
 const editorState = {
+  arrangementId: `arrangement-${Date.now().toString(36)}`,
+  projectId: "local-project",
+  name: "Main Arrangement",
+  version: 1,
+  workspaceMode: "simple",
+  timeSignature: "4/4",
   tracks: [
-    { id: "editor-track-1", name: "Songs / Main Decks", role: "Music" },
-    { id: "editor-track-2", name: "Vocals / Acapellas", role: "Stems" },
-    { id: "editor-track-3", name: "Pads / Drops / Scratches", role: "Performance" },
-    { id: "editor-track-4", name: "Drums / Keys / FX", role: "Production" }
+    { id: "editor-track-1", name: "Songs / Main Decks", role: "Music", type: "Track", muted: false, soloed: false, armed: false, volume: 1, pan: 0, locked: false, outputBus: "Master" },
+    { id: "editor-track-2", name: "Vocals / Acapellas", role: "Stems", type: "Stem", muted: false, soloed: false, armed: false, volume: 1, pan: 0, locked: false, outputBus: "Master" },
+    { id: "editor-track-3", name: "Pads / Drops / Scratches", role: "Performance", type: "Pad", muted: false, soloed: false, armed: false, volume: 1, pan: 0, locked: false, outputBus: "Master" },
+    { id: "editor-track-4", name: "Drums / Keys / FX", role: "Production", type: "Drum", muted: false, soloed: false, armed: false, volume: 1, pan: 0, locked: false, outputBus: "Master" }
   ],
   clips: [],
   selectedClipId: null,
+  selectedClipIds: [],
+  selectedLaneId: null,
   snap: "bar",
   zoom: 8,
   playhead: 0,
+  loopRegion: { enabled: false, start: 0, end: 0 },
+  metronome: false,
+  markers: [],
+  transitions: [],
+  automation: [],
+  recordings: [],
+  tempoMap: [],
+  keyMap: [],
   playing: false,
   paused: false,
   scheduled: [],
+  activeClipIds: [],
+  clockStartedAt: 0,
+  clockPlayheadStart: 0,
+  playheadTimer: null,
+  endTimer: null,
+  metronomeSources: [],
   pointerDrag: null,
   recording: null,
-  eventQuantize: "snap"
+  eventQuantize: "snap",
+  undoStack: [],
+  redoStack: [],
+  clipboard: null,
+  autosaveTimer: null,
+  autosaveState: "Unsaved Changes",
+  lastSavedRevision: null,
+  lastPersistenceError: null,
+  exportState: { status: "Not checked", history: [] },
+  lastExportError: null,
+  lastSchedulerError: null,
+  versions: [],
+  activeVersionId: null,
+  browserFilter: "all",
+  runtimeSourceCache: new Map()
 };
+editorState.lanes = editorState.tracks;
 
 const crateSelection = {
   local: new Set(),
@@ -191,6 +228,7 @@ const ProjectIntelligenceEngine = window.ProjectIntelligence;
 const MemoryEngine = window.ProducerMemory;
 const RecommendationEngine = window.ContextualRecommendations;
 const MissionEngine = window.CreativeMissions;
+const ArrangementEngine = window.ArrangementStudioEngine;
 const projectContext = ProjectIntelligenceEngine.getProjectContext();
 window.DeckForgeProjectContext = projectContext;
 
@@ -2588,13 +2626,16 @@ function editorPixelsPerSecond() {
 }
 
 function editorTotalSeconds() {
-  return Math.max(480, ...editorState.clips.map((clip) => clip.start + clip.duration + 24));
+  return Math.max(60, ...editorState.clips.map((clip) => clip.start + clip.duration + 16));
 }
 
 function editorSnapSeconds() {
   const bar = editorSecondsPerBar();
-  if (editorState.snap === "phrase") return bar * 8;
+  if (editorState.snap === "second") return 1;
+  if (editorState.snap === "four-bars") return bar * 4;
+  if (editorState.snap === "two-bars") return bar * 2;
   if (editorState.snap === "bar") return bar;
+  if (editorState.snap === "half-bar") return bar / 2;
   if (editorState.snap === "beat") return bar / 4;
   return 0;
 }
@@ -2622,13 +2663,16 @@ function editorClipColor(type) {
 function editorSources() {
   const sources = [];
   sourceFiles.forEach((source) => {
+    const duration = source.buffer?.duration || source.analysis?.duration || 0;
     sources.push({
       id: source.id,
       type: "song",
       label: source.name,
-      detail: source.analysis ? analysisSummary(source.analysis) : "Crate audio",
-      duration: source.buffer?.duration || source.analysis?.duration || 180,
-      sourceKind: "crate"
+      detail: `${source.analysis ? analysisSummary(source.analysis) : "Local DITC audio"}${duration ? "" : " · Audio Not Linked"}`,
+      duration,
+      sourceKind: "crate",
+      playable: Boolean(source.file || source.buffer) && duration > 0,
+      metadata: { title: source.title, artist: source.artist, album: source.album, bpm: source.analysis?.bpm || null, key: source.analysis?.key || null, provider: "DITC Local", artwork: source.artwork || null }
     });
   });
   ["a", "b"].forEach((id) => {
@@ -2640,7 +2684,9 @@ function editorSources() {
         label: `Deck ${id.toUpperCase()} - ${document.querySelector(`#title-${id}`)?.textContent || "Loaded deck"}`,
         detail: `${formatTime(deck.buffer.duration)} deck audio`,
         duration: deck.buffer.duration,
-        sourceKind: "deck"
+        sourceKind: "deck",
+        playable: true,
+        metadata: { bpm: deck.analysis?.bpm || null, key: deck.analysis?.key || null, trackName: deck.trackName }
       });
     }
   });
@@ -2653,7 +2699,9 @@ function editorSources() {
       label: `Pad ${index + 1} - ${sampler.names[index]}`,
       detail: `${formatTime(region.end - region.start)} ${sampler.modes[index]}`,
       duration: region.end - region.start,
-      sourceKind: "pad"
+      sourceKind: "pad",
+      playable: true,
+      metadata: { padIndex: index, bank: sampler.bank, scene: sampler.scene, mode: sampler.modes[index], regionStart: region.start, regionEnd: region.end }
     });
   });
   stemState.stems.forEach((stem) => {
@@ -2663,15 +2711,16 @@ function editorSources() {
       label: stem.name,
       detail: stem.quality || "Stem",
       duration: stem.buffer.duration,
-      sourceKind: "stem"
+      sourceKind: "stem",
+      playable: true,
+      metadata: { sourceName: stem.sourceName || stemState.sourceName, alignmentJobId: stem.jobId || stemState.activeJobId }
     });
   });
   sources.push(
-    { id: "drum-pattern", type: "drums", label: `${getSmartEditorDrumLabel()}`, detail: "Current drum pattern clip", duration: editorSecondsPerBar() * 4, sourceKind: "drums" },
-    { id: "keys-performance", type: "keys", label: `${getInstrumentPreset()?.name || "Keys"} part`, detail: "Keys/bass performance lane", duration: editorSecondsPerBar() * 4, sourceKind: "keys" },
-    { id: "dj-drop", type: "fx", label: "DJ Drop / Tag", detail: "Drop marker with fade/effects", duration: 4, sourceKind: "marker" },
-    { id: "transition-fx", type: "fx", label: "Echo / Filter Transition", detail: "Automation marker", duration: 8, sourceKind: "marker" }
+    { id: `drum-${drums.patternId}-${drums.version}`, type: "drums", label: `${getSmartEditorDrumLabel()}`, detail: `Canonical Beat Forge pattern v${drums.version}`, duration: editorSecondsPerBar() * drums.bars, sourceKind: "drums", playable: true, patternSnapshot: serializeBeatPattern(), metadata: { patternId: drums.patternId, version: drums.version, section: drums.section } },
+    { id: instrument.pattern.id || "keys-performance", type: "keys", label: instrument.pattern.name || `${getInstrumentPreset()?.name || "Keys"} part`, detail: `${instrument.pattern.notes.length} real Harmony event${instrument.pattern.notes.length === 1 ? "" : "s"}`, duration: editorSecondsPerBar() * instrument.pattern.bars, sourceKind: "keys", playable: instrument.pattern.notes.length > 0, patternSnapshot: { notes: instrument.pattern.notes.map((note) => ({ ...note, automation: note.automation ? { ...note.automation } : null })), presetId: instrument.preset, machineId: instrument.machine, bars: instrument.pattern.bars, version: instrument.pattern.version }, metadata: { patternId: instrument.pattern.id, version: instrument.pattern.version, key: instrument.key, scale: instrument.scale, instrument: getInstrumentPreset()?.name } }
   );
+  editorState.transitions.forEach((transition) => sources.push({ id: transition.transitionId, type: "transition", label: transition.style, detail: `${formatTime(transition.startTime)}–${formatTime(transition.endTime)} transition plan`, duration: transition.duration, sourceKind: "transition", playable: Boolean(transition.previewAvailable), metadata: transition }));
   return sources;
 }
 
@@ -2683,17 +2732,20 @@ function getSmartEditorDrumLabel() {
 function renderEditorSourceBin() {
   const bin = document.querySelector("#editorSourceBin");
   if (!bin) return;
-  const sources = editorSources();
+  const sources = editorSources().filter((source) => editorState.browserFilter === "all" || source.sourceKind === editorState.browserFilter);
   bin.innerHTML = sources.length ? sources.map((source) => `
-    <div class="editor-source" draggable="true" data-editor-source='${escapeHtml(JSON.stringify(source))}'>
+    <div class="editor-source${source.playable === false ? " is-unlinked" : ""}" draggable="${source.playable !== false}" data-editor-source='${escapeHtml(JSON.stringify(source))}'>
       <strong>${escapeHtml(source.label)}</strong>
       <small>${escapeHtml(source.detail)}</small>
+      <button data-editor-add-source="${escapeHtml(source.id)}" ${source.playable === false ? "disabled title=\"Audio Not Linked\"" : ""}>Add</button>
     </div>
   `).join("") : "<p class=\"fine-print\">Load crate tracks, pads, stems, decks, drums, or keys to populate the editor bin.</p>";
 }
 
 function renderEditor() {
   renderEditorSourceBin();
+  const section = document.querySelector("#editor");
+  if (section) { section.dataset.editorMode = editorState.workspaceMode; section.classList.toggle("is-empty", !editorState.clips.length); }
   const ruler = document.querySelector("#editorRuler");
   const timeline = document.querySelector("#editorTimeline");
   const playhead = document.querySelector("#editorPlayhead");
@@ -2706,20 +2758,24 @@ function renderEditor() {
   ruler.style.setProperty("--bar-width", `${barWidth}px`);
   timeline.style.setProperty("--bar-width", `${barWidth}px`);
   ruler.innerHTML = Array.from({ length: barCount }, (_, index) => `<span>${index + 1}</span>`).join("");
-  timeline.innerHTML = `<div class="editor-playhead" style="left:${132 + editorState.playhead * pps}px"></div>`;
+  timeline.innerHTML = `${editorState.loopRegion.enabled && editorState.loopRegion.end > editorState.loopRegion.start ? `<div class="editor-loop-region" style="left:${132 + editorState.loopRegion.start * pps}px;width:${(editorState.loopRegion.end - editorState.loopRegion.start) * pps}px"></div>` : ""}${editorState.markers.map((marker) => `<div class="editor-marker" style="left:${132 + marker.time * pps}px"><span>${escapeHtml(marker.label)}</span></div>`).join("")}<div class="editor-playhead" style="left:${132 + editorState.playhead * pps}px"></div>`;
+  const laneSolo = editorState.tracks.some((track) => track.soloed);
   editorState.tracks.forEach((track, trackIndex) => {
     const row = document.createElement("div");
     row.className = "editor-track";
     row.dataset.trackIndex = String(trackIndex);
+    row.dataset.muted = String(track.muted);
+    row.dataset.locked = String(track.locked);
     row.innerHTML = `
       <div class="editor-track-label">
         <strong>${escapeHtml(track.name)}</strong>
         <small>${escapeHtml(track.role)}</small>
+        <div class="editor-lane-actions"><button data-editor-lane-action="mute" data-lane="${trackIndex}" aria-pressed="${Boolean(track.muted)}">Mute ${track.muted ? "On" : "Off"}</button><button data-editor-lane-action="solo" data-lane="${trackIndex}" aria-pressed="${Boolean(track.soloed)}">Solo ${track.soloed ? "On" : "Off"}</button><button class="arrangement-advanced-only" data-editor-lane-action="arm" data-lane="${trackIndex}" aria-pressed="${Boolean(track.armed)}">Arm</button><button class="arrangement-advanced-only" data-editor-lane-action="lock" data-lane="${trackIndex}" aria-pressed="${Boolean(track.locked)}">Lock</button></div>
       </div>
       <div class="editor-track-lane" data-track-index="${trackIndex}" style="width:${Math.max(840, totalSeconds * pps)}px"></div>
     `;
     const lane = row.querySelector(".editor-track-lane");
-    editorState.clips.filter((clip) => clip.trackIndex === trackIndex).forEach((clip) => {
+    editorState.clips.filter((clip) => clip.trackIndex === trackIndex).filter(() => !laneSolo || track.soloed).forEach((clip) => {
       lane.appendChild(renderEditorClipElement(clip, pps));
     });
     timeline.appendChild(row);
@@ -2728,21 +2784,50 @@ function renderEditor() {
     playhead.max = Math.ceil(totalSeconds);
     playhead.value = Math.round(editorState.playhead);
   }
+  const projectName = document.querySelector("#editorProjectName"); if (projectName && document.activeElement !== projectName) projectName.value = editorState.name;
+  const bpm = document.querySelector("#editorBpm"); if (bpm && document.activeElement !== bpm) bpm.value = Number(document.querySelector("#globalBpm")?.value || 124);
+  const loop = document.querySelector("#editorLoopRegion"); if (loop) loop.checked = editorState.loopRegion.enabled;
+  const metronome = document.querySelector("#editorMetronome"); if (metronome) metronome.checked = editorState.metronome;
+  ["Simple", "Advanced"].forEach((label) => { const button = document.querySelector(`#editor${label}Mode`); if (button) { const active = editorState.workspaceMode === label.toLowerCase(); button.classList.toggle("is-active", active); button.setAttribute("aria-pressed", String(active)); } });
   renderEditorInspector();
+  renderArrangementVersions();
+  renderArrangementExportReadiness();
+  renderArrangementSaveStatus();
+  renderArrangementTransportReadout();
+  renderArrangementDiagnostics();
 }
 
 function renderEditorClipElement(clip, pps) {
-  const el = document.createElement("button");
-  el.type = "button";
-  el.className = `editor-clip${clip.id === editorState.selectedClipId ? " is-selected" : ""}`;
+  const el = document.createElement("div");
+  el.tabIndex = 0;
+  el.setAttribute("role", "button");
+  el.className = `editor-clip${editorState.selectedClipIds.includes(clip.id) || clip.id === editorState.selectedClipId ? " is-selected" : ""}${clip.missingSource ? " is-missing" : ""}${clip.locked ? " is-locked" : ""}`;
   el.dataset.clipId = clip.id;
   el.style.left = `${clip.start * pps}px`;
   el.style.width = `${Math.max(28, clip.duration * pps)}px`;
   el.style.setProperty("--clip-color", clip.color || editorClipColor(clip.type));
   el.style.setProperty("--fade-in-alpha", String(Math.min(0.55, (clip.fadeIn || 0) / Math.max(1, clip.duration))));
   el.style.setProperty("--fade-out-alpha", String(Math.min(0.55, (clip.fadeOut || 0) / Math.max(1, clip.duration))));
-  el.innerHTML = `<strong>${escapeHtml(clip.name)}</strong><small>${formatTime(clip.start)} - ${formatTime(clip.start + clip.duration)} ${clip.loop ? "Loop" : ""}</small>`;
+  const peaks = editorClipWaveformPeaks(clip, Math.max(8, Math.min(48, Math.floor(clip.duration * pps / 5))));
+  el.innerHTML = `${peaks.length ? `<span class="editor-clip-waveform" aria-hidden="true">${peaks.map((peak) => `<i style="height:${Math.max(4, Math.round(peak * 100))}%"></i>`).join("")}</span>` : ""}<button class="editor-trim-handle" data-trim="start" aria-label="Trim start of ${escapeHtml(clip.name)}"></button><strong>${escapeHtml(clip.name)}</strong><small>${clip.missingSource ? "Missing Source · " : ""}${formatTime(clip.start)} - ${formatTime(clip.start + clip.duration)} ${clip.loop ? "Loop" : ""}</small><button class="editor-trim-handle" data-trim="end" aria-label="Trim end of ${escapeHtml(clip.name)}"></button>`;
   return el;
+}
+
+function editorClipBufferSync(clip) {
+  if (clip.source?.buffer) return clip.source.buffer;
+  if (editorState.runtimeSourceCache.has(`${clip.sourceKind}:${clip.sourceId}`)) return editorState.runtimeSourceCache.get(`${clip.sourceKind}:${clip.sourceId}`);
+  if (clip.sourceKind === "crate") return sourceFiles.find((source) => source.id === clip.sourceId)?.buffer || null;
+  if (clip.sourceKind === "deck") return deckState[clip.sourceId]?.buffer || null;
+  if (clip.sourceKind === "pad") return sampler.buffers[Number(clip.sourceId)] || null;
+  if (clip.sourceKind === "stem") return stemState.stems.find((stem) => stem.id === clip.sourceId)?.buffer || null;
+  return null;
+}
+
+function editorClipWaveformPeaks(clip, count = 24) {
+  const buffer = editorClipBufferSync(clip); if (!buffer || !buffer.length) return [];
+  const data = buffer.getChannelData(0); const start = Math.min(data.length - 1, Math.floor((clip.sourceStart || 0) * buffer.sampleRate)); const end = Math.min(data.length, start + Math.floor(clip.duration * buffer.sampleRate)); const span = Math.max(1, end - start); const block = Math.max(1, Math.floor(span / count)); const peaks = [];
+  for (let index = 0; index < count; index += 1) { let peak = 0; const from = start + index * block; const to = Math.min(end, from + block); const stride = Math.max(1, Math.floor((to - from) / 64)); for (let sample = from; sample < to; sample += stride) peak = Math.max(peak, Math.abs(data[sample] || 0)); peaks.push(peak); }
+  return peaks;
 }
 
 function renderEditorInspector() {
@@ -2750,29 +2835,40 @@ function renderEditorInspector() {
   if (!inspector) return;
   const clip = selectedEditorClip();
   if (!clip) {
-    inspector.textContent = "Select a clip to edit timing, fades, volume, filter, EQ, and effects.";
+    inspector.textContent = "Select a clip to inspect its real source, timing, fades, gain, and routing.";
     return;
   }
+  const transition = editorState.transitions.find((item) => item.outgoingClipId === clip.id || item.incomingClipId === clip.id);
   inspector.innerHTML = `
     <p><strong>${escapeHtml(clip.name)}</strong><br>${escapeHtml(clip.type)} clip on ${escapeHtml(editorState.tracks[clip.trackIndex]?.name || "track")}</p>
+    <p class="fine-print">Source: ${escapeHtml(clip.source?.detail || clip.sourceKind || "Unknown")} · ${clip.missingSource ? "Missing Source" : "Available"}</p>
     ${clip.events?.length ? `<p>${clip.events.length} playable event${clip.events.length === 1 ? "" : "s"} in this clip.</p>` : ""}
-    <label>Start <input data-editor-field="start" type="number" min="0" step="0.1" value="${roundEditorValue(clip.start)}"></label>
-    <label>Duration <input data-editor-field="duration" type="number" min="0.25" step="0.1" value="${roundEditorValue(clip.duration)}"></label>
-    <label>Volume <input data-editor-field="volume" type="range" min="0" max="1.5" step="0.01" value="${clip.volume}"></label>
+    <label>Start <input data-editor-field="start" type="number" min="0" step="0.1" value="${roundEditorValue(clip.start)}" ${clip.locked ? "disabled" : ""}></label>
+    <label>End <input data-editor-field="end" type="number" min="0.1" step="0.1" value="${roundEditorValue(clip.start + clip.duration)}" ${clip.locked ? "disabled" : ""}></label>
+    <label>Duration <input data-editor-field="duration" type="number" min="0.25" step="0.1" value="${roundEditorValue(clip.duration)}" ${clip.locked ? "disabled" : ""}></label>
+    <label>Source start <input data-editor-field="sourceStart" type="number" min="0" step="0.1" value="${roundEditorValue(clip.sourceStart || 0)}" ${clip.locked ? "disabled" : ""}></label>
+    <label>Gain <input data-editor-field="volume" type="range" min="0" max="1.5" step="0.01" value="${clip.volume}"></label>
+    <label>Pan <input data-editor-field="pan" type="range" min="-1" max="1" step="0.01" value="${clip.pan || 0}"></label>
     <label>Fade In <input data-editor-field="fadeIn" type="number" min="0" step="0.1" value="${roundEditorValue(clip.fadeIn || 0)}"></label>
     <label>Fade Out <input data-editor-field="fadeOut" type="number" min="0" step="0.1" value="${roundEditorValue(clip.fadeOut || 0)}"></label>
-    <label>Stretch <input data-editor-field="stretch" type="range" min="0.5" max="1.5" step="0.01" value="${clip.stretch || 1}"></label>
+    <label class="arrangement-advanced-only">Stretch <input data-editor-field="stretch" type="range" min="0.5" max="1.5" step="0.01" value="${clip.stretch || 1}"></label>
     <label>Filter <input data-editor-field="filter" type="range" min="200" max="16000" step="10" value="${clip.filter || 16000}"></label>
-    <label>EQ Tilt <input data-editor-field="eq" type="range" min="-1" max="1" step="0.01" value="${clip.eq || 0}"></label>
     <label>Mute <input data-editor-field="muted" type="checkbox" ${clip.muted ? "checked" : ""}></label>
     <label>Solo <input data-editor-field="solo" type="checkbox" ${clip.solo ? "checked" : ""}></label>
-    <label>FX
-      <select data-editor-field="effect">
-        ${["none", "echo", "filter sweep", "reverb tail", "scratch fill", "bass swap"].map((effect) => `<option value="${effect}" ${clip.effect === effect ? "selected" : ""}>${effect}</option>`).join("")}
-      </select>
-    </label>
-    <button type="button" class="secondary-button" data-editor-command="delete-clip">Delete Clip</button>
+    <label>Lock <input data-editor-field="locked" type="checkbox" ${clip.locked ? "checked" : ""}></label>
+    <p class="fine-print arrangement-advanced-only">Tempo ${clip.source?.metadata?.bpm || "Unknown"} · Key ${escapeHtml(clip.source?.metadata?.key || "Unknown")} · Pitch and key lock unavailable until shared high-quality processing exists. Effects beyond the working filter are intentionally disabled.</p>
+    <div class="arrangement-clip-actions"><button type="button" data-editor-command="split">Split</button><button type="button" data-editor-command="duplicate">Duplicate</button>${clip.missingSource ? `<button type="button" data-editor-command="relink">Relink</button><button type="button" data-editor-command="replace">Replace</button>` : ""}<button type="button" class="secondary-button" data-editor-command="delete-clip" ${clip.locked ? "disabled" : ""}>Delete Clip</button></div>
+    ${transition ? `<section class="arrangement-advanced-only arrangement-transition-inspector"><h4>Transition</h4><label>Style <select data-editor-transition-field="style"><option ${transition.style === "Smooth Blend" ? "selected" : ""}>Smooth Blend</option><option ${transition.style === "Cut" ? "selected" : ""}>Cut</option><option ${transition.style === "Long Blend" ? "selected" : ""}>Long Blend</option></select></label><label>Start <input type="number" min="0" step="0.1" data-editor-transition-field="startTime" value="${roundEditorValue(transition.startTime)}"></label><label>End <input type="number" min="0" step="0.1" data-editor-transition-field="endTime" value="${roundEditorValue(transition.endTime)}"></label><p class="fine-print">${escapeHtml(transition.warnings?.join(" ") || "No transition warnings.")}</p><button data-editor-command="preview-transition" ${transition.previewAvailable ? "" : "disabled"}>Preview</button><button data-editor-command="remove-transition">Remove Transition</button></section>` : ""}
   `;
+}
+
+function setSelectedArrangementTransitionField(field, value) {
+  const clip = selectedEditorClip(); const transition = editorState.transitions.find((item) => item.outgoingClipId === clip?.id || item.incomingClipId === clip?.id); if (!transition) return;
+  pushArrangementHistory(`Edit transition ${field}`); if (field === "style") transition.style = value; else transition[field] = Math.max(0, Number(value)); if (transition.endTime <= transition.startTime) { restoreArrangementSnapshot(editorState.undoStack.pop()?.snapshot); editorStatus("Transition end must be after its start."); return; } transition.duration = transition.endTime - transition.startTime; transition.contextVersion = editorState.version; arrangementChanged(`Edited transition ${field}`, { type: "arrangement-transition-edited" }); renderEditor();
+}
+
+function removeSelectedArrangementTransition() {
+  const clip = selectedEditorClip(); const transition = editorState.transitions.find((item) => item.outgoingClipId === clip?.id || item.incomingClipId === clip?.id); if (!transition || !window.confirm("Remove this transition plan?")) return; pushArrangementHistory("Remove transition"); editorState.transitions = editorState.transitions.filter((item) => item.transitionId !== transition.transitionId); arrangementChanged("Removed arrangement transition", { type: "arrangement-transition-removed" }); renderEditor();
 }
 
 function roundEditorValue(value) {
@@ -2786,6 +2882,192 @@ function selectedEditorClip() {
 function editorStatus(message) {
   const status = document.querySelector("#editorStatus");
   if (status) status.textContent = message;
+}
+
+function captureArrangementSnapshot() {
+  return {
+    arrangementId: editorState.arrangementId, projectId: editorState.projectId, name: editorState.name, version: editorState.version, workspaceMode: editorState.workspaceMode,
+    tracks: editorState.tracks.map((track) => ({ ...track })),
+    clips: editorState.clips.map((clip) => ({ ...clip, source: clip.source ? { ...clip.source } : null, events: clip.events?.map((event) => ({ ...event })), metadata: clip.metadata ? { ...clip.metadata } : undefined })),
+    selectedClipId: editorState.selectedClipId, selectedClipIds: [...editorState.selectedClipIds], snap: editorState.snap, zoom: editorState.zoom,
+    loopRegion: { ...editorState.loopRegion }, markers: editorState.markers.map((marker) => ({ ...marker })), transitions: editorState.transitions.map((transition) => ({ ...transition })), automation: editorState.automation.map((item) => ({ ...item, points: item.points?.map((point) => ({ ...point })) })), recordings: editorState.recordings.map((item) => ({ ...item })), versions: editorState.versions.map((item) => ({ ...item })), activeVersionId: editorState.activeVersionId,
+  };
+}
+
+function restoreArrangementSnapshot(snapshot) {
+  if (!snapshot) return;
+  Object.assign(editorState, snapshot, { playing: false, paused: false, scheduled: [], pointerDrag: null, recording: null });
+  editorState.lanes = editorState.tracks;
+  renderEditor();
+}
+
+function pushArrangementHistory(label, snapshot = captureArrangementSnapshot()) {
+  editorState.undoStack.push({ label, snapshot }); editorState.undoStack = editorState.undoStack.slice(-60); editorState.redoStack = [];
+}
+
+function arrangementChanged(summary, options = {}) {
+  editorState.version += 1; editorState.autosaveState = "Unsaved Changes"; scheduleArrangementAutosave();
+  if (summary && options.context !== false) emitProjectContextChange("arrangement", options.type || "arrangement-edited", { summary });
+  renderArrangementSaveStatus(); renderArrangementHistoryButtons(); renderArrangementExportReadiness();
+}
+
+function undoArrangement() {
+  const command = editorState.undoStack.pop(); if (!command) return;
+  editorState.redoStack.push({ label: command.label, snapshot: captureArrangementSnapshot() }); restoreArrangementSnapshot(command.snapshot); arrangementChanged(`Undid ${command.label}`, { type: "arrangement-undo" }); editorStatus(`Undid ${command.label}.`);
+}
+
+function redoArrangement() {
+  const command = editorState.redoStack.pop(); if (!command) return;
+  editorState.undoStack.push({ label: command.label, snapshot: captureArrangementSnapshot() }); restoreArrangementSnapshot(command.snapshot); arrangementChanged(`Redid ${command.label}`, { type: "arrangement-redo" }); editorStatus(`Redid ${command.label}.`);
+}
+
+function renderArrangementHistoryButtons() {
+  const undo = document.querySelector("#editorUndo"); const redo = document.querySelector("#editorRedo"); if (undo) { undo.disabled = !editorState.undoStack.length; undo.title = editorState.undoStack.length ? `Undo ${editorState.undoStack.at(-1).label}` : "Nothing to undo"; } if (redo) { redo.disabled = !editorState.redoStack.length; redo.title = editorState.redoStack.length ? `Redo ${editorState.redoStack.at(-1).label}` : "Nothing to redo"; }
+}
+
+function normalizedArrangementModel() {
+  return ArrangementEngine.normalizeModel({ ...editorState, lanes: editorState.tracks, BPM: Number(document.querySelector("#globalBpm")?.value || 124), playbackState: editorState.playing ? "Playing" : editorState.paused ? "Paused" : "Idle", recordingState: editorState.recording ? "Recording" : "Idle" }, { projectId: editorState.projectId, BPM: Number(document.querySelector("#globalBpm")?.value || 124) });
+}
+
+function scheduleArrangementAutosave() {
+  clearTimeout(editorState.autosaveTimer); editorState.autosaveState = "Unsaved Changes"; renderArrangementSaveStatus(); editorState.autosaveTimer = setTimeout(() => saveArrangementProject({ automatic: true }), 900);
+}
+
+function saveArrangementProject(options = {}) {
+  clearTimeout(editorState.autosaveTimer); editorState.autosaveState = "Saving"; renderArrangementSaveStatus();
+  const model = normalizedArrangementModel(); model.versions = editorState.versions; model.activeVersionId = editorState.activeVersionId; model.workspaceMode = editorState.workspaceMode;
+  const result = ArrangementEngine.save(model);
+  if (result.success) { editorState.autosaveState = "Saved"; editorState.lastSavedRevision = result.revision; editorState.lastPersistenceError = null; if (!options.automatic) editorStatus(`Saved ${editorState.name}.`); }
+  else { editorState.autosaveState = "Save Failed"; editorState.lastPersistenceError = result.error; editorStatus(`Save failed: ${result.error}`); }
+  renderArrangementSaveStatus(); renderArrangementDiagnostics();
+  return result;
+}
+
+function renderArrangementSaveStatus() { const output = document.querySelector("#editorSaveStatus"); if (output) { output.textContent = editorState.autosaveState; output.dataset.state = editorState.autosaveState; } }
+
+function legacyClipFromNormalized(clip, lanes) {
+  const trackIndex = Math.max(0, lanes.findIndex((lane) => lane.laneId === clip.laneId)); const reference = clip.sourceReference || {};
+  const symbolic = ["Beat Forge Pattern", "Harmony Lab Pattern", "Performance Events"].includes(clip.sourceType) && Array.isArray(clip.metadata?.events);
+  return { id: clip.clipId, source: { id: clip.sourceId, label: clip.sourceName, sourceKind: reference.sourceKind, duration: clip.originalDuration, playable: reference.playable, metadata: clip.metadata }, sourceKind: reference.sourceKind || ({ "Beat Forge Pattern": "performance", "Harmony Lab Pattern": "performance", "Performance Events": "performance" })[clip.sourceType] || "buffer", sourceId: clip.sourceId, type: clip.metadata?.type || clip.colorRole, name: clip.sourceName, trackIndex, start: clip.startTime, duration: clip.duration, sourceStart: clip.sourceStart, sourceEnd: clip.sourceEnd, originalDuration: clip.originalDuration, volume: clip.gain, pan: clip.pan, muted: clip.muted, locked: clip.locked, loop: clip.loop, fadeIn: clip.fadeIn, fadeOut: clip.fadeOut, stretch: 1 / Math.max(.1, clip.playbackRate), filter: 16000, eq: 0, effect: "none", color: editorClipColor(clip.colorRole), events: clip.metadata?.events || null, groupId: clip.metadata?.groupId || null, missingSource: symbolic ? false : true, relinkRequired: symbolic ? false : true, createdAt: clip.createdAt, updatedAt: clip.updatedAt };
+}
+
+function restoreArrangementProject() {
+  const model = ArrangementEngine.restore(editorState.projectId); if (!model) return false;
+  const lanes = model.lanes.map((lane) => ({ id: lane.laneId, ...lane, role: lane.role, soloed: lane.soloed }));
+  editorState.arrangementId = model.arrangementId; editorState.name = model.name; editorState.version = model.version; editorState.workspaceMode = model.workspaceMode || "simple"; editorState.tracks = lanes; editorState.lanes = lanes; editorState.clips = model.clips.map((clip) => legacyClipFromNormalized(clip, model.lanes)); editorState.selectedClipId = null; editorState.selectedClipIds = []; editorState.snap = model.snapMode; editorState.zoom = model.zoom; editorState.playhead = 0; editorState.loopRegion = model.loopRegion; editorState.markers = model.markers; editorState.transitions = model.transitions; editorState.automation = model.automation; editorState.recordings = model.recordings; editorState.versions = model.versions || []; editorState.activeVersionId = model.activeVersionId || null; editorState.exportState = model.exportState; editorState.autosaveState = "Saved"; editorState.lastSavedRevision = model.version;
+  return true;
+}
+
+function renderArrangementTransportReadout() {
+  const output = document.querySelector("#editorTransportReadout"); if (!output) return; const time = editorState.playing ? currentArrangementPlayhead() : editorState.playhead; const bpm = Number(document.querySelector("#globalBpm")?.value || 124); const beatSeconds = 60 / bpm; const beatIndex = Math.floor(time / beatSeconds); const bar = Math.floor(beatIndex / 4) + 1; const beat = beatIndex % 4 + 1; output.textContent = `${formatTime(time)} · Bar ${bar} Beat ${beat} · ${formatTime(arrangementDuration())}`;
+}
+
+function arrangementExportValidation() {
+  const model = normalizedArrangementModel();
+  const availability = Object.fromEntries(editorState.clips.map((clip) => [clip.id, !clip.missingSource && (Boolean(clip.events?.length) || Boolean(editorClipBufferSync(clip)))]));
+  return ArrangementEngine.validateExport(model, availability);
+}
+
+function renderArrangementExportReadiness() {
+  const output = document.querySelector("#editorExportReadiness"); if (!output) return;
+  const result = arrangementExportValidation();
+  const intro = editorState.markers.some((marker) => /intro/i.test(`${marker.type || ""} ${marker.label || ""}`));
+  const outro = editorState.markers.some((marker) => /outro/i.test(`${marker.type || ""} ${marker.label || ""}`));
+  output.innerHTML = `<p><strong>${result.status}</strong></p><dl><dt>Duration</dt><dd>${formatTime(result.duration)}</dd><dt>Missing files</dt><dd>${result.missingFiles.length ? escapeHtml(result.missingFiles.join(", ")) : "None"}</dd><dt>Intro</dt><dd>${intro ? "Present" : "Not marked"}</dd><dt>Outro</dt><dd>${outro ? "Present" : "Not marked"}</dd><dt>Transitions</dt><dd>${editorState.transitions.length}</dd><dt>Recordings</dt><dd>${editorState.recordings.length}</dd><dt>Output</dt><dd>Arrangement project + cue sheet</dd><dt>Format</dt><dd>JSON + text</dd><dt>Audio</dt><dd>Unavailable: no complete offline mix renderer</dd></dl>${result.warnings.length ? `<ul>${result.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : ""}`;
+  editorState.exportState = { ...editorState.exportState, status: result.status, missingFiles: result.missingFiles, warnings: result.warnings, checkedAt: new Date().toISOString() };
+}
+
+function downloadArrangementFile(contents, filename, type) {
+  const url = URL.createObjectURL(new Blob([contents], { type })); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function arrangementCueSheet() {
+  const bpm = Number(document.querySelector("#globalBpm")?.value || 124);
+  const clipRows = [...editorState.clips].sort((a, b) => a.start - b.start).map((clip) => `${formatTime(clip.start)}\t${formatTime(clip.start + clip.duration)}\t${clip.name}\t${editorState.tracks[clip.trackIndex]?.name || "Unknown lane"}\t${clip.sourceKind}`);
+  const markerRows = [...editorState.markers].sort((a, b) => a.time - b.time).map((marker) => `${formatTime(marker.time)}\tMARKER\t${marker.label}`);
+  return [`DeckForge Arrangement Studio`, `Project: ${editorState.name}`, `BPM: ${bpm} (fixed tempo)`, `Duration: ${formatTime(arrangementDuration())}`, "", "START\tEND\tCLIP\tLANE\tSOURCE", ...clipRows, "", "MARKERS", ...markerRows].join("\n");
+}
+
+function exportArrangementDraft() {
+  const result = arrangementExportValidation();
+  if (result.status === "Blocked") { editorStatus(`Export blocked: ${result.missingFiles.length ? `missing ${result.missingFiles.join(", ")}` : "the arrangement is empty"}.`); renderArrangementExportReadiness(); return; }
+  saveArrangementProject({ automatic: true });
+  const safeName = (editorState.name || "arrangement").replace(/[^a-z0-9-_]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "arrangement";
+  downloadArrangementFile(ArrangementEngine.exportProject(normalizedArrangementModel()), `${safeName}.deckforge-arrangement.json`, "application/json");
+  downloadArrangementFile(arrangementCueSheet(), `${safeName}-cue-sheet.txt`, "text/plain");
+  const exportedAt = new Date().toISOString(); editorState.exportState.history = [...(editorState.exportState.history || []), { exportedAt, formats: ["Arrangement JSON", "Cue sheet"], status: result.status }].slice(-20); editorState.exportState.lastExportedAt = exportedAt;
+  saveArrangementProject({ automatic: true }); editorStatus(`Exported a real Arrangement project file and cue sheet. Audio export remains unavailable.`); emitProjectContextChange("arrangement", "export-completed", { summary: `Exported ${editorState.name} project and cue sheet` }); renderArrangementExportReadiness();
+}
+
+function versionSnapshot() {
+  const model = normalizedArrangementModel(); model.versions = []; model.activeVersionId = null; return model;
+}
+
+function createArrangementVersion() {
+  const createdAt = new Date().toISOString(); pushArrangementHistory("Duplicate arrangement version");
+  if (!editorState.versions.length) { const mainId = ArrangementEngine.id("version"); editorState.versions.push({ versionId: mainId, name: "Main Version", createdAt, updatedAt: createdAt, model: versionSnapshot() }); editorState.activeVersionId = mainId; }
+  const active = editorState.versions.find((version) => version.versionId === editorState.activeVersionId); if (active) { active.model = versionSnapshot(); active.updatedAt = createdAt; }
+  const versionId = ArrangementEngine.id("version"); const name = `Alternate Version ${editorState.versions.length}`; const model = ArrangementEngine.duplicateVersion(versionSnapshot(), name); editorState.versions.push({ versionId, name, createdAt, updatedAt: createdAt, model }); editorState.activeVersionId = versionId; arrangementChanged(`Created ${name}`, { type: "arrangement-version-created" }); renderEditor();
+}
+
+function applyArrangementModel(model) {
+  const normalized = ArrangementEngine.normalizeModel(model, { projectId: editorState.projectId, BPM: model.BPM }); const lanes = normalized.lanes.map((lane) => ({ id: lane.laneId, ...lane }));
+  editorState.name = normalized.name; editorState.tracks = lanes; editorState.lanes = lanes; editorState.clips = normalized.clips.map((clip) => legacyClipFromNormalized(clip, lanes)); editorState.clips.forEach((clip) => { const buffer = editorState.runtimeSourceCache.get(`${clip.sourceKind}:${clip.sourceId}`); if (buffer) { clip.source = { ...(clip.source || {}), buffer, playable: true, duration: buffer.duration }; clip.missingSource = false; clip.relinkRequired = false; } }); editorState.markers = normalized.markers; editorState.transitions = normalized.transitions; editorState.automation = normalized.automation; editorState.recordings = normalized.recordings; editorState.loopRegion = normalized.loopRegion; editorState.snap = normalized.snapMode; editorState.zoom = normalized.zoom; editorState.selectedClipId = null; editorState.selectedClipIds = [];
+}
+
+function switchArrangementVersion(versionId) {
+  if (versionId === editorState.activeVersionId) return; const next = editorState.versions.find((version) => version.versionId === versionId); if (!next) return;
+  const active = editorState.versions.find((version) => version.versionId === editorState.activeVersionId); if (active) { active.model = versionSnapshot(); active.updatedAt = new Date().toISOString(); }
+  pushArrangementHistory(`Switch to ${next.name}`); applyArrangementModel(next.model); editorState.activeVersionId = versionId; arrangementChanged(`Switched to ${next.name}`, { type: "arrangement-version-switched" }); renderEditor();
+}
+
+function renderArrangementVersions() {
+  const output = document.querySelector("#editorVersions"); if (!output) return;
+  output.innerHTML = editorState.versions.length ? editorState.versions.map((version) => `<div class="arrangement-version${version.versionId === editorState.activeVersionId ? " is-active" : ""}"><button data-editor-version="${escapeHtml(version.versionId)}">${escapeHtml(version.name)}</button><small>${version.model?.clips?.length || 0} clips · ${formatTime(version.model?.duration || 0)}</small><button data-editor-version-rename="${escapeHtml(version.versionId)}">Rename</button><button data-editor-version-delete="${escapeHtml(version.versionId)}" ${editorState.versions.length === 1 ? "disabled" : ""}>Delete</button></div>`).join("") : `<p class="fine-print">The current arrangement is the main working version. Duplicate it to branch safely.</p>`;
+}
+
+function renderArrangementDiagnostics() {
+  const details = document.querySelector("#editorDiagnostics"); if (details) details.hidden = !DECKFORGE_DEVELOPMENT; const output = document.querySelector("#editorDiagnosticsOutput"); if (!output || !DECKFORGE_DEVELOPMENT) return;
+  output.textContent = JSON.stringify({ arrangementId: editorState.arrangementId, projectId: editorState.projectId, version: editorState.version, activeVersionId: editorState.activeVersionId, playbackState: editorState.playing ? "Playing" : editorState.paused ? "Paused" : "Idle", playhead: currentArrangementPlayhead(), activeClipIds: editorState.activeClipIds, scheduledNodeCount: editorState.scheduled.length, laneCount: editorState.tracks.length, clipCount: editorState.clips.length, missingClipIds: editorState.clips.filter((clip) => clip.missingSource).map((clip) => clip.id), undoDepth: editorState.undoStack.length, redoDepth: editorState.redoStack.length, saveState: editorState.autosaveState, saveError: editorState.lastPersistenceError, exportState: editorState.exportState }, null, 2);
+}
+
+function addCurrentArrangementSource(kind) {
+  const source = editorSources().find((item) => item.sourceKind === kind && item.playable !== false);
+  if (!source) { editorStatus(`No playable ${kind} source is available. Load or create one first.`); return; }
+  const preferredTrack = ({ drums: 0, keys: 1, pad: 2, stem: 3, deck: 3, crate: 3 })[kind] ?? 0;
+  return addEditorClipFromSource(source, Math.min(preferredTrack, editorState.tracks.length - 1), editorState.playhead);
+}
+
+function addArrangementMarker() {
+  const label = window.prompt("Marker name", `Marker ${editorState.markers.length + 1}`); if (!label?.trim()) return;
+  pushArrangementHistory(`Add marker ${label.trim()}`); editorState.markers.push({ markerId: ArrangementEngine.id("marker"), label: label.trim(), type: /intro|outro/i.test(label) ? label.trim().toLowerCase() : "section", time: editorState.playhead, inferred: false, createdAt: new Date().toISOString() }); arrangementChanged(`Added ${label.trim()} marker`, { type: "arrangement-marker-added" }); renderEditor();
+}
+
+function addArrangementTransition() {
+  const selected = selectedEditorClip(); const ordered = [...editorState.clips].filter((clip) => clip.id !== selected?.id).sort((a, b) => a.start - b.start); const incoming = ordered.find((clip) => clip.start >= (selected?.start || 0)) || ordered[0];
+  if (!selected || !incoming) { editorStatus("Select an outgoing clip and ensure another clip exists to create a transition."); return; }
+  const overlapStart = Math.max(selected.start, incoming.start); const overlapEnd = Math.min(selected.start + selected.duration, incoming.start + incoming.duration);
+  if (overlapEnd <= overlapStart) { editorStatus("These clips do not provide a valid transition region. Move them closer or overlap them first."); return; }
+  pushArrangementHistory(`Add transition ${selected.name} to ${incoming.name}`);
+  const transition = { transitionId: ArrangementEngine.id("transition"), outgoingClipId: selected.id, incomingClipId: incoming.id, startTime: overlapStart, endTime: overlapEnd, duration: overlapEnd - overlapStart, style: "Smooth Blend", crossfadeCurve: "equal-power", BPMPlan: { mode: "fixed", BPM: Number(document.querySelector("#globalBpm")?.value || 124) }, keyPlan: null, stemPlan: null, source: "Arrangement Studio", contextVersion: editorState.version, warnings: ["Arrangement transition preview is unavailable until it can be delegated safely to the shared live transition controller."], previewAvailable: false, createdAt: new Date().toISOString() };
+  editorState.transitions.push(transition); arrangementChanged(`Added transition from ${selected.name} to ${incoming.name}`, { type: "arrangement-transition-added" }); editorStatus("Added an explicit equal-power transition plan. Preview is unavailable and is not simulated."); renderEditor();
+}
+
+function setArrangementWorkspaceMode(mode) { editorState.workspaceMode = mode === "advanced" ? "advanced" : "simple"; arrangementChanged(`Changed Arrangement Studio to ${editorState.workspaceMode} mode`); renderEditor(); }
+
+function setArrangementLaneAction(action, trackIndex) {
+  const lane = editorState.tracks[trackIndex]; if (!lane) return; pushArrangementHistory(`${action} ${lane.name}`);
+  if (action === "mute") lane.muted = !lane.muted; if (action === "solo") lane.soloed = !lane.soloed; if (action === "arm") lane.armed = !lane.armed; if (action === "lock") lane.locked = !lane.locked;
+  arrangementChanged(`${action} ${lane.name}`); renderEditor();
+}
+
+async function relinkSelectedArrangementClip(file, replace = false) {
+  const clip = selectedEditorClip(); if (!clip || !file) return;
+  try {
+    const buffer = await loadAudioFile(file); const mismatch = clip.originalDuration && Math.abs(buffer.duration - clip.originalDuration) / clip.originalDuration > .25;
+    if (mismatch && !window.confirm(`The replacement is ${formatTime(buffer.duration)}, which differs substantially from the original ${formatTime(clip.originalDuration)}. Keep the current timeline timing?`)) return;
+    pushArrangementHistory(`${replace ? "Replace" : "Relink"} ${clip.name}`); clip.source = { id: ArrangementEngine.id("source"), label: file.name, detail: "Relinked local audio", duration: buffer.duration, sourceKind: "buffer", fileName: file.name, buffer, playable: true }; clip.sourceKind = "buffer"; clip.sourceId = clip.source.id; editorState.runtimeSourceCache.set(`${clip.sourceKind}:${clip.sourceId}`, buffer); clip.missingSource = false; clip.relinkRequired = false; clip.originalDuration = buffer.duration; if (replace) clip.name = file.name; arrangementChanged(`${replace ? "Replaced" : "Relinked"} ${clip.name}`, { type: "arrangement-source-relinked" }); renderEditor(); editorStatus(`${replace ? "Replaced" : "Relinked"} ${clip.name}; timeline timing was preserved.`);
+  } catch (error) { editorStatus(`Could not relink audio: ${error.message || "unsupported file"}.`); }
 }
 
 function editorLaneTimeFromEvent(lane, event) {
@@ -2802,11 +3084,35 @@ function editorTrackIndexFromY(clientY) {
   return found ? Number(found.dataset.trackIndex) : 0;
 }
 
+function updateArrangementPointerDrag(event, drag, clip) {
+  const delta = (event.clientX - drag.startX) / editorPixelsPerSecond(); drag.moved = drag.moved || Math.abs(delta) > .02 || Math.abs(event.clientY - drag.startY) > 2;
+  if (drag.mode === "trim-start") { const nextStart = Math.max(0, snapEditorTime(drag.originalStart + delta)); const consumed = Math.min(drag.originalDuration - .25, nextStart - drag.originalStart); clip.start = drag.originalStart + consumed; clip.sourceStart = Math.max(0, drag.originalSourceStart + consumed); clip.duration = Math.max(.25, drag.originalDuration - consumed); }
+  else if (drag.mode === "trim-end") clip.duration = Math.max(.25, snapEditorTime(drag.originalDuration + delta));
+  else { const nextTrack = Math.max(0, Math.min(editorState.tracks.length - 1, editorTrackIndexFromY(event.clientY))); const trackDelta = nextTrack - drag.originalTrack; const grouped = drag.groupOriginal?.length ? drag.groupOriginal : [{ id: clip.id, start: drag.originalStart, trackIndex: drag.originalTrack }]; grouped.forEach((original) => { const item = editorState.clips.find((candidate) => candidate.id === original.id); if (!item) return; item.start = Math.max(0, snapEditorTime(original.start + delta)); item.trackIndex = Math.max(0, Math.min(editorState.tracks.length - 1, original.trackIndex + trackDelta)); const itemElement = document.querySelector(`[data-clip-id="${CSS.escape(item.id)}"]`); if (itemElement) itemElement.style.left = `${item.start * editorPixelsPerSecond()}px`; }); }
+  const element = document.querySelector(`[data-clip-id="${CSS.escape(clip.id)}"]`); if (element) { element.style.left = `${clip.start * editorPixelsPerSecond()}px`; element.style.width = `${Math.max(28, clip.duration * editorPixelsPerSecond())}px`; }
+  renderEditorInspector();
+}
+
+function finishArrangementPointerDrag() {
+  const drag = editorState.pointerDrag; if (!drag) return; editorState.pointerDrag = null;
+  if (drag.moved) { pushArrangementHistory(drag.mode.startsWith("trim") ? "Trim clip" : "Move clip", drag.snapshot); arrangementChanged(drag.mode.startsWith("trim") ? "Trimmed arrangement clip" : "Moved arrangement clip", { type: drag.mode.startsWith("trim") ? "arrangement-clip-trimmed" : "arrangement-clip-moved" }); renderEditor(); }
+}
+
+function copySelectedArrangementClips() {
+  const ids = new Set(editorState.selectedClipIds.length ? editorState.selectedClipIds : editorState.selectedClipId ? [editorState.selectedClipId] : []); const clips = editorState.clips.filter((clip) => ids.has(clip.id)); if (!clips.length) return false; editorState.clipboard = clips.map((clip) => ({ ...clip, source: clip.source ? { ...clip.source } : null, events: clip.events?.map((event) => ({ ...event })) })); editorStatus(`Copied ${clips.length} clip${clips.length === 1 ? "" : "s"}.`); return true;
+}
+
+function pasteArrangementClips() {
+  if (!editorState.clipboard?.length) { editorStatus("No Arrangement clips have been copied."); return; } pushArrangementHistory("Paste clips"); const firstStart = Math.min(...editorState.clipboard.map((clip) => clip.start)); const groupIds = new Map(); const copies = editorState.clipboard.map((clip) => ({ ...clip, id: createId(), start: editorState.playhead + clip.start - firstStart, name: `${clip.name} copy`, events: clip.events?.map((event) => ({ ...event })), groupId: clip.groupId ? (groupIds.get(clip.groupId) || (groupIds.set(clip.groupId, ArrangementEngine.id("group")), groupIds.get(clip.groupId))) : null })); editorState.clips.push(...copies); editorState.selectedClipIds = copies.map((clip) => clip.id); editorState.selectedClipId = copies[0].id; arrangementChanged(`Pasted ${copies.length} clip${copies.length === 1 ? "" : "s"}`); renderEditor();
+}
+
 async function addEditorClipFromSource(source, trackIndex, start) {
+  if (!source || source.playable === false || !Number(source.duration)) { editorStatus(`${source?.label || "This source"} is Audio Not Linked and cannot be added as a playable clip.`); return null; }
+  pushArrangementHistory("Add clip");
   const performanceEvents = source.sourceKind === "drums"
     ? createDrumPatternEvents(source.duration || editorSecondsPerBar() * 4, source.patternSnapshot)
     : source.sourceKind === "keys"
-      ? createKeysSketchEvents(source.duration || editorSecondsPerBar() * 4)
+      ? createHarmonyPatternEvents(source.duration || editorSecondsPerBar() * 4, source.patternSnapshot)
       : null;
   const clip = {
     id: createId(),
@@ -2817,25 +3123,34 @@ async function addEditorClipFromSource(source, trackIndex, start) {
     name: source.label,
     trackIndex,
     start: snapEditorTime(start),
-    duration: Math.max(0.5, source.duration || 8),
+    duration: Math.max(0.5, Number(source.duration)),
     sourceStart: 0,
     volume: 1,
+    pan: 0,
     fadeIn: 0,
     fadeOut: 0,
     stretch: 1,
     loop: false,
+    locked: false,
+    missingSource: false,
+    relinkRequired: false,
     filter: 16000,
     eq: 0,
     effect: "none",
     color: editorClipColor(source.type),
-    events: performanceEvents
+    events: performanceEvents,
+    groupId: source.alignmentJobId || source.metadata?.alignmentJobId || null
   };
   editorState.clips.push(clip);
+  if (source.buffer) editorState.runtimeSourceCache.set(`${source.sourceKind}:${source.id}`, source.buffer);
   editorState.selectedClipId = clip.id;
+  editorState.selectedClipIds = [clip.id];
   editorState.playhead = clip.start;
   renderEditor();
   editorStatus(`Added ${clip.name} at ${formatTime(clip.start)}. Playhead moved to the clip start.`);
   emitProjectContextChange("arrangement", "clip-added", { summary: `Added ${clip.name} to the arrangement`, decision: { domain: "Arrangement", action: "Clip added", summary: `Added ${clip.name} at ${formatTime(clip.start)}`, after: { id: clip.id, trackIndex, start: clip.start, duration: clip.duration }, initiatedBy: "user" } });
+  arrangementChanged(`Added ${clip.name}`, { context: false });
+  return clip;
 }
 
 async function addEditorFileClip(file, trackIndex, start) {
@@ -2870,12 +3185,13 @@ async function resolveEditorClipBuffer(clip) {
 function setEditorClipField(field, value) {
   const clip = selectedEditorClip();
   if (!clip) return;
-  if (field === "muted" || field === "solo") {
+  if (clip.locked && field !== "locked") { editorStatus(`${clip.name} is locked.`); renderEditorInspector(); return; }
+  pushArrangementHistory(`Edit clip ${field}`);
+  if (field === "muted" || field === "solo" || field === "locked") {
     clip[field] = Boolean(value);
-    renderEditor();
-    return;
-  }
-  if (["start", "duration", "volume", "fadeIn", "fadeOut", "stretch", "filter", "eq"].includes(field)) {
+  } else if (field === "end") {
+    clip.duration = Math.max(.25, Number(value) - clip.start);
+  } else if (["start", "duration", "sourceStart", "volume", "pan", "fadeIn", "fadeOut", "stretch", "filter", "eq"].includes(field)) {
     clip[field] = Number(value);
   } else {
     clip[field] = value;
@@ -2884,66 +3200,85 @@ function setEditorClipField(field, value) {
   if (field === "duration") clip.duration = Math.max(0.25, clip.duration);
   renderEditor();
   emitProjectContextChange("arrangement", "clip-edited", { summary: `Edited ${clip.name} ${field}` });
+  arrangementChanged(`Edited ${clip.name} ${field}`, { context: false });
 }
 
 function splitSelectedEditorClip() {
   const clip = selectedEditorClip();
-  if (!clip || clip.duration < 1) return;
-  const half = clip.duration / 2;
-  const duplicate = { ...clip, id: createId(), start: snapEditorTime(clip.start + half), duration: half, name: `${clip.name} split` };
+  if (!clip || clip.duration < .5 || clip.locked) return;
+  const relativePlayhead = editorState.playhead - clip.start;
+  const splitAt = relativePlayhead > .25 && relativePlayhead < clip.duration - .25 ? relativePlayhead : clip.duration / 2;
+  pushArrangementHistory(`Split ${clip.name}`);
+  const duplicate = { ...clip, id: createId(), start: clip.start + splitAt, sourceStart: (clip.sourceStart || 0) + splitAt, duration: clip.duration - splitAt, name: `${clip.name} split` };
   if (clip.events?.length) {
-    const leftEvents = clip.events.filter((event) => event.time < half);
+    const leftEvents = clip.events.filter((event) => event.time < splitAt);
     const rightEvents = clip.events
-      .filter((event) => event.time >= half)
-      .map((event) => ({ ...event, time: event.time - half }));
+      .filter((event) => event.time >= splitAt)
+      .map((event) => ({ ...event, time: event.time - splitAt }));
     clip.events = leftEvents;
     duplicate.events = rightEvents;
+    duplicate.sourceStart = 0;
   }
-  clip.duration = half;
+  clip.duration = splitAt;
   editorState.clips.push(duplicate);
   editorState.selectedClipId = duplicate.id;
+  editorState.selectedClipIds = [duplicate.id];
   renderEditor();
+  arrangementChanged(`Split ${clip.name}`, { context: false });
   emitProjectContextChange("arrangement", "clip-split", { summary: `Split ${clip.name}`, decision: { domain: "Arrangement", action: "Clip split", summary: `Split ${clip.name} at ${formatTime(duplicate.start)}`, initiatedBy: "user" } });
 }
 
 function duplicateSelectedEditorClip() {
   const clip = selectedEditorClip();
-  if (!clip) return;
+  if (!clip || clip.locked) return;
+  pushArrangementHistory(`Duplicate ${clip.name}`);
   const duplicate = { ...clip, id: createId(), start: snapEditorTime(clip.start + clip.duration), name: `${clip.name} copy`, events: clip.events ? clip.events.map((event) => ({ ...event })) : undefined };
   editorState.clips.push(duplicate);
   editorState.selectedClipId = duplicate.id;
+  editorState.selectedClipIds = [duplicate.id];
   renderEditor();
+  arrangementChanged(`Duplicated ${clip.name}`, { context: false });
   emitProjectContextChange("arrangement", "clip-duplicated", { summary: `Duplicated ${clip.name}`, decision: { domain: "Arrangement", action: "Clip duplicated", summary: `Duplicated ${clip.name}`, initiatedBy: "user" } });
 }
 
 function deleteSelectedEditorClip() {
   if (!editorState.selectedClipId) return;
   const removed = selectedEditorClip();
-  editorState.clips = editorState.clips.filter((clip) => clip.id !== editorState.selectedClipId);
+  if (!removed || removed.locked) { editorStatus(removed ? `${removed.name} is locked.` : "No clip selected."); return; }
+  if (!window.confirm(`Delete ${removed.name}? This can be undone.`)) return;
+  pushArrangementHistory(`Delete ${removed.name}`);
+  const selectedIds = new Set(editorState.selectedClipIds.length ? editorState.selectedClipIds : [editorState.selectedClipId]);
+  editorState.clips = editorState.clips.filter((clip) => !selectedIds.has(clip.id) || clip.locked);
   editorState.selectedClipId = null;
+  editorState.selectedClipIds = [];
   renderEditor();
+  arrangementChanged(`Deleted ${removed.name}`, { context: false });
   emitProjectContextChange("arrangement", "clip-deleted", { summary: `Deleted ${removed?.name || "arrangement clip"}`, decision: { domain: "Arrangement", action: "Clip deleted", summary: `Deleted ${removed?.name || "arrangement clip"}`, before: removed ? { id: removed.id, name: removed.name, start: removed.start, duration: removed.duration } : null, initiatedBy: "user" } });
 }
 
 function quantizeSelectedEditorClip() {
   const clip = selectedEditorClip();
-  if (!clip) return;
+  if (!clip || clip.locked) return;
+  pushArrangementHistory(`Quantize ${clip.name}`);
   clip.start = snapEditorTime(clip.start);
   if (clip.events?.length) clip.events = quantizePerformanceEvents(clip.events);
   renderEditor();
+  arrangementChanged(`Quantized ${clip.name}`);
 }
 
 function loopSelectedEditorClip() {
   const clip = selectedEditorClip();
-  if (!clip) return;
+  if (!clip || clip.locked) return;
+  pushArrangementHistory(`${clip.loop ? "Disable" : "Enable"} loop for ${clip.name}`);
   clip.loop = !clip.loop;
   if (clip.loop) clip.duration = Math.max(clip.duration, editorSecondsPerBar() * 4);
   renderEditor();
+  arrangementChanged(`${clip.loop ? "Enabled" : "Disabled"} loop for ${clip.name}`);
 }
 
 async function playEditorArrangement() {
   await AudioEngine.init();
-  stopEditorArrangement();
+  stopEditorArrangement({ silent: true, preservePlayhead: true });
   editorState.playing = true;
   editorState.paused = false;
   document.querySelector("#editorPlay").textContent = "Playing";
@@ -2951,9 +3286,11 @@ async function playEditorArrangement() {
   const from = editorState.playhead;
   let scheduledCount = 0;
   const hasSolo = editorState.clips.some((clip) => clip.solo);
+  const hasLaneSolo = editorState.tracks.some((track) => track.soloed);
   const audioClips = editorState.clips
     .filter((clip) => clip.start + clip.duration > from)
     .filter((clip) => !hasSolo || clip.solo)
+    .filter((clip) => { const lane = editorState.tracks[clip.trackIndex]; return lane && !lane.muted && (!hasLaneSolo || lane.soloed); })
     .sort((a, b) => a.start - b.start);
   for (const clip of audioClips) {
     if (clip.muted) continue;
@@ -2961,7 +3298,7 @@ async function playEditorArrangement() {
       clip.events = createDrumPatternEvents(clip.duration || editorSecondsPerBar() * 4);
     }
     if ((clip.sourceKind === "keys" || clip.type === "keys") && !clip.events?.length) {
-      clip.events = createKeysSketchEvents(clip.duration || editorSecondsPerBar() * 4);
+      clip.events = [];
     }
     if (clip.sourceKind === "performance" || clip.events?.length) {
       scheduledCount += scheduleEditorPerformanceClip(clip, from, startAt);
@@ -2969,12 +3306,15 @@ async function playEditorArrangement() {
     }
     const buffer = await resolveEditorClipBuffer(clip);
     if (!buffer) {
+      clip.missingSource = true; clip.relinkRequired = true;
       editorStatus(`Could not resolve audio for ${clip.name}. Try loading the source again or dragging the file directly into the Editor.`);
+      scheduleArrangementAutosave(); renderEditor();
       continue;
     }
     const source = AudioEngine.context.createBufferSource();
     const gain = AudioEngine.context.createGain();
     const filter = AudioEngine.context.createBiquadFilter();
+    const pan = AudioEngine.context.createStereoPanner ? AudioEngine.context.createStereoPanner() : null;
     source.buffer = buffer;
     source.loop = Boolean(clip.loop);
     source.playbackRate.value = 1 / Math.max(0.1, clip.stretch || 1);
@@ -2982,7 +3322,9 @@ async function playEditorArrangement() {
     filter.frequency.value = clip.filter || 16000;
     source.connect(filter);
     filter.connect(gain);
-    gain.connect(AudioEngine.masterAnalyser);
+    const lane = editorState.tracks[clip.trackIndex];
+    if (pan) { pan.pan.value = Math.max(-1, Math.min(1, Number(clip.pan || 0) + Number(lane?.pan || 0))); gain.connect(pan); pan.connect(AudioEngine.masterAnalyser); }
+    else gain.connect(AudioEngine.masterAnalyser);
     const offset = Math.max(0, from - clip.start + (clip.sourceStart || 0));
     const when = startAt + Math.max(0, clip.start - from);
     const safeOffset = Math.min(offset, Math.max(0, buffer.duration - 0.05));
@@ -2990,9 +3332,10 @@ async function playEditorArrangement() {
     const requestedDuration = Math.max(0.1, clip.duration - Math.max(0, from - clip.start));
     const playDuration = source.loop ? requestedDuration : Math.min(requestedDuration, remaining);
     gain.gain.setValueAtTime(0.0001, when);
-    gain.gain.linearRampToValueAtTime(clip.volume || 1, when + Math.min(clip.fadeIn || 0.02, playDuration * 0.45));
+    const outputGain = Number(clip.volume ?? 1) * Number(lane?.volume ?? 1);
+    gain.gain.linearRampToValueAtTime(outputGain, when + Math.min(clip.fadeIn || 0.02, playDuration * 0.45));
     if (clip.fadeOut) {
-      gain.gain.setValueAtTime(clip.volume || 1, when + Math.max(0, playDuration - clip.fadeOut));
+      gain.gain.setValueAtTime(outputGain, when + Math.max(0, playDuration - clip.fadeOut));
       gain.gain.linearRampToValueAtTime(0.0001, when + playDuration);
     }
     try {
@@ -3004,9 +3347,14 @@ async function playEditorArrangement() {
     source.onended = () => {
       editorState.scheduled = editorState.scheduled.filter((item) => item.source !== source);
     };
-    editorState.scheduled.push({ source, gain, filter });
+    editorState.scheduled.push({ source, gain, filter, pan, clipId: clip.id, laneId: lane?.id });
     scheduledCount += 1;
   }
+  editorState.clockStartedAt = startAt;
+  editorState.clockPlayheadStart = from;
+  editorState.activeClipIds = audioClips.filter((clip) => !clip.muted).map((clip) => clip.id);
+  if (editorState.metronome) scheduleArrangementMetronome(from, startAt, editorState.loopRegion.enabled ? editorState.loopRegion.end : arrangementDuration());
+  startArrangementClock();
   editorStatus(scheduledCount
     ? `Previewing ${scheduledCount} editor clip${scheduledCount === 1 ? "" : "s"} from ${formatTime(from)}.`
     : `No playable editor clips at ${formatTime(from)}. Select a clip or move the playhead to a clip start.`);
@@ -3023,26 +3371,67 @@ function stopEditorArrangement(options = {}) {
     }
   });
   editorState.scheduled = [];
+  editorState.activeClipIds = [];
+  clearInterval(editorState.playheadTimer); editorState.playheadTimer = null;
+  clearTimeout(editorState.endTimer); editorState.endTimer = null;
   editorState.playing = false;
   editorState.paused = false;
+  if (!options.preservePlayhead) editorState.playhead = editorState.loopRegion.enabled ? editorState.loopRegion.start : 0;
   const play = document.querySelector("#editorPlay");
   if (play) play.textContent = "Play";
   if (wasActive && !options.silent) emitProjectContextChange("arrangement", "playback-stopped", { summary: "Stopped arrangement playback" });
 }
 
 function pauseEditorArrangement() {
-  const playhead = editorState.playhead;
-  stopEditorArrangement({ silent: true });
+  const playhead = currentArrangementPlayhead();
+  stopEditorArrangement({ silent: true, preservePlayhead: true });
   editorState.playhead = playhead;
   editorState.paused = true;
   editorStatus(`Arrangement paused at ${formatTime(playhead)}.`);
   emitProjectContextChange("arrangement", "playback-paused", { summary: `Paused arrangement at ${formatTime(playhead)}` });
 }
 
+function arrangementDuration() { return editorState.clips.reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0); }
+
+function currentArrangementPlayhead() {
+  if (!editorState.playing || !AudioEngine.context) return editorState.playhead;
+  return Math.max(0, editorState.clockPlayheadStart + Math.max(0, AudioEngine.context.currentTime - editorState.clockStartedAt));
+}
+
+function startArrangementClock() {
+  clearInterval(editorState.playheadTimer);
+  editorState.playheadTimer = setInterval(() => {
+    if (!editorState.playing) return;
+    let current = currentArrangementPlayhead();
+    if (editorState.loopRegion.enabled && editorState.loopRegion.end > editorState.loopRegion.start && current >= editorState.loopRegion.end) {
+      editorState.playhead = editorState.loopRegion.start;
+      stopEditorArrangement({ silent: true, preservePlayhead: true });
+      playEditorArrangement();
+      return;
+    }
+    const duration = arrangementDuration();
+    if (duration && current >= duration) { editorState.playhead = duration; stopEditorArrangement({ silent: true, preservePlayhead: true }); editorStatus("Arrangement playback complete."); renderArrangementTransportReadout(); return; }
+    editorState.playhead = current;
+    const playhead = document.querySelector("#editorPlayhead"); if (playhead) playhead.value = Math.round(current);
+    const line = document.querySelector("#editorTimeline .editor-playhead"); if (line) line.style.left = `${132 + current * editorPixelsPerSecond()}px`;
+    renderArrangementTransportReadout();
+  }, 100);
+}
+
+function scheduleArrangementMetronome(from, startAt, end) {
+  const beat = 60 / (Number(document.querySelector("#globalBpm")?.value) || 124); const first = Math.ceil(from / beat) * beat;
+  for (let time = first, count = 0; time < end && count < 2000; time += beat, count += 1) {
+    const oscillator = AudioEngine.context.createOscillator(); const gain = AudioEngine.context.createGain(); const when = startAt + time - from; oscillator.frequency.value = Math.round(time / beat) % 4 === 0 ? 1100 : 760; gain.gain.setValueAtTime(.0001, when); gain.gain.linearRampToValueAtTime(.055, when + .002); gain.gain.exponentialRampToValueAtTime(.0001, when + .035); oscillator.connect(gain); gain.connect(AudioEngine.masterAnalyser); oscillator.start(when); oscillator.stop(when + .04); editorState.scheduled.push({ source: oscillator, gain, metronome: true });
+  }
+}
+
 function addEditorTrack() {
   const index = editorState.tracks.length + 1;
-  editorState.tracks.push({ id: createId(), name: `Arrangement Track ${index}`, role: "Layer" });
+  pushArrangementHistory(`Add Arrangement Track ${index}`);
+  editorState.tracks.push({ id: createId(), name: `Arrangement Track ${index}`, type: "audio", role: "Layer", muted: false, soloed: false, armed: false, volume: 1, pan: 0, locked: false, outputBus: "master" });
+  editorState.lanes = editorState.tracks;
   renderEditor();
+  arrangementChanged(`Added Arrangement Track ${index}`, { context: false });
   emitProjectContextChange("arrangement", "track-lane-added", { summary: `Added Arrangement Track ${index}` });
 }
 
@@ -3083,6 +3472,7 @@ function stopEditorPerformanceRecording() {
     return;
   }
   const events = quantizePerformanceEvents(recording.events);
+  pushArrangementHistory("Record performance");
   const duration = Math.max(editorSecondsPerBar(), ...events.map((event) => event.time + (event.duration || 0.15))) + 0.1;
   const clip = {
     id: createId(),
@@ -3094,12 +3484,15 @@ function stopEditorPerformanceRecording() {
     duration,
     sourceStart: 0,
     volume: 1,
+    pan: 0,
     fadeIn: 0,
     fadeOut: 0,
     stretch: 1,
     loop: false,
     muted: false,
     solo: false,
+    locked: false,
+    missing: false,
     filter: 16000,
     eq: 0,
     effect: "none",
@@ -3108,7 +3501,10 @@ function stopEditorPerformanceRecording() {
   };
   editorState.clips.push(clip);
   editorState.selectedClipId = clip.id;
+  editorState.selectedClipIds = [clip.id];
+  editorState.recordings.push({ id: recording.id, clipId: clip.id, createdAt: new Date().toISOString(), overdub: recording.overdub, eventCount: events.length });
   renderEditor();
+  arrangementChanged(`Recorded ${clip.name}`, { context: false });
   editorStatus(`Captured ${events.length} performance event${events.length === 1 ? "" : "s"} as an editable timeline clip.`);
   emitProjectContextChange("arrangement", "performance-recorded", { summary: `Recorded ${clip.name}`, decision: { domain: "Arrangement", action: "Performance recorded", summary: `Captured ${events.length} performance events as ${clip.name}`, after: { clipId: clip.id, eventCount: events.length, duration: clip.duration }, initiatedBy: "user" } });
 }
@@ -3180,36 +3576,10 @@ function createDrumPatternEvents(duration, snapshot = null) {
   return events.sort((a, b) => a.time - b.time);
 }
 
-function createKeysSketchEvents(duration) {
-  const preset = getInstrumentPreset();
-  const bar = editorSecondsPerBar();
-  const chord = instrument.chords.minor7;
-  const events = [];
-  for (let base = 0; base < duration; base += bar * 2) {
-    chord.forEach((offset) => {
-      events.push({
-        kind: "key",
-        midi: preset.root + offset + 12,
-        isBass: false,
-        time: base,
-        duration: Math.min(bar * 1.5, duration - base),
-        presetId: preset.id,
-        machineId: instrument.machine,
-        velocity: 0.62
-      });
-    });
-    events.push({
-      kind: "key",
-      midi: preset.root - 12,
-      isBass: true,
-      time: base,
-      duration: Math.min(bar, duration - base),
-      presetId: preset.id,
-      machineId: instrument.machine,
-      velocity: 0.78
-    });
-  }
-  return events.filter((event) => event.duration > 0).sort((a, b) => a.time - b.time);
+function createHarmonyPatternEvents(duration, snapshot = null) {
+  if (!snapshot?.notes?.length) return [];
+  const stepSeconds = 60 / (Number(document.querySelector("#globalBpm")?.value) || 124) / 4;
+  return snapshot.notes.map((note) => ({ kind: "key", midi: note.midi, isBass: note.type === "bass" || Boolean(note.isBass), time: Math.max(0, Number(note.start || 0) * stepSeconds), duration: Math.max(.02, Number(note.duration || 1) * stepSeconds), velocity: Number(note.velocity ?? .75), presetId: snapshot.presetId, machineId: snapshot.machineId, automation: note.automation || null, patternVersion: snapshot.version })).filter((event) => event.time < duration).sort((a, b) => a.time - b.time);
 }
 
 function scheduleEditorPerformanceClip(clip, from, startAt) {
@@ -6954,7 +7324,7 @@ function initializePlaybackRegistry() {
   registry.register({ id: "drums", type: "performance", displayName: "Beat Forge", overlapAllowed: true, stop: () => { stopDrums(); stopBeatPreview(); }, pause: pauseDrums, resume: startDrums, restart: () => { stopDrums(); drums.step = 0; startDrums(); }, getState: () => ({ playing: drums.playing || drums.previewing, paused: drums.paused, looping: drums.playing && drums.loop, recording: drums.recording, preview: drums.previewing, metadata: { name: drums.previewing ? "Beat Forge preview" : drums.recording ? `Beat Forge, recording · ${drums.name}` : `Beat Forge, ${drums.name}`, elapsed: drums.step * (60 / (Number(document.querySelector("#globalBpm")?.value) || 124) / 4), pattern: drums.patternId, schedulerActive: Boolean(drums.timer), patternVersion: drums.version } }) });
   registry.register({ id: "keys", type: "performance", displayName: "Harmony Lab", overlapAllowed: true, stop: stopHarmonyPattern, pause: pauseHarmonyPattern, resume: playHarmonyPattern, restart: () => { stopHarmonyPattern(); instrument.patternPlayhead = 0; playHarmonyPattern(); }, getState: () => ({ playing: instrument.patternPlaying || instrument.activeVoices.length > 0, paused: instrument.patternPaused, looping: instrument.patternPlaying && instrument.patternLoop, recording: instrument.recording, preview: instrument.previewing, metadata: { name: instrument.previewing ? "Harmony Lab preview" : instrument.recording ? `Harmony Lab recording · ${instrument.pattern.name}` : instrument.patternPlaying ? `Harmony Lab · ${instrument.pattern.name}` : `${instrument.activeVoices.length} live Harmony voice${instrument.activeVoices.length === 1 ? "" : "s"}`, elapsed: instrument.patternPlayhead, key: instrument.key, scale: instrument.scale, patternVersion: instrument.pattern.version } }) });
   registry.register({ id: "stems-preview", type: "preview", displayName: "Stem Lab", preview: true, stop: stopStemPreview, pause: pauseStemPlayback, resume: () => playStemSet(stemState.previewMode === "single" && stemState.previewStemId ? [stemState.previewStemId] : stemState.stems.map((stem) => stem.id), stemState.previewMode || "all"), restart: restartStemPlayback, getState: () => { const playingIds = stemState.voices.map((voice) => voice.stemId); const muted = stemState.stems.filter((stem) => stem.muted).map((stem) => stem.id); const soloed = stemState.stems.filter((stem) => stem.solo).map((stem) => stem.id); const selected = stemState.stems.find((stem) => stem.id === stemState.previewStemId); return { playing: Boolean(stemState.playing && !ditcState.previewTrackId), paused: Boolean(stemState.paused && !ditcState.previewTrackId), looping: stemState.loop, preview: true, metadata: { name: selected ? `Stem Lab, ${selected.name} preview` : playingIds.length > 1 ? `Stem Lab, ${playingIds.length} stems playing${stemState.loop ? " in a loop" : ""}` : stemState.sourceName || "Stem Lab preview", elapsed: currentStemTime(), playingStems: playingIds, mutedStems: muted, soloedStems: soloed, previewMode: stemState.previewMode, source: stemState.sourceName, syncState: stemState.syncState } }; } });
-  registry.register({ id: "arrangement", type: "timeline", displayName: "Arrangement", stop: stopEditorArrangement, pause: pauseEditorArrangement, resume: playEditorArrangement, restart: () => { stopEditorArrangement(); editorState.playhead = 0; playEditorArrangement(); }, getState: () => ({ playing: editorState.playing, paused: editorState.paused, metadata: { name: `Arrangement at ${formatTime(editorState.playhead)}`, elapsed: editorState.playhead } }) });
+  registry.register({ id: "arrangement", type: "timeline", displayName: "Arrangement Studio", stop: stopEditorArrangement, pause: pauseEditorArrangement, resume: playEditorArrangement, restart: () => { stopEditorArrangement(); editorState.playhead = 0; playEditorArrangement(); }, getState: () => ({ playing: editorState.playing, paused: editorState.paused, looping: editorState.loopRegion.enabled, recording: Boolean(editorState.recording), metadata: { name: editorState.name, elapsed: currentArrangementPlayhead(), duration: arrangementDuration(), arrangementId: editorState.arrangementId, version: editorState.version, activeClipIds: [...editorState.activeClipIds], activeLaneIds: [...new Set(editorState.activeClipIds.map((clipId) => editorState.tracks[editorState.clips.find((clip) => clip.id === clipId)?.trackIndex]?.id).filter(Boolean))] } }) });
   registry.register({ id: "smart-mix", type: "automation", displayName: "Smart Mix", stop: () => stopAiMix({ keepDecks: true }), getState: () => ({ playing: autoMixState.running, automated: autoMixState.running, metadata: { name: autoMixState.state, elapsed: 0 } }) });
   registry.register({ id: "mix-recording", type: "recording", displayName: "Mix Recording", stop: () => { if (AudioEngine.recorder?.state === "recording") AudioEngine.recorder.stop(); }, getState: () => ({ playing: AudioEngine.recorder?.state === "recording", metadata: { name: "Mix recording", elapsed: 0 } }) });
 }
@@ -7303,7 +7673,7 @@ function generateBassPlan(variation = false) { const field = document.querySelec
 
 function undoHarmony() { const previous = instrument.undoStack.pop(); if (!previous) return; instrument.pattern = previous.pattern; instrument.preset = previous.preset; instrument.machine = previous.machine; instrument.key = previous.key; instrument.scale = previous.scale; saveHarmonyState(); renderInstrumentOptions(); renderHarmonyLab(); }
 
-function sendHarmonyToArrangement() { const bpm = Number(document.querySelector("#globalBpm")?.value) || 124; const stepSeconds = 60 / bpm / 4; const events = instrument.pattern.notes.map((note) => ({ kind: "key", midi: note.midi, isBass: note.type === "bass", time: note.start * stepSeconds, duration: note.duration * stepSeconds, velocity: note.velocity, presetId: instrument.preset, machineId: instrument.machine, automation: note.automation })); const clip = { id: createId(), sourceKind: "performance", type: "keys", name: instrument.pattern.name, trackIndex: 1, start: editorState.playhead, duration: instrument.pattern.bars * 16 * stepSeconds, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0, stretch: 1, loop: true, muted: false, solo: false, filter: 16000, eq: 0, effect: "none", color: editorClipColor("keys"), events }; editorState.clips.push(clip); editorState.selectedClipId = clip.id; renderEditor(); editorStatus(`Sent ${instrument.pattern.name} from Harmony Lab to Arrangement.`); emitProjectContextChange("arrangement", "harmony-clip-added", { summary: `Added ${instrument.pattern.name} from Harmony Lab`, decision: { domain: "Arrangement", action: "Harmony clip added", summary: `Added ${instrument.pattern.name} from Harmony Lab`, after: { clipId: clip.id, duration: clip.duration }, initiatedBy: "user" } }); }
+function sendHarmonyToArrangement() { const source = editorSources().find((item) => item.sourceKind === "keys"); if (!source?.playable) { editorStatus("Create at least one Harmony Lab note before sending it to Arrangement Studio."); return; } addEditorClipFromSource(source, Math.min(1, editorState.tracks.length - 1), editorState.playhead); }
 
 function renderHarmonyMatch() { const deck = deckState.a.buffer ? deckState.a : deckState.b.buffer ? deckState.b : null; const output = document.querySelector("#harmonyMatchSuggestion"); if (!output) return; const deckKey = deck?.analysis?.key || instrument.key; const bpm = deck?.analysis?.bpm || Number(document.querySelector("#globalBpm")?.value) || 124; const groove = activeDrumGroove()?.name || "current Beat Forge groove"; instrument.matchPlan = generateHarmonyNotes("match", false); output.textContent = deck ? `Deck ${deck.id.toUpperCase()} is near ${Math.round(bpm)} BPM${deckKey ? ` in ${deckKey}` : ""}. Try ${getInstrumentPreset().name} chords with a sparse bass counterline over ${groove}.` : `Beat Forge suggests a ${groove} pocket. Use restrained ${instrument.key} ${instrument.scale} harmony to preserve rhythmic space.`; }
 
@@ -8795,9 +9165,14 @@ function arrangementIntelligence() {
     coveredUntil = Math.max(coveredUntil, clip.start + clip.duration);
   });
   const transitionRegions = clips.filter((clip) => clip.type === "fx" || /transition|blend|echo|filter/i.test(`${clip.name} ${clip.effect || ""}`)).map((clip) => ({ id: clip.id, name: clip.name, start: clip.start, duration: clip.duration }));
-  const introClip = clips.find((clip) => /intro|cold open/i.test(clip.name));
-  const outroClip = clips.find((clip) => /outro|closing|finale/i.test(clip.name));
+  const introClip = clips.find((clip) => /intro|cold open/i.test(clip.name)) || editorState.markers.find((marker) => /intro/i.test(`${marker.type} ${marker.label}`));
+  const outroClip = clips.find((clip) => /outro|closing|finale/i.test(clip.name)) || editorState.markers.find((marker) => /outro/i.test(`${marker.type} ${marker.label}`));
+  const exportValidation = arrangementExportValidation();
   return {
+    arrangementId: editorState.arrangementId,
+    arrangementName: editorState.name,
+    arrangementVersion: editorState.version,
+    activeVersionId: editorState.activeVersionId,
     timelineLength,
     trackLanes: editorState.tracks.map(({ id, name, role }) => ({ id, name, role })),
     clips: clips.map((clip) => ({ id: clip.id, name: clip.name, type: clip.type, sourceKind: clip.sourceKind, trackIndex: clip.trackIndex, start: clip.start, duration: clip.duration, effect: clip.effect || "none", muted: Boolean(clip.muted), loop: Boolean(clip.loop) })),
@@ -8805,11 +9180,15 @@ function arrangementIntelligence() {
     currentPlayhead: editorState.playhead,
     selectedClip: editorState.selectedClipId,
     unresolvedGaps: gaps,
-    transitionRegions,
+    transitionRegions: [...transitionRegions, ...editorState.transitions.map((transition) => ({ id: transition.transitionId, name: transition.style, start: transition.startTime, duration: transition.duration, outgoingClipId: transition.outgoingClipId, incomingClipId: transition.incomingClipId }))],
+    markers: editorState.markers.map((marker) => ({ ...marker })),
+    missingSources: clips.filter((clip) => clip.missingSource).map((clip) => clip.id),
     introStatus: introClip ? `Planned: ${introClip.name}` : "Not planned",
     outroStatus: outroClip ? `Planned: ${outroClip.name}` : "Not planned",
     recordingState: editorState.recording ? "Recording" : editorState.playing ? "Playing" : editorState.paused ? "Paused" : "Idle",
-    exportReadiness: Boolean(clips.length && introClip && outroClip && !gaps.length)
+    exportReadiness: exportValidation.status !== "Blocked",
+    exportStatus: exportValidation.status,
+    lastExportedAt: editorState.exportState.lastExportedAt || null
   };
 }
 
@@ -8827,8 +9206,8 @@ function projectProgressModel(arrangement) {
     { id: "pads", label: "Pads prepared", complete: sampler.buffers.some(Boolean), detail: `${sampler.buffers.filter(Boolean).length} playable pad${sampler.buffers.filter(Boolean).length === 1 ? "" : "s"}` },
     { id: "stems", label: "Stems prepared", complete: stemState.stems.length > 0, detail: `${stemState.stems.length} stem${stemState.stems.length === 1 ? "" : "s"}` },
     { id: "arrangement", label: "Arrangement started", complete: arrangement.clipCount > 0, detail: `${arrangement.clipCount} clip${arrangement.clipCount === 1 ? "" : "s"}` },
-    { id: "recording", label: "Recording completed", complete: Boolean(AudioEngine.mixUrl), detail: AudioEngine.mixUrl ? "Take ready" : "No completed recording" },
-    { id: "export", label: "Export ready", complete: arrangement.exportReadiness && Boolean(AudioEngine.mixUrl), detail: arrangement.exportReadiness && AudioEngine.mixUrl ? "Ready" : "Not ready" }
+    { id: "recording", label: "Recording completed", complete: editorState.recordings.length > 0 || Boolean(AudioEngine.mixUrl), detail: editorState.recordings.length ? `${editorState.recordings.length} arrangement recording${editorState.recordings.length === 1 ? "" : "s"}` : AudioEngine.mixUrl ? "Master take ready" : "No completed recording" },
+    { id: "export", label: "Export ready", complete: arrangement.exportReadiness, detail: arrangement.exportStatus || "Not checked" }
   ];
   return { percentage: Math.round(factors.filter((factor) => factor.complete).length / factors.length * 100), factors, completed: factors.filter((factor) => factor.complete).length, total: factors.length };
 }
@@ -9096,9 +9475,12 @@ function initializeProducerMemory() {
 
 function removeRecommendationArrangementClip(clipId) {
   if (!clipId || !editorState.clips.some((clip) => clip.id === clipId)) return false;
+  pushArrangementHistory("Undo recommendation arrangement clip");
   editorState.clips = editorState.clips.filter((clip) => clip.id !== clipId);
   if (editorState.selectedClipId === clipId) editorState.selectedClipId = null;
+  editorState.selectedClipIds = editorState.selectedClipIds.filter((id) => id !== clipId);
   renderEditor();
+  arrangementChanged("Removed recommendation-created arrangement clip", { context: false });
   emitProjectContextChange("arrangement", "recommendation-undone", { summary: "Removed a recommendation-created arrangement clip" });
   return true;
 }
@@ -9381,9 +9763,12 @@ function renderMissionHistory() {
 
 function removeMissionArrangementClip(clipId) {
   if (!clipId || !editorState.clips.some((clip) => clip.id === clipId)) return false;
+  pushArrangementHistory("Undo mission arrangement clip");
   editorState.clips = editorState.clips.filter((clip) => clip.id !== clipId);
   if (editorState.selectedClipId === clipId) editorState.selectedClipId = null;
+  editorState.selectedClipIds = editorState.selectedClipIds.filter((id) => id !== clipId);
   renderEditor();
+  arrangementChanged("Removed mission-created arrangement clip", { context: false });
   emitProjectContextChange("arrangement", "mission-step-undone", { summary: "Removed a mission-created arrangement clip" });
   return true;
 }
@@ -10142,6 +10527,14 @@ function setupEvents() {
     event.dataTransfer.effectAllowed = "copy";
   });
 
+  document.querySelector("#editorSourceBin").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-editor-add-source]"); if (!button) return; const source = editorSources().find((item) => item.id === button.dataset.editorAddSource); if (source) addEditorClipFromSource(source, Math.min(({ drums: 0, keys: 1, pad: 2, stem: 3, deck: 3, crate: 3 })[source.sourceKind] ?? 0, editorState.tracks.length - 1), editorState.playhead);
+  });
+
+  document.querySelector("#editorBrowserTabs").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-editor-browser]"); if (!button) return; editorState.browserFilter = button.dataset.editorBrowser; document.querySelectorAll("[data-editor-browser]").forEach((item) => item.classList.toggle("is-active", item === button)); renderEditorSourceBin();
+  });
+
   document.querySelector("#editorTimeline").addEventListener("dragover", (event) => {
     const lane = event.target.closest(".editor-track-lane");
     if (!lane) return;
@@ -10163,7 +10556,8 @@ function setupEvents() {
     const start = editorLaneTimeFromEvent(lane, event);
     const sourceJson = event.dataTransfer.getData("application/x-deckforge-editor-source");
     if (sourceJson) {
-      await addEditorClipFromSource(JSON.parse(sourceJson), trackIndex, start);
+      const dragged = JSON.parse(sourceJson); const source = editorSources().find((item) => item.id === dragged.id && item.sourceKind === dragged.sourceKind) || dragged;
+      await addEditorClipFromSource(source, trackIndex, start);
       return;
     }
     const files = await collectSupportedDropFiles(event.dataTransfer);
@@ -10176,18 +10570,26 @@ function setupEvents() {
     const clipEl = event.target.closest(".editor-clip");
     if (!clipEl) return;
     const clip = editorState.clips.find((item) => item.id === clipEl.dataset.clipId);
-    if (!clip) return;
+    if (!clip || clip.locked || editorState.tracks[clip.trackIndex]?.locked) { if (clip) editorStatus(`${clip.name} is locked.`); return; }
     event.preventDefault();
     editorState.selectedClipId = clip.id;
+    editorState.selectedClipIds = event.metaKey || event.ctrlKey ? [...new Set([...editorState.selectedClipIds, clip.id])] : [clip.id];
+    const trim = event.target.closest("[data-trim]")?.dataset.trim || null;
     editorState.pointerDrag = {
       clipId: clip.id,
+      mode: trim ? `trim-${trim}` : "move",
       startX: event.clientX,
       startY: event.clientY,
       originalStart: clip.start,
-      originalTrack: clip.trackIndex
+      originalDuration: clip.duration,
+      originalSourceStart: clip.sourceStart || 0,
+      originalTrack: clip.trackIndex,
+      groupOriginal: clip.groupId ? editorState.clips.filter((item) => item.groupId === clip.groupId).map((item) => ({ id: item.id, start: item.start, trackIndex: item.trackIndex })) : null,
+      snapshot: captureArrangementSnapshot(),
+      moved: false
     };
-    clipEl.setPointerCapture(event.pointerId);
-    renderEditor();
+    try { clipEl.setPointerCapture(event.pointerId); } catch { /* capture may be unavailable after a DOM update */ }
+    clipEl.classList.add("is-selected"); renderEditorInspector();
   });
 
   document.querySelector("#editorTimeline").addEventListener("pointermove", (event) => {
@@ -10195,56 +10597,42 @@ function setupEvents() {
     if (!drag) return;
     const clip = editorState.clips.find((item) => item.id === drag.clipId);
     if (!clip) return;
-    const deltaSeconds = (event.clientX - drag.startX) / editorPixelsPerSecond();
-    clip.start = snapEditorTime(drag.originalStart + deltaSeconds);
-    clip.trackIndex = Math.max(0, Math.min(editorState.tracks.length - 1, editorTrackIndexFromY(event.clientY)));
-    renderEditor();
+    updateArrangementPointerDrag(event, drag, clip);
   });
 
-  document.querySelector("#editorTimeline").addEventListener("pointerup", () => {
-    editorState.pointerDrag = null;
-  });
+  document.querySelector("#editorTimeline").addEventListener("pointerup", finishArrangementPointerDrag);
 
   document.addEventListener("pointermove", (event) => {
     const drag = editorState.pointerDrag;
     if (!drag) return;
     const clip = editorState.clips.find((item) => item.id === drag.clipId);
     if (!clip) return;
-    const deltaSeconds = (event.clientX - drag.startX) / editorPixelsPerSecond();
-    clip.start = snapEditorTime(drag.originalStart + deltaSeconds);
-    clip.trackIndex = Math.max(0, Math.min(editorState.tracks.length - 1, editorTrackIndexFromY(event.clientY)));
-    renderEditor();
+    updateArrangementPointerDrag(event, drag, clip);
   });
 
-  document.addEventListener("pointerup", () => {
-    editorState.pointerDrag = null;
-  });
+  document.addEventListener("pointerup", finishArrangementPointerDrag);
 
   document.querySelector("#editorTimeline").addEventListener("click", (event) => {
     const clipEl = event.target.closest(".editor-clip");
     if (clipEl) {
       editorState.selectedClipId = clipEl.dataset.clipId;
+      editorState.selectedClipIds = event.metaKey || event.ctrlKey ? [...new Set([...editorState.selectedClipIds, clipEl.dataset.clipId])] : [clipEl.dataset.clipId];
     } else if (event.target.closest(".editor-track-lane")) {
       editorState.selectedClipId = null;
+      editorState.selectedClipIds = [];
     }
     renderEditor();
   });
 
-  document.querySelector("#editorInspector").addEventListener("input", (event) => {
-    const field = event.target.dataset.editorField;
-    if (!field) return;
-    setEditorClipField(field, event.target.type === "checkbox" ? event.target.checked : event.target.value);
-  });
-
   document.querySelector("#editorInspector").addEventListener("change", (event) => {
     const field = event.target.dataset.editorField;
-    if (!field) return;
-    setEditorClipField(field, event.target.type === "checkbox" ? event.target.checked : event.target.value);
+    if (field) setEditorClipField(field, event.target.type === "checkbox" ? event.target.checked : event.target.value);
+    const transitionField = event.target.dataset.editorTransitionField; if (transitionField) setSelectedArrangementTransitionField(transitionField, event.target.value);
   });
 
   document.querySelector("#editorInspector").addEventListener("click", (event) => {
     const command = event.target.closest("[data-editor-command]")?.dataset.editorCommand;
-    if (command === "delete-clip") deleteSelectedEditorClip();
+    if (command === "delete-clip") deleteSelectedEditorClip(); if (command === "split") splitSelectedEditorClip(); if (command === "duplicate") duplicateSelectedEditorClip(); if (command === "relink" || command === "replace") { editorState.relinkMode = command; document.querySelector("#editorRelinkInput").click(); } if (command === "remove-transition") removeSelectedArrangementTransition(); if (command === "preview-transition") editorStatus("Transition preview requires safe delegation to the shared live transition controller and is unavailable for these timeline sources.");
   });
 
   document.querySelector("#editorSnap").addEventListener("change", (event) => {
@@ -10283,6 +10671,26 @@ function setupEvents() {
   document.querySelector("#editorEventQuantize").addEventListener("change", (event) => {
     editorState.eventQuantize = event.target.value;
   });
+  document.querySelector("#editorSimpleMode").addEventListener("click", () => setArrangementWorkspaceMode("simple"));
+  document.querySelector("#editorAdvancedMode").addEventListener("click", () => setArrangementWorkspaceMode("advanced"));
+  document.querySelector("#editorAddBeat").addEventListener("click", () => addCurrentArrangementSource("drums"));
+  document.querySelector("#editorAddHarmony").addEventListener("click", () => addCurrentArrangementSource("keys"));
+  document.querySelector("#editorAddPad").addEventListener("click", () => addCurrentArrangementSource("pad"));
+  document.querySelector("#editorAddTransition").addEventListener("click", addArrangementTransition);
+  document.querySelector("#editorAddMarker").addEventListener("click", addArrangementMarker);
+  document.querySelector("#editorUndo").addEventListener("click", undoArrangement);
+  document.querySelector("#editorRedo").addEventListener("click", redoArrangement);
+  document.querySelector("#editorSave").addEventListener("click", () => saveArrangementProject());
+  document.querySelector("#editorExport").addEventListener("click", exportArrangementDraft);
+  document.querySelector("#editorDuplicateVersion").addEventListener("click", createArrangementVersion);
+  document.querySelector("#editorLoopRegion").addEventListener("change", (event) => { pushArrangementHistory("Change loop region"); const clip = selectedEditorClip(); editorState.loopRegion = { enabled: event.target.checked, start: clip?.start || 0, end: clip ? clip.start + clip.duration : Math.max(editorSecondsPerBar() * 4, arrangementDuration()) }; arrangementChanged(`${event.target.checked ? "Enabled" : "Disabled"} arrangement loop`); renderEditor(); });
+  document.querySelector("#editorMetronome").addEventListener("change", (event) => { editorState.metronome = event.target.checked; arrangementChanged(`${editorState.metronome ? "Enabled" : "Disabled"} metronome`); });
+  document.querySelector("#editorProjectName").addEventListener("change", (event) => { const name = event.target.value.trim(); if (!name || name === editorState.name) return; pushArrangementHistory("Rename arrangement"); editorState.name = name; arrangementChanged(`Renamed arrangement to ${name}`); renderEditor(); });
+  document.querySelector("#editorBpm").addEventListener("change", (event) => { const bpm = Math.max(60, Math.min(180, Number(event.target.value) || 124)); document.querySelector("#globalBpm").value = bpm; arrangementChanged(`Changed fixed arrangement tempo to ${bpm} BPM`); renderEditor(); });
+  document.querySelector("#editorRelinkInput").addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (file) await relinkSelectedArrangementClip(file, editorState.relinkMode === "replace"); event.target.value = ""; editorState.relinkMode = null; });
+  document.querySelector("#editorTimeline").addEventListener("click", (event) => { const action = event.target.closest("[data-editor-lane-action]"); if (action) { event.stopPropagation(); setArrangementLaneAction(action.dataset.editorLaneAction, Number(action.dataset.lane)); } });
+  document.querySelector("#editorVersions").addEventListener("click", (event) => { const open = event.target.closest("[data-editor-version]"); if (open) switchArrangementVersion(open.dataset.editorVersion); const rename = event.target.closest("[data-editor-version-rename]"); if (rename) { const version = editorState.versions.find((item) => item.versionId === rename.dataset.editorVersionRename); const name = version && window.prompt("Version name", version.name); if (version && name?.trim()) { version.name = name.trim(); version.updatedAt = new Date().toISOString(); arrangementChanged(`Renamed version to ${version.name}`); renderEditor(); } } const remove = event.target.closest("[data-editor-version-delete]"); if (remove && editorState.versions.length > 1 && window.confirm("Delete this arrangement version?")) { const deletingActive = editorState.activeVersionId === remove.dataset.editorVersionDelete; editorState.versions = editorState.versions.filter((item) => item.versionId !== remove.dataset.editorVersionDelete); if (deletingActive) { editorState.activeVersionId = editorState.versions[0].versionId; applyArrangementModel(editorState.versions[0].model); } arrangementChanged("Deleted arrangement version"); renderEditor(); } });
+  document.querySelector("#editorEmptyActions").addEventListener("click", (event) => { const action = event.target.closest("[data-editor-empty]")?.dataset.editorEmpty; if (action === "sources") { editorState.browserFilter = "crate"; renderEditorSourceBin(); } else if (action === "deck-a" || action === "deck-b") { const source = editorSources().find((item) => item.sourceKind === "deck" && item.id === action.at(-1)); if (source) addEditorClipFromSource(source, 3, editorState.playhead); else editorStatus(`${action === "deck-a" ? "Deck A" : "Deck B"} has no loaded audio.`); } else if (action === "beat") addCurrentArrangementSource("drums"); else if (action === "harmony") addCurrentArrangementSource("keys"); else if (action === "stem") addCurrentArrangementSource("stem"); else if (action === "record") startEditorPerformanceRecording(false); else if (action === "mission") { switchView("ai"); editorStatus("Open Creative Missions and choose Build Mixtape; no mission was started silently."); } });
 
   document.querySelector("#smartMixToggle").addEventListener("click", () => {
     startSmartMix(document.querySelector("#smartMixMode").value, document.querySelector("#smartMixSource").value);
@@ -10697,7 +11105,7 @@ function setupEvents() {
   document.querySelector("#cancelPadMacro").addEventListener("click", cancelPadMacro);
   document.querySelector("#padRecord").addEventListener("click", async () => { await AudioEngine.init(); editorState.recording ? stopEditorPerformanceRecording() : startEditorPerformanceRecording(false); document.querySelector("#padRecord").classList.toggle("is-active", Boolean(editorState.recording)); renderPadDiagnostics(); });
   document.querySelector("#padOverdub").addEventListener("click", async () => { await AudioEngine.init(); editorState.recording ? stopEditorPerformanceRecording() : startEditorPerformanceRecording(true); document.querySelector("#padOverdub").classList.toggle("is-active", Boolean(editorState.recording)); renderPadDiagnostics(); });
-  document.querySelector("#padUndoTake").addEventListener("click", () => { const index = [...editorState.clips].map((clip) => clip.type).lastIndexOf("pad"); if (index < 0) { setPadEditorStatus("No saved pad take to undo."); return; } sampler.takeHistory.push(editorState.clips.splice(index, 1)[0]); renderEditor(); setPadEditorStatus("Removed the latest pad performance clip. Arrangement Undo can restore broader edits."); });
+  document.querySelector("#padUndoTake").addEventListener("click", () => { const index = [...editorState.clips].map((clip) => clip.type).lastIndexOf("pad"); if (index < 0) { setPadEditorStatus("No saved pad take to undo."); return; } pushArrangementHistory("Remove latest pad performance"); sampler.takeHistory.push(editorState.clips.splice(index, 1)[0]); arrangementChanged("Removed latest pad performance", { type: "arrangement-pad-recording-undone" }); renderEditor(); setPadEditorStatus("Removed the latest pad performance clip. Arrangement Undo can restore it."); });
   document.querySelector("#drumMachine").addEventListener("change", (event) => { const index = drumMachines.findIndex((machine) => machine.id === event.target.value); drums.filteredKits = drumMachines; drums.kitIndex = Math.max(0, index); loadSelectedDrumKit(); });
   document.querySelector("#drumPreset").addEventListener("change", updatePresetNotes);
   document.querySelector("#applyPreset").addEventListener("click", () => {
@@ -10841,6 +11249,21 @@ function setupEvents() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.repeat || event.target.matches("input, select, textarea, [contenteditable='true']")) return;
+    const arrangementActive = document.querySelector("#editor")?.classList.contains("is-active");
+    if (arrangementActive && !(event.shiftKey && (event.metaKey || event.ctrlKey) && event.code === "Space")) {
+      const command = event.metaKey || event.ctrlKey;
+      if (command && event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? redoArrangement() : undoArrangement(); return; }
+      if (command && event.key.toLowerCase() === "s") { event.preventDefault(); saveArrangementProject(); return; }
+      if (command && event.key.toLowerCase() === "d") { event.preventDefault(); duplicateSelectedEditorClip(); return; }
+      if (command && event.key.toLowerCase() === "c") { event.preventDefault(); copySelectedArrangementClips(); return; }
+      if (command && event.key.toLowerCase() === "v") { event.preventDefault(); pasteArrangementClips(); return; }
+      if (event.code === "Space") { event.preventDefault(); editorState.playing ? pauseEditorArrangement() : playEditorArrangement(); return; }
+      if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); deleteSelectedEditorClip(); return; }
+      if (event.key.toLowerCase() === "s") { event.preventDefault(); splitSelectedEditorClip(); return; }
+      if (event.key.toLowerCase() === "l") { event.preventDefault(); loopSelectedEditorClip(); return; }
+      if (event.key.toLowerCase() === "r") { event.preventDefault(); editorState.recording ? stopEditorPerformanceRecording() : startEditorPerformanceRecording(false); return; }
+      if (event.key === "Escape" && editorState.pointerDrag) { event.preventDefault(); restoreArrangementSnapshot(editorState.pointerDrag.snapshot); editorState.pointerDrag = null; editorStatus("Clip move cancelled."); return; }
+    }
     if (event.code === "Escape" || (event.code === "Space" && event.shiftKey && (event.metaKey || event.ctrlKey))) {
       event.preventDefault();
       stopAllAudio();
@@ -12042,6 +12465,9 @@ restorePadWorkspace();
 restoreBeatForgeState();
 restoreHarmonyState();
 readProducerStudioStorage();
+editorState.projectId = producerStudioState.projectId;
+editorState.name = producerStudioState.projectName ? `${producerStudioState.projectName} Arrangement` : editorState.name;
+restoreArrangementProject();
 initializePlaybackRegistry();
 readSmartPromptStorage();
 setupEvents();
