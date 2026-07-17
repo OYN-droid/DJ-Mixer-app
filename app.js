@@ -174,6 +174,20 @@ const editorState = {
 };
 editorState.lanes = editorState.tracks;
 
+const finishingState = {
+  mode: "simple",
+  activeRecordingId: null,
+  selectedRecordingId: null,
+  activeExportId: null,
+  recordingTimer: null,
+  recordingStartedAt: 0,
+  peak: 0,
+  lastRecordingError: null,
+  lastExportError: null,
+  lastDownloadError: null,
+  lastEncodingError: null
+};
+
 const crateSelection = {
   local: new Set(),
   saved: new Set()
@@ -229,6 +243,8 @@ const MemoryEngine = window.ProducerMemory;
 const RecommendationEngine = window.ContextualRecommendations;
 const MissionEngine = window.CreativeMissions;
 const ArrangementEngine = window.ArrangementStudioEngine;
+const RecordingService = window.DeckForgeRecordingService;
+const ExportService = window.DeckForgeExportService;
 const projectContext = ProjectIntelligenceEngine.getProjectContext();
 window.DeckForgeProjectContext = projectContext;
 
@@ -7326,12 +7342,16 @@ function initializePlaybackRegistry() {
   registry.register({ id: "stems-preview", type: "preview", displayName: "Stem Lab", preview: true, stop: stopStemPreview, pause: pauseStemPlayback, resume: () => playStemSet(stemState.previewMode === "single" && stemState.previewStemId ? [stemState.previewStemId] : stemState.stems.map((stem) => stem.id), stemState.previewMode || "all"), restart: restartStemPlayback, getState: () => { const playingIds = stemState.voices.map((voice) => voice.stemId); const muted = stemState.stems.filter((stem) => stem.muted).map((stem) => stem.id); const soloed = stemState.stems.filter((stem) => stem.solo).map((stem) => stem.id); const selected = stemState.stems.find((stem) => stem.id === stemState.previewStemId); return { playing: Boolean(stemState.playing && !ditcState.previewTrackId), paused: Boolean(stemState.paused && !ditcState.previewTrackId), looping: stemState.loop, preview: true, metadata: { name: selected ? `Stem Lab, ${selected.name} preview` : playingIds.length > 1 ? `Stem Lab, ${playingIds.length} stems playing${stemState.loop ? " in a loop" : ""}` : stemState.sourceName || "Stem Lab preview", elapsed: currentStemTime(), playingStems: playingIds, mutedStems: muted, soloedStems: soloed, previewMode: stemState.previewMode, source: stemState.sourceName, syncState: stemState.syncState } }; } });
   registry.register({ id: "arrangement", type: "timeline", displayName: "Arrangement Studio", stop: stopEditorArrangement, pause: pauseEditorArrangement, resume: playEditorArrangement, restart: () => { stopEditorArrangement(); editorState.playhead = 0; playEditorArrangement(); }, getState: () => ({ playing: editorState.playing, paused: editorState.paused, looping: editorState.loopRegion.enabled, recording: Boolean(editorState.recording), metadata: { name: editorState.name, elapsed: currentArrangementPlayhead(), duration: arrangementDuration(), arrangementId: editorState.arrangementId, version: editorState.version, activeClipIds: [...editorState.activeClipIds], activeLaneIds: [...new Set(editorState.activeClipIds.map((clipId) => editorState.tracks[editorState.clips.find((clip) => clip.id === clipId)?.trackIndex]?.id).filter(Boolean))] } }) });
   registry.register({ id: "smart-mix", type: "automation", displayName: "Smart Mix", stop: () => stopAiMix({ keepDecks: true }), getState: () => ({ playing: autoMixState.running, automated: autoMixState.running, metadata: { name: autoMixState.state, elapsed: 0 } }) });
-  registry.register({ id: "mix-recording", type: "recording", displayName: "Mix Recording", stop: () => { if (AudioEngine.recorder?.state === "recording") AudioEngine.recorder.stop(); }, getState: () => ({ playing: AudioEngine.recorder?.state === "recording", metadata: { name: "Mix recording", elapsed: 0 } }) });
+  registry.register({ id: "mix-recording", type: "recording", displayName: "Mix Recording", stop: () => finishingState.activeRecordingId ? RecordingService.stopRecording(finishingState.activeRecordingId) : undefined, getState: () => { const record = finishingState.activeRecordingId ? RecordingService.getRecording(finishingState.activeRecordingId) : null; return { playing: record?.status === "Recording", paused: record?.status === "Paused", recording: ["Recording", "Paused", "Finalizing"].includes(record?.status), metadata: { name: record?.name || "Mix recording", elapsed: RecordingService.diagnostics().recordingDuration } }; } });
 }
 
 async function stopAllAudio() {
   globalTransportState.paused = false;
   if (window.AudioPlaybackRegistry) await window.AudioPlaybackRegistry.stopAll();
+  // Some registered providers also reconcile deck automation while stopping. Apply
+  // the terminal deck state after those asynchronous callbacks have settled.
+  stopDeck("a");
+  stopDeck("b");
   if (editorState.recording) stopEditorPerformanceRecording();
   ditcState.previewTrackId = null;
   renderSources();
@@ -9047,28 +9067,134 @@ function recordStreamToPad(stream, name, buttonSelector, idleText, duration) {
   }, duration);
 }
 
-function toggleMixRecording() {
-  if (!AudioEngine.destination) return;
-  const recordButton = document.querySelector("#recordMix");
-  const downloadButton = document.querySelector("#downloadMix");
-  if (AudioEngine.recorder && AudioEngine.recorder.state === "recording") {
-    AudioEngine.recorder.stop();
-    recordButton.textContent = "●";
-    return;
-  }
-  AudioEngine.chunks = [];
-  AudioEngine.recorder = new MediaRecorder(AudioEngine.destination.stream);
-  AudioEngine.recorder.ondataavailable = (event) => AudioEngine.chunks.push(event.data);
-  AudioEngine.recorder.onstop = () => {
-    if (AudioEngine.mixUrl) URL.revokeObjectURL(AudioEngine.mixUrl);
-    const blob = new Blob(AudioEngine.chunks, { type: AudioEngine.recorder.mimeType });
-    AudioEngine.mixUrl = URL.createObjectURL(blob);
-    downloadButton.disabled = false;
-    emitProjectContextChange("playback", "mix-recording-finished", { summary: "Finished mix recording", decision: { domain: "Playback", action: "Mix recording finished", summary: "Finished mix recording and prepared the take", initiatedBy: "user" } });
+function currentMasterRecordingSource() {
+  if (editorState.playing) return "Arrangement";
+  if (autoMixState.running) return "Smart Mix";
+  const playingDecks = ["a", "b"].filter((id) => deckState[id].playing);
+  if (playingDecks.length === 1 && !sampler.active.some(Boolean) && !drums.playing && !instrument.patternPlaying && !stemState.playing) return `Deck ${playingDecks[0].toUpperCase()}`;
+  return "Master";
+}
+
+function realArrangementTracklist() {
+  return [...editorState.clips].sort((a, b) => a.start - b.start).map((clip, index) => { const identity = parseTrackIdentity(clip.name); return { position: index + 1, startTime: clip.start, endTime: clip.start + clip.duration, title: identity.title, artist: identity.artist, version: clip.source?.metadata?.version || null, source: clip.sourceKind, BPM: clip.source?.metadata?.bpm || null, key: clip.source?.metadata?.key || null, transitionType: editorState.transitions.find((transition) => transition.incomingClipId === clip.id)?.style || null, notes: clip.missingSource ? "Missing Source" : "" }; });
+}
+
+function recordingCueSheet(recordingName = "DeckForge recording") {
+  const rows = realArrangementTracklist();
+  return ["REM DeckForge cue sheet", `REM Recording ${recordingName}`, `FILE \"${recordingName}\" BINARY`, ...rows.flatMap((item) => [`  TRACK ${String(item.position).padStart(2, "0")} AUDIO`, `    TITLE \"${String(item.title).replace(/"/g, "'")}\"`, `    PERFORMER \"${String(item.artist).replace(/"/g, "'")}\"`, `    INDEX 01 ${cueTime(item.startTime)}`, ...(item.transitionType ? [`    REM Transition ${item.transitionType}`] : [])])].join("\n");
+}
+
+function cueTime(seconds) { const frames = Math.max(0, Math.round(Number(seconds || 0) * 75)); const minutes = Math.floor(frames / 4500); const remainder = frames % 4500; return `${String(minutes).padStart(2, "0")}:${String(Math.floor(remainder / 75)).padStart(2, "0")}:${String(remainder % 75).padStart(2, "0")}`; }
+
+function finishingMetadata() {
+  return { title: document.querySelector("#exportMetaTitle")?.value.trim() || editorState.name, artist: document.querySelector("#exportMetaArtist")?.value.trim() || null, project: producerStudioState.projectName, genre: document.querySelector("#exportMetaGenre")?.value.trim() || producerStudioState.genre || null, comment: document.querySelector("#exportMetaComment")?.value.trim() || null, BPM: Number(document.querySelector("#globalBpm")?.value || 124), version: editorState.activeVersionId || editorState.version, metadataEmbedding: "Sidecar/project metadata only; browser recording containers are not modified." };
+}
+
+function safeProjectPackage() {
+  const memory = producerMemoryReady ? JSON.parse(MemoryEngine.exportProjectMemory(producerStudioState.projectId)) : null;
+  return { product: "DeckForge Project Package", schemaVersion: 1, exportedAt: new Date().toISOString(), includeAudio: false, project: { projectId: producerStudioState.projectId, name: producerStudioState.projectName, description: producerStudioState.description, genre: producerStudioState.genre, mood: producerStudioState.mood, energy: producerStudioState.energy, tags: producerStudioState.tags }, metadata: finishingMetadata(), arrangement: normalizedArrangementModel(), recordings: RecordingService.listRecordings(producerStudioState.projectId, { includeCancelled: true, includeMissing: true }), stems: stemState.stems.map((stem) => ({ id: stem.id, name: stem.name, sourceName: stem.sourceName || stemState.sourceName, duration: stem.buffer?.duration || null, jobId: stem.jobId || null })), beatForge: serializeBeatPattern(), harmonyLab: { patternId: instrument.pattern.id, name: instrument.pattern.name, version: instrument.pattern.version, notes: instrument.pattern.notes, key: instrument.key, scale: instrument.scale, preset: instrument.preset }, pads: { bank: sampler.bank, scene: sampler.scene, slots: sampler.names.map((name, index) => ({ index, name, assigned: Boolean(sampler.buffers[index]), mode: sampler.modes[index], category: sampler.categories[index] })) }, transitions: editorState.transitions, tracklist: realArrangementTracklist(), cueSheet: recordingCueSheet(editorState.name), producerMemory: memory, exportManifest: { audioIncluded: false, objectUrlsIncluded: false, credentialsIncluded: false, temporaryPathsIncluded: false } };
+}
+
+function finishingExportAdapters() {
+  const metadataAdapter = (outputType, generator, mimeType, extension) => ({ method: "browser", validate: async () => { const value = generator(); const empty = Array.isArray(value) ? !value.length : !value; return { status: empty ? "Blocked" : "Ready", errors: empty ? [`No real ${outputType.toLowerCase()} data is available.`] : [], warnings: [], details: {} }; }, generate: async (job, input, control) => { control.progress(65, `Generating ${outputType}`); const value = generator(); const text = typeof value === "string" ? value : JSON.stringify(value, null, 2); return { text, mimeType, extension, format: extension.toUpperCase(), filename: `${job.name}.${extension}`, metadata: finishingMetadata() }; } });
+  const stemAdapter = (kind) => ({ method: "offline", validate: async () => { const selected = kind === "Individual Stem" ? stemState.stems.filter((stem) => stem.id === stemState.selectedStemId) : kind === "Acapella" ? stemState.stems.filter((stem) => /vocal/i.test(stem.name)) : stemState.stems.filter((stem) => !/vocal/i.test(stem.name)); return { status: selected.length ? "Ready" : "Blocked", errors: selected.length ? [] : [`No ${kind.toLowerCase()} source is available.`], warnings: [], details: { stemCount: selected.length } }; }, generate: async (job, input, control) => { const selected = kind === "Individual Stem" ? stemState.stems.filter((stem) => stem.id === stemState.selectedStemId) : kind === "Acapella" ? stemState.stems.filter((stem) => /vocal/i.test(stem.name)) : stemState.stems.filter((stem) => !/vocal/i.test(stem.name)); control.progress(35, "Rendering aligned stems"); const buffer = selected.length === 1 ? selected[0].buffer : await renderStemGroupBuffer(selected); control.progress(85, "Encoding 16-bit PCM WAV"); return { blob: new Blob([audioBufferToWav(buffer)], { type: "audio/wav" }), extension: "wav", format: "WAV", filename: `${job.name}.wav`, duration: buffer.duration, metadata: { sampleRate: buffer.sampleRate, channels: buffer.numberOfChannels, bitDepth: 16, alignedFromZero: true, stems: selected.map((stem) => stem.name) } }; } });
+  return {
+    Recording: { method: "browser", validate: async (job) => { const recording = RecordingService.getRecording(job.sourceId); return { status: recording?.status === "Complete" && RecordingService.getRuntime(job.sourceId)?.blob ? "Ready" : "Blocked", errors: recording?.status === "Complete" && RecordingService.getRuntime(job.sourceId)?.blob ? [] : ["A complete in-memory recording is required."], warnings: recording?.metadata?.peak === 0 ? ["No measurable signal peak was detected during this recording."] : [], details: { mimeType: recording?.mimeType || null } }; }, generate: async (job, input, control) => { control.progress(80, "Preparing browser recording"); const result = RecordingService.exportRecording(job.sourceId, { download: false, filename: job.name }); return { blob: result.blob, filename: result.filename, format: RecordingService.getRecording(job.sourceId).format, duration: RecordingService.getRecording(job.sourceId).duration, metadata: finishingMetadata() }; } },
+    "Arrangement Project": metadataAdapter("Arrangement project", () => ArrangementEngine.exportProject(normalizedArrangementModel()), "application/json", "deckforge-arrangement.json"),
+    Tracklist: metadataAdapter("Tracklist", realArrangementTracklist, "application/json", "tracklist.json"),
+    "Cue Sheet": metadataAdapter("Cue sheet", () => recordingCueSheet(editorState.name), "text/plain", "cue"),
+    "Project Package": metadataAdapter("Project package", safeProjectPackage, "application/json", "deckforge-project.json"),
+    "Individual Stem": stemAdapter("Individual Stem"), Acapella: stemAdapter("Acapella"), Instrumental: stemAdapter("Instrumental")
   };
-  AudioEngine.recorder.start();
-  recordButton.textContent = "■";
-  emitProjectContextChange("playback", "mix-recording-started", { summary: "Started mix recording", decision: { domain: "Playback", action: "Mix recording started", summary: "Started mix recording", initiatedBy: "user" } });
+}
+
+function initializeFinishingServices() {
+  RecordingService.configure({ projectId: producerStudioState.projectId, onEvent: handleRecordingServiceEvent, addToArrangement: addMasterRecordingToArrangement });
+  ExportService.configure({ projectId: producerStudioState.projectId, adapters: finishingExportAdapters(), onEvent: handleExportServiceEvent });
+  renderFinishingStudio();
+  window.addEventListener("beforeunload", () => { RecordingService.cleanup(); ExportService.cleanup(); });
+}
+
+function handleRecordingServiceEvent(event) {
+  const record = event.recording;
+  if (event.type === "recording-started") { finishingState.activeRecordingId = record.recordingId; finishingState.recordingStartedAt = Date.now(); finishingState.peak = 0; AudioEngine.recorder = RecordingService.getRuntime(record.recordingId)?.recorder || null; startFinishingRecordingMeter(); emitProjectContextChange("recording", "recording-started", { summary: `Started ${record.sourceType} recording` }); }
+  if (["recording-complete", "recording-failed", "recording-cancelled"].includes(event.type)) { clearInterval(finishingState.recordingTimer); finishingState.recordingTimer = null; finishingState.activeRecordingId = null; if (record) { finishingState.selectedRecordingId = record.recordingId; RecordingService.updateRecording(record.recordingId, { metadata: { peak: finishingState.peak, clippingRisk: finishingState.peak >= .999, loudnessAnalysis: "Unavailable" }, tracklistReference: realArrangementTracklist() }); } AudioEngine.recorder = null; if (event.type === "recording-complete") { const preview = RecordingService.previewRecording(record.recordingId); AudioEngine.mixUrl = preview.url; document.querySelector("#downloadMix").disabled = false; emitProjectContextChange("recording", "recording-stopped", { summary: `Completed ${record.name}`, decision: { domain: "Recording", action: "Master recording completed", summary: `${record.name}: ${formatTime(record.duration)}, ${formatFileSize(record.sizeBytes)}`, initiatedBy: "user" } }); } else if (event.type === "recording-failed") { finishingState.lastRecordingError = record.error; emitProjectContextChange("recording", "recording-failed", { summary: record.error || "Recording failed" }); } }
+  renderFinishingStudio(); renderGlobalTransport();
+}
+
+function handleExportServiceEvent(event) {
+  const job = event.export; if (job) finishingState.activeExportId = job.exportId;
+  if (event.type === "export-complete") emitProjectContextChange("export", "export-completed", { summary: `Created ${job.name}`, decision: { domain: "Export", action: "Export completed", summary: `${job.name}: ${job.outputType}, ${job.format}, ${formatFileSize(job.sizeBytes)}`, initiatedBy: "user" } });
+  if (event.type === "export-failed") { finishingState.lastExportError = job.error; emitProjectContextChange("export", "export-failed", { summary: job.error || "Export failed" }); }
+  if (event.type === "export-validated") emitProjectContextChange("export", "export-validated", { summary: `${job.name}: ${event.validation.status}` });
+  renderFinishingStudio();
+}
+
+function startFinishingRecordingMeter() {
+  clearInterval(finishingState.recordingTimer); const samples = new Uint8Array(AudioEngine.masterAnalyser?.fftSize || 256);
+  finishingState.recordingTimer = setInterval(() => { const active = finishingState.activeRecordingId && RecordingService.getRecording(finishingState.activeRecordingId); if (!active || !AudioEngine.masterAnalyser) return; AudioEngine.masterAnalyser.getByteTimeDomainData(samples); let peak = 0; samples.forEach((value) => { peak = Math.max(peak, Math.abs(value - 128) / 128); }); finishingState.peak = Math.max(finishingState.peak, peak); const elapsed = RecordingService.diagnostics().recordingDuration; const output = document.querySelector("#recordingElapsed"); if (output) output.textContent = formatTime(elapsed); const meter = document.querySelector("#recordingActivity"); if (meter) meter.value = peak; }, 100);
+}
+
+async function startMasterRecording() {
+  try { await AudioEngine.init(); if (!AudioEngine.destination?.stream) throw new Error("Master recording destination is unavailable."); if (Number(document.querySelector("#masterVolume")?.value || 0) <= 0) throw new Error("Master output is muted. Raise Master before recording."); const sourceType = currentMasterRecordingSource(); const record = await RecordingService.startRecording({ stream: AudioEngine.destination.stream, audioContext: AudioEngine.context, name: document.querySelector("#recordingName")?.value || `${sourceType} Recording`, sourceType, sourceIds: window.AudioPlaybackRegistry?.active().map((item) => item.id) || [], recordingMode: "Master Output", metadata: { projectName: producerStudioState.projectName, BPM: Number(document.querySelector("#globalBpm")?.value || 124), capturePoint: "post-master-gain", sourceWarning: window.AudioPlaybackRegistry?.active().length ? null : "No playback source was active when recording started." } }); finishingState.activeRecordingId = record.recordingId; }
+  catch (error) { finishingState.lastRecordingError = error.message; const output = document.querySelector("#recordingStatus"); if (output) output.textContent = `Failed: ${error.message}`; renderFinishingDiagnostics(); }
+}
+
+async function stopMasterRecording() { const id = finishingState.activeRecordingId; if (!id) return; try { await RecordingService.stopRecording(id); } catch (error) { finishingState.lastRecordingError = error.message; renderFinishingStudio(); } }
+async function cancelMasterRecording() { const id = finishingState.activeRecordingId; if (!id || !window.confirm("Cancel this recording? Captured audio will be discarded.")) return; await RecordingService.cancelRecording(id); }
+function pauseMasterRecording() { try { RecordingService.pauseRecording(finishingState.activeRecordingId); renderFinishingStudio(); } catch (error) { finishingState.lastRecordingError = error.message; } }
+function resumeMasterRecording() { try { RecordingService.resumeRecording(finishingState.activeRecordingId); renderFinishingStudio(); } catch (error) { finishingState.lastRecordingError = error.message; } }
+
+async function addMasterRecordingToArrangement(record, blob) {
+  await AudioEngine.init(); const buffer = await AudioEngine.context.decodeAudioData(await blob.arrayBuffer()); const source = { id: record.recordingId, type: "file", label: record.name, detail: `${record.sourceType} recording · ${record.format}`, duration: buffer.duration, sourceKind: "buffer", buffer, playable: true, metadata: { recordingId: record.recordingId, recordedAt: record.stoppedAt, mimeType: record.mimeType, peak: record.metadata?.peak ?? null } }; const clip = await addEditorClipFromSource(source, 0, editorState.playhead); emitProjectContextChange("recording", "recording-added-arrangement", { summary: `Added ${record.name} to Arrangement` }); return clip;
+}
+
+function outputFormatOptions(outputType) {
+  if (outputType === "Recording") {
+    const selected = RecordingService.getRecording(finishingState.selectedRecordingId) || RecordingService.listRecordings(producerStudioState.projectId).find((record) => record.status === "Complete");
+    if (selected?.mimeType) return [{ value: selected.mimeType, label: `${selected.format} · original browser codec (${selected.mimeType})` }];
+    return RecordingService.supportedFormats().slice(0, 1).map((item) => ({ value: item.mimeType, label: `${item.format} · ${item.codec} (${item.mimeType})` }));
+  }
+  if (["Individual Stem", "Acapella", "Instrumental"].includes(outputType)) return [{ value: "audio/wav", label: "WAV · PCM 16-bit" }];
+  if (outputType === "Cue Sheet") return [{ value: "text/plain", label: "CUE text sidecar" }];
+  return [{ value: "application/json", label: "Structured JSON" }];
+}
+
+function syncFinishExportFormats() { const select = document.querySelector("#exportFormat"); if (!select) return; const options = outputFormatOptions(document.querySelector("#exportOutputType")?.value || "Recording"); select.innerHTML = options.map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join(""); }
+
+function createFinishExportJob() {
+  const outputType = document.querySelector("#exportOutputType").value; const recordings = RecordingService.listRecordings(producerStudioState.projectId); const selected = RecordingService.getRecording(finishingState.selectedRecordingId) || recordings.find((record) => record.status === "Complete"); const sourceId = outputType === "Recording" ? selected?.recordingId || null : outputType === "Individual Stem" ? stemState.selectedStemId : editorState.arrangementId; const filename = document.querySelector("#exportFilename").value.trim() || `${producerStudioState.projectName}_${outputType}_${new Date().toISOString().slice(0, 10)}`;
+  return ExportService.createExportJob({ projectId: producerStudioState.projectId, sourceType: outputType === "Recording" ? "Recording" : outputType.includes("Stem") || ["Acapella", "Instrumental"].includes(outputType) ? "Stem Lab" : "Arrangement", sourceId, name: filename, format: document.querySelector("#exportFormat").value, outputType, quality: "Standard", metadata: finishingMetadata(), contextVersion: projectContext.contextVersion });
+}
+
+async function validateFinishExport() { const job = createFinishExportJob(); finishingState.activeExportId = job.exportId; await ExportService.validateExport(job.exportId); renderFinishingStudio(); }
+async function startFinishExport() { const job = createFinishExportJob(); finishingState.activeExportId = job.exportId; const complete = await ExportService.startExport(job.exportId); if (complete.status === "Complete") { try { ExportService.downloadExport(job.exportId); } catch (error) { finishingState.lastDownloadError = error.message; } } renderFinishingStudio(); }
+
+async function previewFinishingRecording(recordingId) { try { await AudioEngine.init(); const preview = RecordingService.previewRecording(recordingId); const audio = document.querySelector("#recordingPreview"); audio.src = preview.url; audio.hidden = false; await audio.play(); const peaks = await RecordingService.waveform(recordingId, AudioEngine.context); document.querySelector("#recordingWaveform").innerHTML = peaks.map((peak) => `<i style="height:${Math.max(2, Math.round(peak * 100))}%"></i>`).join(""); finishingState.selectedRecordingId = recordingId; renderFinishingStudio(); } catch (error) { finishingState.lastRecordingError = error.message; renderFinishingStudio(); } }
+
+function renderFinishingStudio() {
+  const view = document.querySelector("#finishing"); if (!view) return; view.dataset.finishingMode = finishingState.mode;
+  ["Simple", "Advanced"].forEach((label) => { const button = document.querySelector(`#finishing${label}Mode`); const active = finishingState.mode === label.toLowerCase(); if (button) { button.classList.toggle("is-active", active); button.setAttribute("aria-pressed", String(active)); } });
+  const formats = RecordingService.supportedFormats(); const formatReadout = document.querySelector("#recordingFormatReadout"); if (formatReadout) formatReadout.textContent = formats.length ? `${formats[0].format} · ${formats[0].codec} · ${formats[0].mimeType}` : "MediaRecorder unavailable";
+  const active = finishingState.activeRecordingId ? RecordingService.getRecording(finishingState.activeRecordingId) : null; const activeRecording = active && ["Recording", "Paused", "Finalizing"].includes(active.status);
+  document.querySelector("#recordingSourceReadout").textContent = active?.sourceType || currentMasterRecordingSource(); document.querySelector("#recordingStatus").textContent = active?.status || (finishingState.lastRecordingError ? `Error: ${finishingState.lastRecordingError}` : "Ready");
+  document.querySelector("#startMasterRecording").disabled = Boolean(activeRecording) || !formats.length; document.querySelector("#pauseMasterRecording").disabled = active?.status !== "Recording"; document.querySelector("#resumeMasterRecording").disabled = active?.status !== "Paused"; document.querySelector("#stopMasterRecording").disabled = !activeRecording || active?.status === "Finalizing"; document.querySelector("#cancelMasterRecording").disabled = !activeRecording || active?.status === "Finalizing";
+  const records = RecordingService.listRecordings(producerStudioState.projectId, { includeCancelled: true, includeMissing: true }); const latest = RecordingService.getRecording(finishingState.selectedRecordingId) || records[0];
+  const latestComplete = records.find((record) => record.status === "Complete" && RecordingService.getRuntime(record.recordingId)?.blob);
+  const legacyRecordButton = document.querySelector("#recordMix"); if (legacyRecordButton) legacyRecordButton.textContent = activeRecording ? "Stop Recording" : "Record Mix";
+  const legacyDownloadButton = document.querySelector("#downloadMix"); if (legacyDownloadButton) legacyDownloadButton.disabled = !latestComplete;
+  document.querySelector("#latestRecording").innerHTML = latest ? `<strong>${escapeHtml(latest.name)}</strong><p>${escapeHtml(latest.sourceType)} · ${formatTime(latest.duration)} · ${escapeHtml(latest.format)} · ${formatFileSize(latest.sizeBytes)} · ${escapeHtml(latest.status)}</p>${latest.metadata?.peak != null ? `<p class="fine-print">Measured sample peak ${(latest.metadata.peak * 100).toFixed(1)}%${latest.metadata.clippingRisk ? " · Clipping risk" : ""}. LUFS, loudness range, and true peak unavailable.</p>` : ""}` : "No completed recording yet.";
+  document.querySelector("#recordingLibrary").innerHTML = records.length ? records.map((record) => `<article class="finishing-library-row" data-recording-row="${escapeHtml(record.recordingId)}"><div><strong>${escapeHtml(record.name)}</strong><small>${escapeHtml(record.sourceType)} · ${new Date(record.createdAt).toLocaleString()} · ${formatTime(record.duration)} · ${escapeHtml(record.format)} · ${formatFileSize(record.sizeBytes)} · ${escapeHtml(record.status)}</small></div><div class="recording-library-actions"><button data-recording-action="preview" ${record.status !== "Complete" ? "disabled" : ""}>Preview</button><button data-recording-action="rename">Rename</button><button data-recording-action="arrangement" ${record.status !== "Complete" ? "disabled" : ""}>Add to Arrangement</button><button data-recording-action="export" ${record.status !== "Complete" ? "disabled" : ""}>Export</button><button data-recording-action="delete">Delete</button></div></article>`).join("") : "No recordings yet.";
+  const exports = ExportService.listExports(producerStudioState.projectId, { includeMissing: true }); document.querySelector("#exportHistory").innerHTML = exports.length ? exports.map((job) => `<article class="finishing-library-row" data-export-row="${escapeHtml(job.exportId)}"><div><strong>${escapeHtml(job.name)}</strong><small>${escapeHtml(job.outputType)} · ${escapeHtml(job.format)} · ${new Date(job.createdAt).toLocaleString()} · ${formatFileSize(job.sizeBytes)} · ${escapeHtml(job.status)}${job.warnings?.length ? ` · ${escapeHtml(job.warnings.join(" "))}` : ""}</small></div><div class="recording-library-actions"><button data-export-action="download" ${job.status !== "Complete" ? "disabled" : ""}>Download</button><button data-export-action="retry" ${!["Failed", "Cancelled", "Missing", "Blocked"].includes(job.status) ? "disabled" : ""}>Retry</button><button data-export-action="duplicate">Duplicate Settings</button><button data-export-action="delete">Delete</button></div></article>`).join("") : "No exports yet.";
+  const selectedJob = finishingState.activeExportId ? ExportService.getExportStatus(finishingState.activeExportId) : exports[0]; document.querySelector("#finishExportStatus").textContent = selectedJob ? `${selectedJob.status} · ${selectedJob.stage}${selectedJob.error ? ` · ${selectedJob.error}` : ""}${selectedJob.validationResults?.errors?.length ? ` · ${selectedJob.validationResults.errors.join(" ")}` : ""}` : "No export job yet."; document.querySelector("#finishExportProgress").value = selectedJob?.progress || 0; document.querySelector("#cancelFinishExport").disabled = !selectedJob || !["Ready", "Rendering", "Encoding", "Finalizing"].includes(selectedJob.status);
+  syncFinishExportFormats(); renderFinishingDiagnostics();
+}
+
+function renderFinishingDiagnostics() { const details = document.querySelector("#finishingDiagnostics"); if (details) details.hidden = !DECKFORGE_DEVELOPMENT; const output = document.querySelector("#finishingDiagnosticsOutput"); if (!output || !DECKFORGE_DEVELOPMENT) return; output.textContent = JSON.stringify({ ...RecordingService.diagnostics(), masterBusState: { context: AudioEngine.context?.state || "not started", destination: Boolean(AudioEngine.destination), gain: AudioEngine.masterGain?.gain.value ?? null }, ...ExportService.diagnostics(), missingSourceCount: editorState.clips.filter((clip) => clip.missingSource).length, lastRecordingError: finishingState.lastRecordingError, lastRenderError: finishingState.lastExportError, lastEncodingError: finishingState.lastEncodingError, lastDownloadError: finishingState.lastDownloadError }, null, 2); }
+
+async function toggleMixRecording() {
+  if (finishingState.activeRecordingId) return stopMasterRecording();
+  return startMasterRecording();
 }
 
 function readProducerStudioStorage() {
@@ -10323,6 +10449,7 @@ function switchView(target) {
   if (view) view.classList.add("is-active");
   if (target === "ai") renderProducerStudio();
   if (target === "editor") renderEditor();
+  if (target === "finishing") renderFinishingStudio();
 }
 
 function hasSupportedExtension(file, extensions) {
@@ -11323,13 +11450,46 @@ function setupEvents() {
   });
   document.querySelector("#recordMix").addEventListener("click", async () => {
     await AudioEngine.init();
-    toggleMixRecording();
+    await toggleMixRecording();
   });
   document.querySelector("#downloadMix").addEventListener("click", () => {
-    const anchor = document.createElement("a");
-    anchor.href = AudioEngine.mixUrl;
-    anchor.download = "deckforge-mix.webm";
-    anchor.click();
+    const record = RecordingService.listRecordings(producerStudioState.projectId).find((item) => item.status === "Complete" && RecordingService.getRuntime(item.recordingId)?.blob);
+    if (!record) { finishingState.lastDownloadError = "No in-memory recording is available. Record a mix first."; renderFinishingStudio(); return; }
+    try { RecordingService.exportRecording(record.recordingId); } catch (error) { finishingState.lastDownloadError = error.message; renderFinishingStudio(); }
+  });
+  document.querySelector("#finishingSimpleMode").addEventListener("click", () => { finishingState.mode = "simple"; renderFinishingStudio(); });
+  document.querySelector("#finishingAdvancedMode").addEventListener("click", () => { finishingState.mode = "advanced"; renderFinishingStudio(); });
+  document.querySelector("#startMasterRecording").addEventListener("click", startMasterRecording);
+  document.querySelector("#pauseMasterRecording").addEventListener("click", pauseMasterRecording);
+  document.querySelector("#resumeMasterRecording").addEventListener("click", resumeMasterRecording);
+  document.querySelector("#stopMasterRecording").addEventListener("click", stopMasterRecording);
+  document.querySelector("#cancelMasterRecording").addEventListener("click", cancelMasterRecording);
+  document.querySelector("#exportOutputType").addEventListener("change", syncFinishExportFormats);
+  document.querySelector("#validateFinishExport").addEventListener("click", validateFinishExport);
+  document.querySelector("#startFinishExport").addEventListener("click", startFinishExport);
+  document.querySelector("#cancelFinishExport").addEventListener("click", () => { if (finishingState.activeExportId) ExportService.cancelExport(finishingState.activeExportId); renderFinishingStudio(); });
+  document.querySelector("#recordingLibrary").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-recording-action]"); const row = button?.closest("[data-recording-row]"); if (!button || !row) return;
+    const recordingId = row.dataset.recordingRow; const action = button.dataset.recordingAction;
+    try {
+      if (action === "preview") await previewFinishingRecording(recordingId);
+      if (action === "rename") { const record = RecordingService.getRecording(recordingId); const name = window.prompt("Recording name", record?.name || "Recording"); if (name?.trim()) RecordingService.renameRecording(recordingId, name); }
+      if (action === "arrangement") await RecordingService.addRecordingToArrangement(recordingId);
+      if (action === "export") { finishingState.selectedRecordingId = recordingId; document.querySelector("#exportOutputType").value = "Recording"; syncFinishExportFormats(); renderFinishingStudio(); document.querySelector("#exportFilename").focus(); }
+      if (action === "delete" && window.confirm("Delete this recording from the current session? Its object URL will be revoked.")) { const runtime = RecordingService.getRuntime(recordingId); const preview = document.querySelector("#recordingPreview"); if (runtime?.url && preview.src === runtime.url) { preview.pause(); preview.removeAttribute("src"); preview.load(); preview.hidden = true; } if (AudioEngine.mixUrl === runtime?.url) AudioEngine.mixUrl = null; RecordingService.deleteRecording(recordingId); if (finishingState.selectedRecordingId === recordingId) finishingState.selectedRecordingId = null; }
+    } catch (error) { finishingState.lastRecordingError = error.message; }
+    renderFinishingStudio();
+  });
+  document.querySelector("#exportHistory").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-export-action]"); const row = button?.closest("[data-export-row]"); if (!button || !row) return;
+    const exportId = row.dataset.exportRow; const action = button.dataset.exportAction;
+    try {
+      if (action === "download") ExportService.downloadExport(exportId);
+      if (action === "retry") await ExportService.retryExport(exportId);
+      if (action === "duplicate") { const copy = ExportService.duplicateSettings(exportId); finishingState.activeExportId = copy.exportId; }
+      if (action === "delete" && window.confirm("Delete this export result? Its object URL will be revoked.")) { ExportService.deleteExport(exportId); if (finishingState.activeExportId === exportId) finishingState.activeExportId = null; }
+    } catch (error) { finishingState.lastExportError = error.message; }
+    renderFinishingStudio();
   });
   document.querySelector("#stemFile").addEventListener("change", async (event) => {
     await loadStemFile(event.target.files[0]);
@@ -12484,6 +12644,7 @@ if (drums.restored) renderBeatForge(); else applyDrumPreset(drums.preset);
 renderSources();
 renderAiContext();
 initializeProducerMemory();
+initializeFinishingServices();
 applyStemMemoryPreferences();
 initializeProjectIntelligence();
 initializeRecommendationEngine();

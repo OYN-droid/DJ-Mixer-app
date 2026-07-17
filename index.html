@@ -23,6 +23,7 @@
           <button class="tab-button" data-target="keys" title="Harmony Lab keys and composition">Harmony Lab</button>
           <button class="tab-button" data-target="stems" title="Stems">Stems</button>
           <button class="tab-button" data-target="editor" title="Editor">Editor</button>
+          <button class="tab-button" data-target="finishing" title="Recording and Export">Finish</button>
           <button class="tab-button" data-target="ai" title="Producer Studio">Studio</button>
           <button class="tab-button" data-target="sources" title="Diggin’ in the Crates">DITC</button>
         </nav>
@@ -799,6 +800,46 @@
           <input id="editorRelinkInput" type="file" accept="audio/*" hidden>
         </section>
 
+        <section id="finishing" class="view finishing-studio" data-finishing-mode="simple" aria-labelledby="finishingTitle">
+          <div class="section-heading">
+            <div><h2 id="finishingTitle">Recording &amp; Export</h2><p>Capture the real master output, manage takes, and create delivery files.</p></div>
+            <div class="finishing-mode-toggle"><button id="finishingSimpleMode" class="secondary-button is-active" aria-pressed="true">Simple</button><button id="finishingAdvancedMode" class="secondary-button" aria-pressed="false">Advanced</button></div>
+          </div>
+          <div class="finishing-grid">
+            <article class="finishing-card">
+              <h3>Master Recording</h3>
+              <p class="fine-print">Captures the post-master signal you hear. Smart Mix and Arrangement playback are included when audible.</p>
+              <dl class="finishing-readout"><dt>Source</dt><dd id="recordingSourceReadout">Master Output</dd><dt>Destination</dt><dd>Project Recording Library</dd><dt>Format</dt><dd id="recordingFormatReadout">Detecting browser support…</dd><dt>Status</dt><dd id="recordingStatus" role="status" aria-live="polite">Ready</dd><dt>Elapsed</dt><dd id="recordingElapsed">0:00</dd><dt>Activity</dt><dd><meter id="recordingActivity" min="0" max="1" value="0">0</meter></dd></dl>
+              <label>Take name <input id="recordingName" type="text" value="Main Mix Take 1" maxlength="100"></label>
+              <div class="finishing-actions"><button id="startMasterRecording" class="record-button">Record Mix</button><button id="pauseMasterRecording" disabled>Pause</button><button id="resumeMasterRecording" disabled>Resume</button><button id="stopMasterRecording" disabled>Stop &amp; Save</button><button id="cancelMasterRecording" class="secondary-button" disabled>Cancel</button></div>
+              <p id="recordingWarning" class="fine-print">Recording stays in browser memory until exported. Reloading requires a new recording.</p>
+            </article>
+            <article class="finishing-card">
+              <h3>Latest Recording</h3>
+              <div id="latestRecording">No completed recording yet.</div>
+              <audio id="recordingPreview" controls preload="metadata" hidden></audio>
+              <div id="recordingWaveform" class="recording-waveform" aria-label="Recording waveform summary"></div>
+            </article>
+            <article class="finishing-card finishing-export-card">
+              <h3>Export</h3>
+              <label>Output <select id="exportOutputType"><option value="Recording">Latest Recording</option><option value="Arrangement Project">Arrangement Project</option><option value="Tracklist">Tracklist</option><option value="Cue Sheet">Cue Sheet</option><option value="Individual Stem">Selected Stem WAV</option><option value="Acapella">Acapella WAV</option><option value="Instrumental">Instrumental WAV</option><option value="Project Package">Project Package Without Audio</option></select></label>
+              <label>Filename <input id="exportFilename" type="text" value="DeckForge_Final_Mix" maxlength="120"></label>
+              <label>Format <select id="exportFormat"></select></label>
+              <label>Quality <select id="exportQuality"><option value="Standard">Standard (browser-selected recording quality)</option></select></label>
+              <div class="finishing-advanced-only">
+                <p class="fine-print">Offline Arrangement audio, MP3/FLAC encoding, loudness normalization, dither, and multitrack lane rendering are unavailable and intentionally not offered.</p>
+                <label>Title <input id="exportMetaTitle" type="text"></label><label>Artist <input id="exportMetaArtist" type="text"></label><label>Genre <input id="exportMetaGenre" type="text"></label><label>Comment <textarea id="exportMetaComment" rows="2"></textarea></label>
+              </div>
+              <div class="finishing-actions"><button id="validateFinishExport" class="secondary-button">Validate</button><button id="startFinishExport" class="primary-button">Export</button><button id="cancelFinishExport" class="secondary-button" disabled>Cancel</button></div>
+              <div id="finishExportStatus" role="status" aria-live="polite">No export job yet.</div>
+              <progress id="finishExportProgress" max="100" value="0">0%</progress>
+            </article>
+          </div>
+          <section class="finishing-library"><h3>Recording Library</h3><div id="recordingLibrary">No recordings yet.</div></section>
+          <section class="finishing-library"><h3>Export History</h3><div id="exportHistory">No exports yet.</div></section>
+          <details id="finishingDiagnostics" hidden><summary>Recording and export diagnostics</summary><pre id="finishingDiagnosticsOutput"></pre></details>
+        </section>
+
         <section id="ai" class="view producer-studio" data-producer-mode="simple" aria-labelledby="aiTitle">
           <div class="producer-hero">
             <div>
@@ -1138,6 +1179,8 @@
     <script src="src/creative-missions.js"></script>
     <script src="src/stem-lab.js"></script>
     <script src="src/arrangement-studio.js"></script>
+    <script src="src/recording-service.js"></script>
+    <script src="src/export-service.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
