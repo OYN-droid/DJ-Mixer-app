@@ -142,13 +142,35 @@ const crateSelection = {
   saved: new Set()
 };
 
+const stemWorkspaceState = window.StemLabEngine?.restore() || { mode: "simple", separationMode: "four", quality: "balanced", jobs: [], graph: { nodes: [], routes: [] }, favorites: [], recentPrompts: [], mixSettings: {}, exportHistory: [] };
 const stemState = {
   file: null,
+  sourceTrackId: null,
+  sourceAnalysis: null,
   sourceBuffer: null,
   sourceName: "",
   stems: [],
   previewSource: null,
-  previewGain: null
+  previewGain: null,
+  previewStemId: null,
+  previewMode: null,
+  voices: [],
+  playing: false,
+  paused: false,
+  loop: false,
+  offset: 0,
+  startedAt: 0,
+  duration: 0,
+  transportTimer: null,
+  syncState: "idle",
+  activeJobId: null,
+  pollTimers: new Map(),
+  capabilities: null,
+  selectedStemId: stemWorkspaceState.selectedStemId || null,
+  graphProposal: null,
+  lastBackendError: null,
+  lastPreviewError: null,
+  workspace: stemWorkspaceState
 };
 
 let aiPlanState = null;
@@ -4925,12 +4947,14 @@ async function preparePromptStemSplit() {
   if (local) {
     const buffer = await getSourceFileBuffer(local.id);
     stemState.file = local.file;
+    stemState.sourceTrackId = local.id;
     stemState.sourceBuffer = buffer;
     stemState.sourceName = local.name.replace(/\.[^/.]+$/, "");
+    stemState.sourceAnalysis = local.analysis || analyzeAudioBuffer(buffer, local.name);
     stemState.stems = [];
     document.querySelector("#splitStems").disabled = false;
-    document.querySelector("#stemStatus").textContent = `AI prompt loaded ${local.name}. Click Split Stems to isolate it.`;
-    renderStemResults();
+    setStemStatus(`AI prompt loaded ${local.name}. Review the source, then press Separate.`);
+    renderStemLab();
     return true;
   }
   const selectedSaved = selectedCrateItems().find((item) => item.kind === "saved");
@@ -4940,12 +4964,14 @@ async function preparePromptStemSplit() {
     try {
       const buffer = await loadAudioFromUrl(savedCandidate.url);
       stemState.file = null;
+      stemState.sourceTrackId = `reference-${savedCandidate.name}`;
       stemState.sourceBuffer = buffer;
       stemState.sourceName = savedCandidate.name;
+      stemState.sourceAnalysis = analyzeAudioBuffer(buffer, savedCandidate.name);
       stemState.stems = [];
       document.querySelector("#splitStems").disabled = false;
-      document.querySelector("#stemStatus").textContent = `AI prompt loaded ${savedCandidate.name}. Splitting direct audio URL.`;
-      renderStemResults();
+      setStemStatus(`AI prompt loaded ${savedCandidate.name}. Review the source, then press Separate.`);
+      renderStemLab();
       return true;
     } catch {
       document.querySelector("#stemStatus").textContent = "AI prompt found crate links, but they are not direct audio. Drop a local file or use tab capture for stem splitting.";
@@ -4954,12 +4980,14 @@ async function preparePromptStemSplit() {
   const deck = deckState.a.buffer ? deckState.a : deckState.b;
   if (deck.buffer) {
     stemState.file = null;
+    stemState.sourceTrackId = `deck-${deck.id}`;
     stemState.sourceBuffer = deck.buffer;
-    stemState.sourceName = `Deck ${deck.id.toUpperCase()}`;
+    stemState.sourceName = deck.trackName || `Deck ${deck.id.toUpperCase()}`;
+    stemState.sourceAnalysis = deck.analysis || analyzeAudioBuffer(deck.buffer, stemState.sourceName);
     stemState.stems = [];
     document.querySelector("#splitStems").disabled = false;
-    document.querySelector("#stemStatus").textContent = `AI prompt loaded Deck ${deck.id.toUpperCase()} for stem splitting.`;
-    renderStemResults();
+    setStemStatus(`AI prompt loaded ${stemState.sourceName} from Deck ${deck.id.toUpperCase()}. Review, then press Separate.`);
+    renderStemLab();
     return true;
   }
   return false;
@@ -6340,7 +6368,10 @@ function renderSmartMixPanel() {
   const eqBlend = document.querySelector("#transitionEqBlend");
   if (eqBlend) eqBlend.textContent = `EQ blend: ${autoMixState.state === "Transitioning" ? `${transitionPercent}%` : "neutral"}`;
   const stemUsage = document.querySelector("#transitionStemUsage");
-  if (stemUsage) stemUsage.textContent = "Stems: full mix";
+  if (stemUsage) {
+    const loadedGenerated = [deckState.a, deckState.b].filter((deck) => deck.analysis?.generatedStem).map((deck) => deck.analysis.stemType);
+    stemUsage.textContent = loadedGenerated.length ? `Stems: ${loadedGenerated.join(" + ")} · shared transition controller` : stemState.stems.length ? `Stems: ${stemState.stems.length} prepared · full-mix transition` : "Stems: full mix";
+  }
   const planSource = document.querySelector("#transitionPlanSource");
   if (planSource) planSource.textContent = `Plan: ${transitionController.activePlan?.source || "none"}`;
   const triggerDetail = document.querySelector("#transitionTriggerDetail");
@@ -6922,7 +6953,7 @@ function initializePlaybackRegistry() {
   registry.register({ id: "pads", type: "performance", displayName: "Pads", overlapAllowed: true, stop: stopAllPads, getState: () => { const active = sampler.active.map((source, index) => source ? index : -1).filter((index) => index >= 0); const loops = active.filter((index) => sampler.active[index]?.source.loop); const held = active.filter((index) => sampler.held.has(index)); const latest = active.at(-1); return { playing: active.length > 0, looping: loops.length > 0, recording: Boolean(editorState.recording), metadata: { name: active.length ? `Pads, ${active.length} active${loops.length ? `, ${loops.length} loops` : ""}${held.length ? `, ${held.length} held` : ""}${latest !== undefined ? ` · Pad ${latest + 1}, ${sampler.names[latest]}` : ""}` : "Pads idle", elapsed: 0, activePads: active, loopingPads: loops, heldPads: held, chokeGroups: sampler.chokes } }; } });
   registry.register({ id: "drums", type: "performance", displayName: "Beat Forge", overlapAllowed: true, stop: () => { stopDrums(); stopBeatPreview(); }, pause: pauseDrums, resume: startDrums, restart: () => { stopDrums(); drums.step = 0; startDrums(); }, getState: () => ({ playing: drums.playing || drums.previewing, paused: drums.paused, looping: drums.playing && drums.loop, recording: drums.recording, preview: drums.previewing, metadata: { name: drums.previewing ? "Beat Forge preview" : drums.recording ? `Beat Forge, recording · ${drums.name}` : `Beat Forge, ${drums.name}`, elapsed: drums.step * (60 / (Number(document.querySelector("#globalBpm")?.value) || 124) / 4), pattern: drums.patternId, schedulerActive: Boolean(drums.timer), patternVersion: drums.version } }) });
   registry.register({ id: "keys", type: "performance", displayName: "Harmony Lab", overlapAllowed: true, stop: stopHarmonyPattern, pause: pauseHarmonyPattern, resume: playHarmonyPattern, restart: () => { stopHarmonyPattern(); instrument.patternPlayhead = 0; playHarmonyPattern(); }, getState: () => ({ playing: instrument.patternPlaying || instrument.activeVoices.length > 0, paused: instrument.patternPaused, looping: instrument.patternPlaying && instrument.patternLoop, recording: instrument.recording, preview: instrument.previewing, metadata: { name: instrument.previewing ? "Harmony Lab preview" : instrument.recording ? `Harmony Lab recording · ${instrument.pattern.name}` : instrument.patternPlaying ? `Harmony Lab · ${instrument.pattern.name}` : `${instrument.activeVoices.length} live Harmony voice${instrument.activeVoices.length === 1 ? "" : "s"}`, elapsed: instrument.patternPlayhead, key: instrument.key, scale: instrument.scale, patternVersion: instrument.pattern.version } }) });
-  registry.register({ id: "stems-preview", type: "preview", displayName: "Stem Preview", preview: true, stop: stopStemPreview, getState: () => ({ playing: Boolean(stemState.previewSource && !ditcState.previewTrackId), metadata: { name: stemState.sourceName || "Stem preview", elapsed: 0 } }) });
+  registry.register({ id: "stems-preview", type: "preview", displayName: "Stem Lab", preview: true, stop: stopStemPreview, pause: pauseStemPlayback, resume: () => playStemSet(stemState.previewMode === "single" && stemState.previewStemId ? [stemState.previewStemId] : stemState.stems.map((stem) => stem.id), stemState.previewMode || "all"), restart: restartStemPlayback, getState: () => { const playingIds = stemState.voices.map((voice) => voice.stemId); const muted = stemState.stems.filter((stem) => stem.muted).map((stem) => stem.id); const soloed = stemState.stems.filter((stem) => stem.solo).map((stem) => stem.id); const selected = stemState.stems.find((stem) => stem.id === stemState.previewStemId); return { playing: Boolean(stemState.playing && !ditcState.previewTrackId), paused: Boolean(stemState.paused && !ditcState.previewTrackId), looping: stemState.loop, preview: true, metadata: { name: selected ? `Stem Lab, ${selected.name} preview` : playingIds.length > 1 ? `Stem Lab, ${playingIds.length} stems playing${stemState.loop ? " in a loop" : ""}` : stemState.sourceName || "Stem Lab preview", elapsed: currentStemTime(), playingStems: playingIds, mutedStems: muted, soloedStems: soloed, previewMode: stemState.previewMode, source: stemState.sourceName, syncState: stemState.syncState } }; } });
   registry.register({ id: "arrangement", type: "timeline", displayName: "Arrangement", stop: stopEditorArrangement, pause: pauseEditorArrangement, resume: playEditorArrangement, restart: () => { stopEditorArrangement(); editorState.playhead = 0; playEditorArrangement(); }, getState: () => ({ playing: editorState.playing, paused: editorState.paused, metadata: { name: `Arrangement at ${formatTime(editorState.playhead)}`, elapsed: editorState.playhead } }) });
   registry.register({ id: "smart-mix", type: "automation", displayName: "Smart Mix", stop: () => stopAiMix({ keepDecks: true }), getState: () => ({ playing: autoMixState.running, automated: autoMixState.running, metadata: { name: autoMixState.state, elapsed: 0 } }) });
   registry.register({ id: "mix-recording", type: "recording", displayName: "Mix Recording", stop: () => { if (AudioEngine.recorder?.state === "recording") AudioEngine.recorder.stop(); }, getState: () => ({ playing: AudioEngine.recorder?.state === "recording", metadata: { name: "Mix recording", elapsed: 0 } }) });
@@ -7285,92 +7316,161 @@ function restoreHarmonyState() { try { const saved = JSON.parse(localStorage.get
 function renderHarmonyDiagnostics() { const details = document.querySelector("#harmonyDiagnostics"); if (details) details.hidden = !DECKFORGE_DEVELOPMENT; const output = document.querySelector("#harmonyDiagnosticsOutput"); if (!output || !DECKFORGE_DEVELOPMENT) return; output.textContent = JSON.stringify({ instrument: getInstrumentPreset().name, engine: getSynthMachine().name, key: instrument.key, scale: instrument.scale, activeVoices: instrument.activeVoices.length, sustain: instrument.sustain, pitchBend: instrument.pitchBend, modulation: instrument.modulation, pattern: instrument.pattern.name, patternVersion: instrument.pattern.version, notes: instrument.pattern.notes.length, playing: instrument.patternPlaying, recording: instrument.recording, loop: instrument.patternLoop, midiEnabled: instrument.midiEnabled, midiInputs: instrument.midiInputs, pendingPlan: instrument.pendingPlan?.name || null, lastError: instrument.lastError }, null, 2); }
 
 async function loadStemFile(file) {
-  if (!isSupportedAudioFile(file)) return;
-  stemState.file = file;
-  stemState.sourceName = file.name.replace(/\.[^/.]+$/, "");
-  stemState.sourceBuffer = await loadAudioFile(file);
-  stemState.stems = [];
-  document.querySelector("#splitStems").disabled = false;
-  document.querySelector("#stemStatus").textContent = `Loaded ${file.name}. Ready to split.`;
-  renderStemResults();
+  if (!file || !isSupportedAudioFile(file)) { setStemStatus("Unsupported audio format. Choose WAV, MP3, AIFF, FLAC, M4A, OGG, or Opus.", true); return; }
+  try {
+    stopStemPreview();
+    stemState.file = file;
+    stemState.sourceTrackId = null;
+    stemState.sourceName = file.name.replace(/\.[^/.]+$/, "");
+    stemState.sourceBuffer = await loadAudioFile(file);
+    stemState.sourceAnalysis = analyzeAudioBuffer(stemState.sourceBuffer, file.name);
+    stemState.stems = [];
+    stemState.duration = stemState.sourceBuffer.duration;
+    document.querySelector("#splitStems").disabled = false;
+    setStemStatus(`Loaded ${file.name}. Ready to separate.`);
+    renderStemLab();
+  } catch (error) {
+    stemState.lastPreviewError = error.message;
+    setStemStatus(`Could not decode ${file.name}: ${error.message}`, true);
+  }
 }
 
 async function splitCurrentStemFile() {
   if (!stemState.sourceBuffer) return;
+  stopStemPreview();
   const button = document.querySelector("#splitStems");
   button.disabled = true;
-  stopStemPreview();
-  document.querySelector("#stemStatus").textContent = "Checking for local AI stem server...";
-  if (stemState.file) {
-    try {
-      stemState.stems = await splitStemsWithServer(stemState.file);
-      document.querySelector("#stemStatus").textContent = `Created ${stemState.stems.length} isolated AI stems from ${stemState.sourceName}.`;
-      button.disabled = false;
-      renderStemResults();
-      renderAiContext();
-      emitProjectContextChange("stems", "stems-separated", { summary: `Separated ${stemState.stems.length} stems from ${stemState.sourceName}`, decision: { domain: "Stems", action: "Stems separated", summary: `Created ${stemState.stems.length} stems from ${stemState.sourceName}`, after: { source: stemState.sourceName, stemTypes: stemState.stems.map((stem) => stem.name) }, initiatedBy: "user" } });
-      return;
-    } catch {
-      document.querySelector("#stemStatus").textContent = "AI stem server unavailable. Creating rough browser fallback stems...";
-    }
-  } else {
-    document.querySelector("#stemStatus").textContent = "This source came from a decoded URL, so browser fallback stems are being created.";
+  setStemStatus("Uploading source to the local stem server…");
+  const mode = document.querySelector("#stemSeparationMode")?.value || stemState.workspace.separationMode || "four";
+  stemState.workspace.separationMode = mode;
+  window.StemLabEngine?.save(stemState.workspace);
+  const formData = new FormData();
+  let upload = stemState.file;
+  if (!upload) upload = new File([audioBufferToWav(stemState.sourceBuffer)], `${stemState.sourceName || "deckforge-source"}.wav`, { type: "audio/wav" });
+  formData.append("audio", upload);
+  formData.append("separationMode", mode);
+  formData.append("quality", "balanced");
+  formData.append("projectId", producerStudioState.projectId || "local-project");
+  if (stemState.sourceTrackId) formData.append("sourceTrackId", stemState.sourceTrackId);
+  emitProjectContextChange("stems", "separation-started", { summary: `Started ${mode}-stem separation for ${stemState.sourceName}` });
+  try {
+    const response = await fetch("/api/stem-jobs", { method: "POST", body: formData });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Stem server returned ${response.status}.`);
+    const job = window.StemLabEngine.upsertJob(stemState.workspace, payload);
+    stemState.activeJobId = job.jobId;
+    setStemStatus(`${job.status}: ${job.currentStage}. Progress is stage-based and estimated.`);
+    pollStemJob(job.jobId);
+  } catch (error) {
+    stemState.lastBackendError = error.message;
+    const failed = window.StemLabEngine.upsertJob(stemState.workspace, { jobId: `local-${Date.now()}`, sourceName: stemState.sourceName, separationMode: mode, status: "Failed", currentStage: "Backend unavailable", error: error.message });
+    stemState.activeJobId = failed.jobId;
+    setStemStatus(`AI separation unavailable: ${error.message} Choose Browser Preview in the failed job for clearly labelled rough filters.`, true);
+    emitProjectContextChange("stems", "separation-failed", { summary: `Stem separation failed for ${stemState.sourceName}: ${error.message}` });
+  } finally {
+    button.disabled = false;
+    renderStemLab();
   }
-  await splitStemsWithBrowserFallback();
-  button.disabled = false;
-  renderStemResults();
-  emitProjectContextChange("stems", "stems-separated", { summary: `Created ${stemState.stems.length} browser stems from ${stemState.sourceName}`, decision: { domain: "Stems", action: "Stems separated", summary: `Created ${stemState.stems.length} browser fallback stems from ${stemState.sourceName}`, after: { source: stemState.sourceName, stemTypes: stemState.stems.map((stem) => stem.name) }, initiatedBy: "user" } });
 }
 
-async function splitStemsWithServer(file) {
-  const formData = new FormData();
-  formData.append("audio", file);
-  const response = await fetch("/api/stems", {
-    method: "POST",
-    body: formData
-  });
-  if (!response.ok) {
-    throw new Error("Stem server unavailable.");
+async function pollStemJob(jobId) {
+  clearTimeout(stemState.pollTimers.get(jobId));
+  try {
+    const response = await fetch(`/api/stem-jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Stem job status is unavailable.");
+    const job = window.StemLabEngine.upsertJob(stemState.workspace, payload);
+    setStemStatus(`${job.status}: ${job.currentStage}${job.progressEstimated ? " (estimated)" : ""} · ${job.progress}%`);
+    renderStemLab();
+    if (job.status === "Complete") { await loadCompletedStemJob(job); return; }
+    if (job.status === "Failed") {
+      stemState.lastBackendError = job.error;
+      emitProjectContextChange("stems", "separation-failed", { summary: `Stem separation failed: ${job.error || "Unknown processing error"}` });
+      return;
+    }
+    if (job.status === "Cancelled") return;
+    stemState.pollTimers.set(jobId, setTimeout(() => pollStemJob(jobId), 750));
+  } catch (error) {
+    stemState.lastBackendError = error.message;
+    setStemStatus(`Job status failed: ${error.message}. Retry status when the server returns.`, true);
+    renderStemLab();
   }
-  const payload = await response.json();
-  const stems = [];
-  for (const stem of payload.stems) {
-    const audioResponse = await fetch(stem.url);
-    if (!audioResponse.ok) throw new Error("Unable to fetch separated stem.");
-    const buffer = await AudioEngine.context.decodeAudioData(await audioResponse.arrayBuffer());
-    stems.push({
-      id: stem.id,
-      name: stem.name,
-      buffer,
-      fileName: stem.fileName || `${stemState.sourceName}-${stem.id}.wav`,
-      quality: "AI isolated"
-    });
+}
+
+async function loadCompletedStemJob(job) {
+  await AudioEngine.init();
+  setStemStatus("Finalizing: decoding all generated stems before synchronized playback…");
+  try {
+    const decoded = await Promise.all(job.outputs.map(async (output) => {
+      const response = await fetch(output.url, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Missing output: ${output.fileName || output.name}.`);
+      const buffer = await AudioEngine.context.decodeAudioData(await response.arrayBuffer());
+      return normalizeStem({ ...output, buffer, quality: "AI isolated", jobId: job.jobId });
+    }));
+    const durations = decoded.map((stem) => stem.buffer.duration);
+    if (Math.max(...durations) - Math.min(...durations) > 0.05) throw new Error("Generated stems are not sample-aligned; synchronized playback was disabled.");
+    stemState.stems = decoded;
+    stemState.sourceName = job.sourceName;
+    stemState.duration = Math.min(...durations);
+    stemState.activeJobId = job.jobId;
+    setStemStatus(`Created ${decoded.length} aligned AI stems from ${job.sourceName}. Preview before routing or export.`);
+    renderStemLab();
+    renderAiContext();
+    emitProjectContextChange("stems", "separation-completed", { summary: `Separated ${decoded.length} stems from ${job.sourceName}`, decision: { domain: "Stems", action: "Stems separated", summary: `Created ${decoded.length} aligned stems from ${job.sourceName}`, after: { source: job.sourceName, stemTypes: decoded.map((stem) => stem.name), jobId: job.jobId }, initiatedBy: "user" } });
+  } catch (error) {
+    stemState.lastPreviewError = error.message;
+    setStemStatus(`Output validation failed: ${error.message}`, true);
+    emitProjectContextChange("stems", "separation-failed", { summary: `Generated stem validation failed: ${error.message}` });
   }
-  return stems;
+}
+
+function normalizeStem(stem) {
+  const saved = stemState.workspace.mixSettings?.[stem.id] || {};
+  return { gain: 1, pan: 0, muted: false, solo: false, favorite: stemState.workspace.favorites?.includes(stem.id), eqLow: 0, eqMid: 0, eqHigh: 0, filter: 20000, pitch: 0, timeStretch: 1, keyLock: true, effectsSend: 0, ...stem, ...saved, sourceName: stem.sourceName || stemState.sourceName };
+}
+
+async function cancelActiveStemJob() {
+  const id = stemState.activeJobId;
+  if (!id || id.startsWith("local-")) return;
+  try {
+    const response = await fetch(`/api/stem-jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Cancellation failed.");
+    window.StemLabEngine.upsertJob(stemState.workspace, payload);
+    clearTimeout(stemState.pollTimers.get(id));
+    setStemStatus("Stem job cancelled. Temporary input cleanup was requested.");
+    emitProjectContextChange("stems", "separation-cancelled", { summary: `Cancelled stem separation for ${payload.sourceName || stemState.sourceName}` });
+  } catch (error) { setStemStatus(`Cancellation failed: ${error.message}`, true); }
+  renderStemLab();
 }
 
 async function splitStemsWithBrowserFallback() {
-  const specs = [
+  const requestedMode = document.querySelector("#stemSeparationMode")?.value || "four";
+  const specs = (requestedMode === "two" ? [
+    { id: "vocals", name: "Vocals", filters: [{ type: "bandpass", frequency: 1450, q: 0.85 }], gain: 1.15, quality: "Rough filtered preview, not isolated" },
+    { id: "instrumental", name: "Instrumental", filters: [{ type: "lowshelf", frequency: 900, q: 0.7 }], gain: .92, quality: "Rough filtered preview, not isolated" }
+  ] : [
     { id: "vocals", name: "Vocals", filters: [{ type: "bandpass", frequency: 1450, q: 0.85 }], gain: 1.15, quality: "Rough browser stem" },
     { id: "drums", name: "Drums", filters: [{ type: "highpass", frequency: 110, q: 0.7 }, { type: "bandpass", frequency: 2400, q: 0.95 }], gain: 1.1, quality: "Rough browser stem" },
     { id: "bass", name: "Bass", filters: [{ type: "lowpass", frequency: 180, q: 0.9 }], gain: 1.28, quality: "Rough browser stem" },
-    { id: "guitar", name: "Guitar", filters: [{ type: "bandpass", frequency: 720, q: 0.7 }], gain: 1.05, quality: "Rough browser stem" },
-    { id: "keysSynth", name: "Keys/Synth", filters: [{ type: "bandpass", frequency: 1850, q: 0.75 }], gain: 1.02, quality: "Rough browser stem" },
-    { id: "air", name: "Air/FX", filters: [{ type: "highpass", frequency: 4200, q: 0.7 }], gain: 0.95, quality: "Rough browser stem" }
-  ];
+    { id: "other", name: "Music / Other", filters: [{ type: "bandpass", frequency: 1150, q: 0.45 }], gain: 1.0, quality: "Rough filtered preview, not isolated" }
+  ]);
 
   const stems = [];
   for (const spec of specs) {
     const buffer = await renderFilteredStem(stemState.sourceBuffer, spec);
-    stems.push({
+    stems.push(normalizeStem({
       ...spec,
       buffer,
       fileName: `${stemState.sourceName}-${spec.id}.wav`
-    });
+    }));
   }
   stemState.stems = stems;
-  document.querySelector("#stemStatus").textContent = `Created ${stems.length} rough fallback stems from ${stemState.sourceName}.`;
+  stemState.duration = Math.min(...stems.map((stem) => stem.buffer.duration));
+  setStemStatus(`Created ${stems.length} rough filtered previews from ${stemState.sourceName}. These are not isolated stems.`);
+  renderStemLab();
   renderAiContext();
+  emitProjectContextChange("stems", "browser-preview-created", { summary: `Created clearly labelled browser stem previews for ${stemState.sourceName}` });
 }
 
 async function renderFilteredStem(buffer, spec) {
@@ -7400,27 +7500,22 @@ async function renderFilteredStem(buffer, spec) {
 function renderStemResults() {
   const results = document.querySelector("#stemResults");
   renderEditorSourceBin();
-  results.innerHTML = "";
-  stemState.stems.forEach((stem) => {
-    const card = document.createElement("article");
-    card.className = "stem-card";
-    card.innerHTML = `
-      <div>
-        <strong>${stem.name}</strong>
-        <small>${stem.fileName}</small>
-        <small>${stem.quality || "Stem"}</small>
+  if (!stemState.stems.length) { results.innerHTML = `<div class="stem-empty-workspace"><strong>No separated stems</strong><span>Select a source and press Separate.</span></div>`; return; }
+  results.innerHTML = stemState.stems.map((stem) => `
+    <article class="stem-lane${stemState.selectedStemId === stem.id ? " is-selected" : ""}${stem.muted ? " is-muted" : ""}" data-stem-select="${escapeHtml(stem.id)}" tabindex="0" aria-label="${escapeHtml(stem.name)} stem lane">
+      <div><strong>${stem.favorite ? "★ " : ""}${escapeHtml(stem.name)}</strong><small>${formatTime(stem.buffer.duration)} · ${escapeHtml(stem.quality || "Stem")}</small><small>${escapeHtml(stem.sourceName || stemState.sourceName)}</small></div>
+      <div class="stem-lane-waveform" role="img" aria-label="Overview waveform for ${escapeHtml(stem.name)}"></div>
+      <div class="stem-lane-controls">
+        <button data-stem-action="preview" data-stem="${escapeHtml(stem.id)}" class="preview-button">${stemState.playing && stemState.previewMode === "single" && stemState.previewStemId === stem.id ? "Stop" : "Preview"}</button>
+        <button data-stem-action="mute" data-stem="${escapeHtml(stem.id)}" aria-pressed="${stem.muted}">Mute ${stem.muted ? "On" : "Off"}</button>
+        <button data-stem-action="solo" data-stem="${escapeHtml(stem.id)}" aria-pressed="${stem.solo}">Solo ${stem.solo ? "On" : "Off"}</button>
+        <label>Gain ${Math.round(stem.gain * 100)}%<input data-stem-control="gain" data-stem="${escapeHtml(stem.id)}" type="range" min="0" max="1.5" step=".01" value="${stem.gain}"></label>
+        <label class="stem-advanced-only">Pan ${Number(stem.pan).toFixed(2)}<input data-stem-control="pan" data-stem="${escapeHtml(stem.id)}" type="range" min="-1" max="1" step=".01" value="${stem.pan}"></label>
+        <button data-stem-action="deck-a" data-stem="${escapeHtml(stem.id)}">Deck A</button><button data-stem-action="deck-b" data-stem="${escapeHtml(stem.id)}">Deck B</button>
+        <button data-stem-action="pad" data-stem="${escapeHtml(stem.id)}">Pads</button><button data-stem-action="arrangement" data-stem="${escapeHtml(stem.id)}">Arrangement</button>
+        <button data-stem-action="download" data-stem="${escapeHtml(stem.id)}">Export</button><button data-stem-action="favorite" data-stem="${escapeHtml(stem.id)}">${stem.favorite ? "Unfavorite" : "Favorite"}</button>
       </div>
-      <div class="stem-actions">
-        <button data-stem-action="preview" data-stem="${stem.id}">Preview</button>
-        <button data-stem-action="deck-a" data-stem="${stem.id}">Deck A</button>
-        <button data-stem-action="deck-b" data-stem="${stem.id}">Deck B</button>
-        <button data-stem-action="pad" data-stem="${stem.id}">Pad</button>
-        <button data-stem-action="download" data-stem="${stem.id}">WAV</button>
-        <button data-stem-action="delete" data-stem="${stem.id}">Delete</button>
-      </div>
-    `;
-    results.appendChild(card);
-  });
+    </article>`).join("");
 }
 
 async function handleStemAction(action, stemId) {
@@ -7428,31 +7523,134 @@ async function handleStemAction(action, stemId) {
   if (!stem) return;
   await AudioEngine.init();
   if (action === "preview") {
-    playBufferPreview(stem.buffer);
+    if (stemState.playing && stemState.previewMode === "single" && stemState.previewStemId === stem.id) stopStemPreview(); else await playStemSet([stem.id], "single");
   }
   if (action === "deck-a") {
-    loadBufferToDeck(stem.buffer, stem.fileName, "a");
+    if (!confirmStemDeckReplace("a")) return;
+    loadBufferToDeck(stem.buffer, stem.fileName, "a", { analysis: { ...stemState.sourceAnalysis, generatedStem: true, stemType: stem.name, stemJobId: stem.jobId || stemState.activeJobId, sourceName: stemState.sourceName, alignmentDuration: stem.buffer.duration } });
+    emitProjectContextChange("stems", "stem-loaded-deck", { summary: `Loaded ${stem.name} on Deck A` });
   }
   if (action === "deck-b") {
-    loadBufferToDeck(stem.buffer, stem.fileName, "b");
+    if (!confirmStemDeckReplace("b")) return;
+    loadBufferToDeck(stem.buffer, stem.fileName, "b", { analysis: { ...stemState.sourceAnalysis, generatedStem: true, stemType: stem.name, stemJobId: stem.jobId || stemState.activeJobId, sourceName: stemState.sourceName, alignmentDuration: stem.buffer.duration } });
+    emitProjectContextChange("stems", "stem-loaded-deck", { summary: `Loaded ${stem.name} on Deck B` });
   }
   if (action === "pad") {
-    addBufferToPad(stem.buffer, stem.name);
+    const empty = sampler.buffers.findIndex((buffer) => !buffer);
+    if (empty < 0) { setStemStatus("The current Pad bank is full. Switch banks or clear a pad; Stem Lab will not overwrite an assignment.", true); return; }
+    setPadBuffer(empty, stem.buffer, `${stemState.sourceName} ${stem.name}`, { source: `Generated Stem Lab output · ${stem.jobId || stemState.activeJobId}` });
+    emitProjectContextChange("stems", "stem-sent-pads", { summary: `Sent ${stem.name} to Pad ${empty + 1}` });
+  }
+  if (action === "arrangement") {
+    await addEditorClipFromSource({ id: stem.id, type: "stem", label: `${stemState.sourceName} · ${stem.name}`, detail: "Sample-aligned generated stem", duration: stem.buffer.duration, sourceKind: "stem", buffer: stem.buffer, alignmentJobId: stem.jobId || stemState.activeJobId }, 1, editorState.playhead);
+    emitProjectContextChange("stems", "stem-sent-arrangement", { summary: `Sent ${stem.name} to Arrangement` });
+  }
+  if (action === "beat-forge") {
+    drums.pendingStem = { id: stem.id, name: stem.name, buffer: stem.buffer, source: stemState.sourceName };
+    await playStemSet([stem.id], "single");
+    setStemStatus(`Previewing ${stem.name}. Beat Forge replacement remains pending until approved in Beat Forge.`);
+    emitProjectContextChange("stems", "stem-sent-beat-forge", { summary: `Prepared ${stem.name} as a Beat Forge source` });
+  }
+  if (action === "harmony") {
+    instrument.referenceStem = { id: stem.id, name: stem.name, buffer: stem.buffer, source: stemState.sourceName, keyEstimate: stemState.sourceAnalysis?.key || null };
+    setStemStatus(`Sent ${stem.name} to Harmony Lab as an instrument reference. Key and chord results remain estimated.`);
+    emitProjectContextChange("stems", "stem-sent-harmony", { summary: `Sent ${stem.name} to Harmony Lab for estimated analysis` });
   }
   if (action === "download") {
     downloadBufferAsWav(stem.buffer, stem.fileName);
+    stemState.workspace.exportHistory.unshift({ type: "stem", stemId: stem.id, fileName: stem.fileName, at: new Date().toISOString() });
   }
   if (action === "delete") {
     deleteStem(stemId);
   }
+  if (action === "favorite") { stem.favorite = !stem.favorite; stemState.workspace.favorites = stemState.stems.filter((item) => item.favorite).map((item) => item.id); }
+  if (action === "mute") stem.muted = !stem.muted;
+  if (action === "solo") stem.solo = !stem.solo;
+  if (["favorite", "mute", "solo"].includes(action)) { persistStemMixSettings(); updateStemVoiceMix(); renderStemLab(); }
+  const destination = { "deck-a": "Deck A", "deck-b": "Deck B", pad: "Pads", arrangement: "Arrangement", "beat-forge": "Beat Forge", harmony: "Harmony Lab", download: "Export" }[action];
+  if (destination) MemoryEngine?.observePreference({ category: "Stem Preferences", key: "common-stem-destination", value: destination, evidenceLabel: `Sent ${stem.name}`, threshold: 3, summary: `Often sends stems to ${destination}` });
 }
 
 function deleteStem(stemId) {
   stopStemPreview();
   stemState.stems = stemState.stems.filter((stem) => stem.id !== stemId);
-  renderStemResults();
+  if (stemState.selectedStemId === stemId) stemState.selectedStemId = null;
+  renderStemLab();
   renderAiContext();
 }
+
+function confirmStemDeckReplace(id) { return !deckState[id]?.playing || window.confirm(`Deck ${id.toUpperCase()} is playing. Stop and replace it with this generated stem?`); }
+
+function setStemStatus(message, error = false) {
+  const output = document.querySelector("#stemStatus");
+  if (output) { output.textContent = message; output.classList.toggle("error", error); }
+}
+
+function persistStemMixSettings() {
+  stemState.workspace.mixSettings = Object.fromEntries(stemState.stems.map((stem) => [stem.id, { gain: stem.gain, pan: stem.pan, muted: stem.muted, solo: stem.solo, favorite: stem.favorite, eqLow: stem.eqLow, eqMid: stem.eqMid, eqHigh: stem.eqHigh, filter: stem.filter, effectsSend: stem.effectsSend, keyLock: stem.keyLock, pitch: stem.pitch, timeStretch: stem.timeStretch }]));
+  window.StemLabEngine?.save(stemState.workspace);
+}
+
+async function playStemSet(requestedIds = stemState.stems.map((stem) => stem.id), mode = "all") {
+  await AudioEngine.init();
+  const requested = stemState.stems.filter((stem) => requestedIds.includes(stem.id));
+  if (!requested.length) return;
+  const durations = requested.map((stem) => stem.buffer?.duration || 0);
+  if (durations.some((duration) => !duration) || Math.max(...durations) - Math.min(...durations) > .05) { stemState.syncState = "blocked: missing or misaligned output"; setStemStatus("Synchronized playback blocked because one or more stems are missing or misaligned.", true); renderStemLab(); return; }
+  stopStemPreview(false);
+  const when = AudioEngine.context.currentTime + .035;
+  const offset = Math.min(stemState.offset || 0, Math.min(...durations) - .01);
+  stemState.previewMode = mode;
+  stemState.previewStemId = mode === "single" ? requested[0].id : null;
+  stemState.duration = Math.min(...durations);
+  stemState.voices = requested.map((stem) => {
+    const source = AudioEngine.context.createBufferSource();
+    const gain = AudioEngine.context.createGain();
+    const pan = AudioEngine.context.createStereoPanner ? AudioEngine.context.createStereoPanner() : null;
+    source.buffer = stem.buffer;
+    source.loop = stemState.loop;
+    source.loopStart = 0; source.loopEnd = stemState.duration;
+    source.playbackRate.value = Number(stem.timeStretch || 1);
+    gain.gain.value = effectiveStemGain(stem);
+    if (pan) { pan.pan.value = Number(stem.pan || 0); source.connect(gain); gain.connect(pan); pan.connect(AudioEngine.masterAnalyser); }
+    else { source.connect(gain); gain.connect(AudioEngine.masterAnalyser); }
+    source.start(when, offset);
+    return { stemId: stem.id, source, gain, pan };
+  });
+  stemState.previewSource = stemState.voices[0]?.source || null;
+  stemState.previewGain = stemState.voices[0]?.gain || null;
+  stemState.playing = true; stemState.paused = false; stemState.startedAt = when - offset; stemState.syncState = `aligned · ${requested.length} stem${requested.length === 1 ? "" : "s"}`;
+  const generation = stemState.startedAt;
+  stemState.voices[0].source.onended = () => { if (!stemState.loop && stemState.startedAt === generation) stopStemPreview(); };
+  startStemTransportTimer();
+  renderStemLab(); renderGlobalTransport();
+}
+
+function effectiveStemGain(stem) {
+  const hasSolo = stemState.stems.some((item) => item.solo);
+  return stem.muted || (hasSolo && !stem.solo) ? 0 : Number(stem.gain ?? 1);
+}
+
+function updateStemVoiceMix() {
+  const now = AudioEngine.context?.currentTime || 0;
+  stemState.voices.forEach((voice) => {
+    const stem = stemState.stems.find((item) => item.id === voice.stemId);
+    if (!stem) return;
+    voice.gain.gain.setTargetAtTime(effectiveStemGain(stem), now, .015);
+    if (voice.pan) voice.pan.pan.setTargetAtTime(Number(stem.pan || 0), now, .015);
+  });
+}
+
+function currentStemTime() {
+  if (!stemState.playing) return stemState.offset || 0;
+  const elapsed = Math.max(0, AudioEngine.context.currentTime - stemState.startedAt);
+  return stemState.loop && stemState.duration ? elapsed % stemState.duration : Math.min(elapsed, stemState.duration);
+}
+
+function pauseStemPlayback() { if (!stemState.playing) return; stemState.offset = currentStemTime(); stopStemPreview(false); stemState.paused = true; stemState.syncState = "paused · aligned"; renderStemLab(); }
+function restartStemPlayback() { stemState.offset = 0; return playStemSet(stemState.previewMode === "single" && stemState.previewStemId ? [stemState.previewStemId] : stemState.stems.map((stem) => stem.id), stemState.previewMode || "all"); }
+function startStemTransportTimer() { clearInterval(stemState.transportTimer); stemState.transportTimer = setInterval(renderStemTransport, 200); }
+function renderStemTransport() { const output = document.querySelector("#stemTransportTime"); if (output) output.textContent = `${formatTime(currentStemTime())} / ${formatTime(stemState.duration || 0)}`; const sync = document.querySelector("#stemSyncState"); if (sync) sync.textContent = `Sync: ${stemState.syncState}`; }
 
 function playBufferPreview(buffer, options = {}) {
   if (!AudioEngine.context) return;
@@ -7466,10 +7664,16 @@ function playBufferPreview(buffer, options = {}) {
   gain.connect(AudioEngine.masterAnalyser);
   stemState.previewSource = source;
   stemState.previewGain = gain;
+  stemState.previewMode = options.ditcTrackId ? "ditc" : "single-buffer";
+  stemState.playing = true;
+  stemState.startedAt = AudioEngine.context.currentTime;
+  stemState.duration = buffer.duration;
   document.querySelector("#stopStemPreview").disabled = false;
   source.onended = () => {
     stemState.previewSource = null;
     stemState.previewGain = null;
+    stemState.playing = false;
+    stemState.previewMode = null;
     document.querySelector("#stopStemPreview").disabled = true;
     if (options.onended) options.onended();
   };
@@ -7483,10 +7687,13 @@ function stopDitcPreview() {
 }
 
 function stopStemPreview() {
-  if (stemState.previewSource) {
+  const reset = arguments.length ? arguments[0] !== false : true;
+  clearInterval(stemState.transportTimer);
+  stemState.transportTimer = null;
+  const voices = stemState.voices.splice(0);
+  voices.forEach((voice) => { voice.source.onended = null; try { voice.source.stop(); } catch { /* Source may already be stopped. */ } });
+  if (stemState.previewSource && !voices.some((voice) => voice.source === stemState.previewSource)) {
     const source = stemState.previewSource;
-    stemState.previewSource = null;
-    stemState.previewGain = null;
     source.onended = null;
     try {
       source.stop();
@@ -7494,8 +7701,190 @@ function stopStemPreview() {
       /* Preview may have already ended. */
     }
   }
+  stemState.previewSource = null;
+  stemState.previewGain = null;
+  stemState.playing = false;
+  if (reset) { stemState.offset = 0; stemState.paused = false; stemState.previewStemId = null; stemState.previewMode = null; stemState.syncState = "idle"; }
   const button = document.querySelector("#stopStemPreview");
   if (button) button.disabled = true;
+  renderStemTransport();
+  renderGlobalTransport();
+}
+
+function renderStemLab() {
+  const section = document.querySelector("#stems");
+  if (!section) return;
+  const mode = stemState.workspace.mode === "advanced" ? "advanced" : "simple";
+  section.dataset.stemMode = mode;
+  ["Simple", "Advanced"].forEach((name) => { const button = document.querySelector(`#stem${name}Mode`); if (button) { const active = mode === name.toLowerCase(); button.classList.toggle("is-active", active); button.setAttribute("aria-pressed", String(active)); } });
+  const modeSelect = document.querySelector("#stemSeparationMode"); if (modeSelect) modeSelect.value = stemState.workspace.separationMode || "four";
+  renderStemResults();
+  renderStemJobQueue();
+  renderStemInspector();
+  renderStemGraph();
+  renderStemTransport();
+  const ready = stemState.stems.length > 0;
+  ["playAllStems", "restartAllStems", "exportAcapella", "exportInstrumental"].forEach((id) => { const button = document.querySelector(`#${id}`); if (button) button.disabled = !ready; });
+  const pause = document.querySelector("#pauseAllStems"); if (pause) pause.disabled = !stemState.playing;
+  const stop = document.querySelector("#stopStemPreview"); if (stop) stop.disabled = !stemState.playing && !stemState.paused;
+  const cancel = document.querySelector("#cancelStemJob"); const job = stemState.workspace.jobs.find((item) => item.jobId === stemState.activeJobId); if (cancel) cancel.disabled = !job || window.StemLabEngine.TERMINAL.has(job.status) || job.jobId.startsWith("local-");
+  renderStemDiagnostics();
+}
+
+function renderStemJobQueue() {
+  const output = document.querySelector("#stemJobQueue"); if (!output) return;
+  const jobs = stemState.workspace.jobs || [];
+  output.innerHTML = jobs.length ? jobs.map((job) => `<article class="stem-job" data-status="${escapeHtml(job.status)}"><strong>${escapeHtml(job.sourceName)}</strong><small>${escapeHtml(job.separationMode)} stem · ${escapeHtml(job.status)}</small><progress max="100" value="${Number(job.progress || 0)}" aria-label="${escapeHtml(job.currentStage)}"></progress><small>${escapeHtml(job.currentStage)}${job.progressEstimated ? " · estimated" : ""}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small><div class="stem-actions">${!["Complete", "Cancelled", "Failed"].includes(job.status) ? `<button data-stem-job-action="cancel" data-job="${escapeHtml(job.jobId)}">Cancel</button>` : ""}${["Failed", "Cancelled"].includes(job.status) ? `<button data-stem-job-action="retry" data-job="${escapeHtml(job.jobId)}">Retry</button>` : ""}${job.status === "Failed" ? `<button data-stem-job-action="fallback" data-job="${escapeHtml(job.jobId)}">Browser Preview</button>` : ""}${job.status === "Complete" ? `<button data-stem-job-action="open" data-job="${escapeHtml(job.jobId)}">Open Results</button>` : ""}<button data-stem-job-action="remove" data-job="${escapeHtml(job.jobId)}">Remove</button></div></article>`).join("") : `<p class="fine-print">No processing jobs.</p>`;
+}
+
+function setStemWorkspaceMode(mode) { stemState.workspace.mode = mode === "advanced" ? "advanced" : "simple"; window.StemLabEngine.save(stemState.workspace); renderStemLab(); }
+
+function applyStemMemoryPreferences() {
+  const memories = MemoryEngine?.getRelevantMemories({}, { limit: 50 }) || [];
+  const separation = memories.find((memory) => memory.category === "Stem Preferences" && memory.key === "preferred-separation-mode");
+  if (separation && ["two", "four", "six"].includes(separation.value)) { stemState.workspace.separationMode = separation.value; MemoryEngine.recordMemoryUse(separation.memoryId); }
+  renderStemLab();
+}
+
+function updateStemControl(control) {
+  const stem = stemState.stems.find((item) => item.id === control.dataset.stem); if (!stem) return;
+  const field = control.dataset.stemControl; stem[field] = control.type === "checkbox" ? control.checked : Number(control.value);
+  persistStemMixSettings(); updateStemVoiceMix();
+  const output = control.parentElement?.querySelector("output"); if (output) output.textContent = field === "gain" || field === "effectsSend" ? `${Math.round(stem[field] * 100)}%` : field === "filter" ? `${Math.round(stem[field])} Hz` : Number(stem[field]).toFixed(2);
+}
+
+async function handleStemJobQueueAction(event) {
+  const button = event.target.closest("[data-stem-job-action]"); if (!button) return;
+  const job = stemState.workspace.jobs.find((item) => item.jobId === button.dataset.job); if (!job) return;
+  const action = button.dataset.stemJobAction;
+  if (action === "cancel") { stemState.activeJobId = job.jobId; await cancelActiveStemJob(); return; }
+  if (action === "retry") { if (stemState.sourceName !== job.sourceName || !stemState.sourceBuffer) { setStemStatus(`Reload ${job.sourceName} before retrying this job.`, true); return; } await splitCurrentStemFile(); return; }
+  if (action === "fallback") { if (stemState.sourceName !== job.sourceName || !stemState.sourceBuffer) { setStemStatus(`Reload ${job.sourceName} before creating browser previews.`, true); return; } await splitStemsWithBrowserFallback(); return; }
+  if (action === "open") { stemState.activeJobId = job.jobId; await loadCompletedStemJob(job); return; }
+  if (action === "remove") {
+    const referenced = stemState.stems.some((stem) => stem.jobId === job.jobId) || [deckState.a, deckState.b].some((deck) => deck.analysis?.stemJobId === job.jobId) || editorState.clips.some((clip) => clip.alignmentJobId === job.jobId || clip.source?.alignmentJobId === job.jobId) || sampler.sources.some((source) => String(source || "").includes(job.jobId));
+    if (referenced) { setStemStatus("This completed job is open or routed to a deck, pad, or arrangement. Its output files were retained.", true); return; }
+    if (job.status === "Complete" && !job.jobId.startsWith("local-")) {
+      try { const response = await fetch(`/api/stem-jobs/${encodeURIComponent(job.jobId)}`, { method: "DELETE" }); if (!response.ok) throw new Error("Server cleanup failed."); }
+      catch (error) { setStemStatus(`Could not remove generated files: ${error.message}`, true); return; }
+    }
+    stemState.workspace.jobs = stemState.workspace.jobs.filter((item) => item.jobId !== job.jobId); window.StemLabEngine.save(stemState.workspace); renderStemLab();
+  }
+}
+
+function useDeckAsStemSource(id) {
+  const deck = deckState[id]; if (!deck?.buffer) { setStemStatus(`Deck ${id.toUpperCase()} has no loaded track.`, true); return; }
+  stopStemPreview(); stemState.file = null; stemState.sourceTrackId = `deck-${id}`; stemState.sourceBuffer = deck.buffer; stemState.sourceName = deck.trackName || `Deck ${id.toUpperCase()}`; stemState.sourceAnalysis = deck.analysis || analyzeAudioBuffer(deck.buffer, stemState.sourceName); stemState.stems = []; stemState.duration = deck.buffer.duration;
+  document.querySelector("#splitStems").disabled = false; setStemStatus(`Using ${stemState.sourceName} from Deck ${id.toUpperCase()}. Deck playback was not changed.`); renderStemLab();
+}
+
+function renderStemInspector() {
+  const output = document.querySelector("#stemInspector"); if (!output) return;
+  const stem = stemState.stems.find((item) => item.id === stemState.selectedStemId);
+  if (!stem) { output.innerHTML = `<p class="fine-print">Select a stem lane to inspect it.</p>`; return; }
+  output.innerHTML = `<strong>${escapeHtml(stem.name)}</strong><p class="fine-print">${escapeHtml(stem.fileName)} · ${formatTime(stem.buffer.duration)} · ${escapeHtml(stem.quality)}</p>
+    <label>Gain <input type="range" min="0" max="1.5" step=".01" value="${stem.gain}" data-stem-control="gain" data-stem="${escapeHtml(stem.id)}"><output>${Math.round(stem.gain * 100)}%</output></label>
+    <label>Pan <input type="range" min="-1" max="1" step=".01" value="${stem.pan}" data-stem-control="pan" data-stem="${escapeHtml(stem.id)}"><output>${Number(stem.pan).toFixed(2)}</output></label>
+    <label title="Disabled until the shared stem DSP path is implemented">Filter <input type="range" min="120" max="20000" value="${stem.filter}" disabled><output>Unavailable</output></label>
+    <label title="Disabled until a shared effects bus is implemented">Effects send <input type="range" min="0" max="1" value="${stem.effectsSend}" disabled><output>Unavailable</output></label>
+    <label title="Disabled until time-stretch processing is implemented"><input type="checkbox" ${stem.keyLock ? "checked" : ""} disabled> Key lock unavailable</label>
+    <p class="fine-print">Pitch, time stretch, three-band EQ, and destructive region edits are intentionally unavailable until the shared high-quality processing path supports them.</p>
+    <div class="stem-actions"><button data-stem-action="beat-forge" data-stem="${escapeHtml(stem.id)}">Beat Forge</button><button data-stem-action="harmony" data-stem="${escapeHtml(stem.id)}">Harmony Lab</button><button data-stem-action="delete" data-stem="${escapeHtml(stem.id)}">Delete</button></div>`;
+  const recommendations = document.querySelector("#stemRecommendations");
+  if (recommendations) recommendations.innerHTML = `<article><strong>${/vocal/i.test(stem.name) ? "Try an acapella transition" : /drum/i.test(stem.name) ? "Preview this break in Beat Forge" : "Route this stem into the arrangement"}</strong><p class="fine-print">Based on the selected generated stem and current project context. Preview before Apply.</p><div class="stem-actions"><button data-stem-action="preview" data-stem="${escapeHtml(stem.id)}">Preview</button><button data-stem-action="arrangement" data-stem="${escapeHtml(stem.id)}">Apply</button><button data-stem-recommendation="explain">Explain</button><button data-stem-recommendation="reject">Reject</button><button data-stem-recommendation="undo">Undo</button></div></article>`;
+}
+
+async function initializeStemCapabilities() {
+  try {
+    const response = await fetch("/api/stem-capabilities", { cache: "no-store" });
+    if (!response.ok) throw new Error(`Status ${response.status}`);
+    stemState.capabilities = await response.json();
+    stemState.lastBackendError = null;
+  } catch (error) { stemState.capabilities = { available: false, modes: [], progressKind: "unavailable" }; stemState.lastBackendError = error.message; }
+  const select = document.querySelector("#stemSeparationMode");
+  if (select) [...select.options].forEach((option) => { const capability = stemState.capabilities.modes?.find((item) => item.id === option.value); option.disabled = option.value === "six" ? !capability?.supported : false; if (option.value === "six") option.textContent = capability?.supported ? "Six Stem" : "Six Stem, backend unavailable"; });
+  renderStemLab();
+}
+
+async function exportStemGroup(kind) {
+  const selected = kind === "acapella" ? stemState.stems.filter((stem) => /vocal/i.test(stem.name)) : stemState.stems.filter((stem) => !/vocal/i.test(stem.name));
+  if (!selected.length) { setStemStatus(`No ${kind} source is available.`, true); return; }
+  const buffer = await renderStemGroupBuffer(selected);
+  downloadBufferAsWav(buffer, `${stemState.sourceName}-${kind}.wav`);
+  stemState.workspace.exportHistory.unshift({ type: kind, fileName: `${stemState.sourceName}-${kind}.wav`, at: new Date().toISOString() });
+  window.StemLabEngine.save(stemState.workspace);
+  setStemStatus(`Exported ${kind} from ${stemState.sourceName}.`);
+}
+
+async function renderStemGroupBuffer(stems) {
+  const length = Math.min(...stems.map((stem) => stem.buffer.length));
+  const channels = Math.max(...stems.map((stem) => stem.buffer.numberOfChannels));
+  const rate = stems[0].buffer.sampleRate;
+  const offline = new OfflineAudioContext(channels, length, rate);
+  stems.forEach((stem) => { const source = offline.createBufferSource(); const gain = offline.createGain(); source.buffer = stem.buffer; gain.gain.value = effectiveStemGain(stem); source.connect(gain); gain.connect(offline.destination); source.start(); });
+  return offline.startRendering();
+}
+
+function renderStemGraph() {
+  const graph = stemState.workspace.graph || { nodes: [], routes: [] };
+  const canvas = document.querySelector("#stemGraphCanvas"); if (!canvas) return;
+  canvas.innerHTML = graph.nodes.length ? `${graph.nodes.map((node) => `<article class="stem-graph-node" aria-label="${escapeHtml(node.type)} ${escapeHtml(node.name)}"><strong>${escapeHtml(node.name)}</strong><small>${escapeHtml(node.type)} · ${escapeHtml(node.status || "Ready")}</small><small>Gain ${Number(node.gain ?? 1).toFixed(2)} · ${node.muted ? "Muted" : "Active"}</small></article>`).join("")}${graph.routes.map((route) => { const from = graph.nodes.find((node) => node.nodeId === route.from)?.name || "Missing"; const to = graph.nodes.find((node) => node.nodeId === route.to)?.name || "Missing"; return `<div class="stem-graph-route">${escapeHtml(from)} → ${escapeHtml(to)} <button data-stem-route-remove="${escapeHtml(route.routeId)}">Remove</button></div>`; }).join("")}` : `<p class="fine-print">No graph nodes yet. Build a prompt proposal or save current stems as nodes.</p>`;
+  const options = graph.nodes.map((node) => `<option value="${escapeHtml(node.nodeId)}">${escapeHtml(node.name)}</option>`).join("");
+  const from = document.querySelector("#stemRouteFrom"); const to = document.querySelector("#stemRouteTo"); if (from) from.innerHTML = options; if (to) to.innerHTML = options;
+}
+
+function buildStemGraphProposal() {
+  const prompt = document.querySelector("#stemGraphPrompt")?.value || "";
+  stemState.graphProposal = window.StemLabEngine.proposeGraph(prompt, stemState.stems);
+  stemState.workspace.recentPrompts.unshift(prompt);
+  const plan = stemState.graphProposal;
+  document.querySelector("#stemGraphProposal").innerHTML = `<strong>Review proposal</strong><br>Nodes: ${plan.nodes.map((node) => escapeHtml(node.name)).join(", ") || "none"}<br>Routes: ${plan.routes.length} · Destinations: ${plan.destinations.map(escapeHtml).join(", ") || "none"}<br>Warnings: ${plan.warnings.map(escapeHtml).join(", ") || "none"}<br>Missing: ${plan.missing.map(escapeHtml).join(", ") || "none"}<br>Confidence: ${Math.round(plan.confidence * 100)}%`;
+  document.querySelector("#previewStemGraph").disabled = !plan.nodes.length;
+  document.querySelector("#applyStemGraph").disabled = !plan.nodes.length || plan.missing.length > 0;
+  document.querySelector("#cancelStemGraph").disabled = false;
+}
+
+function applyStemGraphProposal() {
+  if (!stemState.graphProposal || stemState.graphProposal.missing.length) return;
+  stemState.workspace.graph = { graphId: window.StemLabEngine.id("graph"), name: "AI Stem Graph", nodes: stemState.graphProposal.nodes, routes: stemState.graphProposal.routes, updatedAt: new Date().toISOString() };
+  stemState.graphProposal = null; window.StemLabEngine.save(stemState.workspace); renderStemLab();
+  emitProjectContextChange("stems", "stem-graph-saved", { summary: `Applied Stem Graph with ${stemState.workspace.graph.nodes.length} nodes and ${stemState.workspace.graph.routes.length} routes` });
+}
+
+function addManualStemRoute() {
+  const graph = stemState.workspace.graph; const from = document.querySelector("#stemRouteFrom")?.value; const to = document.querySelector("#stemRouteTo")?.value;
+  const validation = window.StemLabEngine.validateRoute(graph, from, to);
+  if (!validation.valid) { setStemStatus(validation.reason, true); return; }
+  graph.routes.push({ routeId: window.StemLabEngine.id("route"), from, to, gain: 1, muted: false }); graph.updatedAt = new Date().toISOString(); window.StemLabEngine.save(stemState.workspace); setStemStatus("Route added. Preview the graph before using its output."); renderStemGraph();
+}
+
+function saveCurrentStemGraph() {
+  const graph = stemState.workspace.graph;
+  stemState.stems.forEach((stem) => { if (!graph.nodes.some((node) => node.sourceStemId === stem.id)) graph.nodes.push({ nodeId: window.StemLabEngine.id("node"), sourceStemId: stem.id, type: "Stem", name: stem.name, source: stemState.sourceName, status: "Ready", gain: stem.gain, muted: stem.muted, solo: stem.solo }); });
+  if (!graph.nodes.some((node) => node.type === "Arrangement")) graph.nodes.push({ nodeId: window.StemLabEngine.id("node"), type: "Arrangement", name: "Arrangement Output", source: "Project", status: "Ready", gain: 1, muted: false, solo: false });
+  graph.updatedAt = new Date().toISOString(); window.StemLabEngine.save(stemState.workspace); renderStemLab(); emitProjectContextChange("stems", "stem-graph-saved", { summary: `Saved Stem Graph with ${graph.nodes.length} nodes` });
+}
+
+function validateStemMashup() {
+  const vocal = stemState.stems.find((stem) => /vocal/i.test(stem.name)); const instrumental = stemState.stems.find((stem) => /instrumental|other|music/i.test(stem.name)); const warnings = [];
+  if (!vocal) warnings.push("No vocal stem is available."); if (!instrumental) warnings.push("No instrumental or music stem is available.");
+  const bpm = stemState.sourceAnalysis?.bpm; const key = stemState.sourceAnalysis?.key;
+  if (!bpm) warnings.push("BPM is unknown; tempo compatibility requires manual review."); if (!key) warnings.push("Key is unknown; harmonic compatibility is unverified.");
+  stemState.workspace.mashup = { vocalStemId: vocal?.id || null, instrumentalStemId: instrumental?.id || null, status: warnings.length ? "Needs Review" : "Ready", warnings, bpm: bpm || null, key: key || null };
+  document.querySelector("#stemMashupStatus").textContent = warnings.length ? `Needs review: ${warnings.join(" ")} Safer alternative: audition at the project BPM before arranging.` : `Ready to audition at ${bpm} BPM in ${key}. No compatibility conflicts detected from available evidence.`;
+  window.StemLabEngine.save(stemState.workspace); emitProjectContextChange("stems", "mashup-created", { summary: `Validated mashup candidate with ${warnings.length} warning${warnings.length === 1 ? "" : "s"}` });
+}
+
+async function sendStemGroupToArrangement() {
+  const stems = stemState.stems.filter((stem) => !stem.muted && (!stemState.stems.some((item) => item.solo) || stem.solo));
+  for (const stem of stems) await addEditorClipFromSource({ id: stem.id, type: "stem", label: `${stemState.sourceName} · ${stem.name}`, duration: stem.buffer.duration, sourceKind: "stem", buffer: stem.buffer, alignmentJobId: stem.jobId || stemState.activeJobId }, 1, editorState.playhead);
+  setStemStatus(`Sent ${stems.length} synchronized stem${stems.length === 1 ? "" : "s"} to Arrangement at ${formatTime(editorState.playhead)}.`);
+}
+
+function renderStemDiagnostics() {
+  const details = document.querySelector("#stemDiagnostics"); if (details) details.hidden = !DECKFORGE_DEVELOPMENT;
+  const output = document.querySelector("#stemDiagnosticsOutput"); if (!output || !DECKFORGE_DEVELOPMENT) return;
+  output.textContent = JSON.stringify({ stemServerStatus: stemState.capabilities?.available ? "Available" : "Unavailable", processingQueue: stemState.workspace.jobs.map((job) => ({ jobId: job.jobId, status: job.status, progress: job.progress, stage: job.currentStage })), activeJob: stemState.activeJobId, loadedStems: stemState.stems.map((stem) => stem.name), playingStems: stemState.voices.map((voice) => voice.stemId), alignmentState: stemState.syncState, playbackRegistryState: window.AudioPlaybackRegistry?.snapshot().find((source) => source.id === "stems-preview"), activeGraph: stemState.workspace.graph?.name, nodeCount: stemState.workspace.graph?.nodes?.length || 0, routeCount: stemState.workspace.graph?.routes?.length || 0, temporaryFileCount: "Server-managed", cachedOutputCount: stemState.workspace.jobs.reduce((sum, job) => sum + (job.outputs?.length || 0), 0), lastBackendError: stemState.lastBackendError, lastPreviewError: stemState.lastPreviewError }, null, 2);
 }
 
 function downloadBufferAsWav(buffer, fileName) {
@@ -8630,11 +9019,16 @@ function buildProjectIntelligenceSnapshot() {
     stems: {
       separatedTracks: stemState.stems.length ? [{ source: stemState.sourceName || "Unknown source", stemCount: stemState.stems.length }] : [],
       availableStemTypes: stemState.stems.map((stem) => stem.name),
-      selectedStem: stemState.previewSource ? stemState.previewStemId || null : null,
-      recentStemCombinations: [],
+      availableStems: stemState.stems.map((stem) => ({ id: stem.id, name: stem.name, quality: stem.quality, muted: stem.muted, solo: stem.solo })),
+      selectedStem: stemState.selectedStemId || stemState.previewStemId || null,
+      recentStemCombinations: stemState.workspace.mashup?.vocalStemId ? [stemState.workspace.mashup] : [],
       mashupCandidates: stemState.stems.length >= 2 ? stemState.stems.slice(0, 4).map((stem) => stem.name) : [],
       currentPreview: Boolean(stemState.previewSource),
-      processingState: document.querySelector("#splitStems")?.disabled && stemState.sourceBuffer ? "Processing" : "Idle"
+      processingState: stemState.workspace.jobs.find((job) => job.jobId === stemState.activeJobId)?.status || "Idle",
+      processingQueue: stemState.workspace.jobs.filter((job) => !window.StemLabEngine?.TERMINAL.has(job.status)).length,
+      activeGraph: stemState.workspace.graph?.nodes?.length ? { name: stemState.workspace.graph.name, nodeCount: stemState.workspace.graph.nodes.length, routeCount: stemState.workspace.graph.routes.length } : null,
+      localTransport: { playing: stemState.playing, paused: stemState.paused, loop: stemState.loop, syncState: stemState.syncState },
+      serverAvailable: Boolean(stemState.capabilities?.available)
     },
     arrangement,
     mixtape: {
@@ -10518,12 +10912,39 @@ function setupEvents() {
     await loadStemFile(event.target.files[0]);
   });
   document.querySelector("#splitStems").addEventListener("click", splitCurrentStemFile);
+  document.querySelector("#cancelStemJob").addEventListener("click", cancelActiveStemJob);
   document.querySelector("#stopStemPreview").addEventListener("click", stopStemPreview);
+  document.querySelector("#playAllStems").addEventListener("click", () => playStemSet(stemState.stems.map((stem) => stem.id), "all"));
+  document.querySelector("#pauseAllStems").addEventListener("click", pauseStemPlayback);
+  document.querySelector("#restartAllStems").addEventListener("click", restartStemPlayback);
+  document.querySelector("#loopAllStems").addEventListener("change", (event) => { stemState.loop = event.target.checked; if (stemState.playing) restartStemPlayback(); else renderStemLab(); });
+  document.querySelector("#exportAcapella").addEventListener("click", () => exportStemGroup("acapella"));
+  document.querySelector("#exportInstrumental").addEventListener("click", () => exportStemGroup("instrumental"));
+  document.querySelector("#stemSimpleMode").addEventListener("click", () => setStemWorkspaceMode("simple"));
+  document.querySelector("#stemAdvancedMode").addEventListener("click", () => setStemWorkspaceMode("advanced"));
+  document.querySelector("#stemSeparationMode").addEventListener("change", (event) => { stemState.workspace.separationMode = event.target.value; window.StemLabEngine.save(stemState.workspace); MemoryEngine?.observePreference({ category: "Stem Preferences", key: "preferred-separation-mode", value: event.target.value, evidenceLabel: "Stem Lab selection", threshold: 3, summary: `Prefers ${event.target.value}-stem separation in this project` }); });
   document.querySelector("#stemResults").addEventListener("click", (event) => {
     const button = event.target.closest("[data-stem-action]");
-    if (!button) return;
-    handleStemAction(button.dataset.stemAction, button.dataset.stem);
+    if (button) { handleStemAction(button.dataset.stemAction, button.dataset.stem); return; }
+    const lane = event.target.closest("[data-stem-select]"); if (lane) { stemState.selectedStemId = lane.dataset.stemSelect; stemState.workspace.selectedStemId = stemState.selectedStemId; window.StemLabEngine.save(stemState.workspace); renderStemLab(); }
   });
+  document.querySelector("#stemInspector").addEventListener("click", (event) => { const button = event.target.closest("[data-stem-action]"); if (button) handleStemAction(button.dataset.stemAction, button.dataset.stem); });
+  document.querySelector("#stemRecommendations").addEventListener("click", (event) => { const button = event.target.closest("[data-stem-action]"); if (button) handleStemAction(button.dataset.stemAction, button.dataset.stem); const action = event.target.closest("[data-stem-recommendation]")?.dataset.stemRecommendation; if (action === "explain") setStemStatus("This recommendation uses the selected stem type and current Project Intelligence context; it does not alter audio until Apply."); if (action === "reject") setStemStatus("Recommendation rejected for this session. Producer Memory is unchanged."); if (action === "undo") setStemStatus("No applied recommendation change is available to undo."); });
+  document.querySelector("#stems").addEventListener("input", (event) => { const control = event.target.closest("[data-stem-control]"); if (control) updateStemControl(control); });
+  document.querySelector("#stemJobQueue").addEventListener("click", handleStemJobQueueAction);
+  document.querySelector("#stemUseDeckA").addEventListener("click", () => useDeckAsStemSource("a"));
+  document.querySelector("#stemUseDeckB").addEventListener("click", () => useDeckAsStemSource("b"));
+  document.querySelector("#stemOpenDitc").addEventListener("click", () => switchView("sources"));
+  document.querySelector("#stemStartRemix").addEventListener("click", () => { const mission = MissionEngine?.createMission("create-remix"); if (mission) MissionEngine.setActiveMission(mission.missionId); renderProducerMissions(); switchView("ai"); });
+  document.querySelector("#buildStemGraph").addEventListener("click", buildStemGraphProposal);
+  document.querySelector("#previewStemGraph").addEventListener("click", () => { const ids = (stemState.graphProposal?.nodes || []).map((node) => node.name).map((name) => stemState.stems.find((stem) => stem.name === name)?.id).filter(Boolean); if (ids.length) playStemSet(ids, "graph"); });
+  document.querySelector("#applyStemGraph").addEventListener("click", applyStemGraphProposal);
+  document.querySelector("#cancelStemGraph").addEventListener("click", () => { stemState.graphProposal = null; document.querySelector("#stemGraphProposal").textContent = "Proposal cancelled. No routes changed."; ["previewStemGraph", "applyStemGraph", "cancelStemGraph"].forEach((id) => { document.querySelector(`#${id}`).disabled = true; }); });
+  document.querySelector("#saveStemGraph").addEventListener("click", saveCurrentStemGraph);
+  document.querySelector("#addStemRoute").addEventListener("click", addManualStemRoute);
+  document.querySelector("#stemGraphCanvas").addEventListener("click", (event) => { const id = event.target.closest("[data-stem-route-remove]")?.dataset.stemRouteRemove; if (!id) return; stemState.workspace.graph.routes = stemState.workspace.graph.routes.filter((route) => route.routeId !== id); window.StemLabEngine.save(stemState.workspace); renderStemGraph(); });
+  document.querySelector("#createStemMashup").addEventListener("click", validateStemMashup);
+  document.querySelector("#sendStemGroupArrangement").addEventListener("click", sendStemGroupToArrangement);
   document.querySelector("#sourceList").addEventListener("click", (event) => {
     const button = event.target.closest("[data-source-action]");
     if (!button) return;
@@ -11088,13 +11509,15 @@ async function handleSourceFileAction(action, id) {
   }
   if (action === "stems") {
     stemState.file = item.file;
+    stemState.sourceTrackId = item.id;
     stemState.sourceBuffer = buffer;
     stemState.sourceName = item.name.replace(/\.[^/.]+$/, "");
+    stemState.sourceAnalysis = item.analysis || analyzeAudioBuffer(buffer, item.name);
     stemState.stems = [];
     item.stemReady = true;
     document.querySelector("#splitStems").disabled = false;
-    document.querySelector("#stemStatus").textContent = `Loaded ${item.name}. Ready to split.`;
-    renderStemResults();
+    setStemStatus(`Loaded ${item.name}. Ready to separate.`);
+    renderStemLab();
     switchView("stems");
   }
   setSourceStatus(`${item.name} loaded.`);
@@ -11122,12 +11545,14 @@ async function handleSavedSourceAction(action, index) {
     if (action === "pad") addBufferToPad(buffer, item.name);
     if (action === "stems") {
       stemState.file = null;
+      stemState.sourceTrackId = `reference-${index}`;
       stemState.sourceBuffer = buffer;
       stemState.sourceName = item.name;
+      stemState.sourceAnalysis = analyzeAudioBuffer(buffer, item.name);
       stemState.stems = [];
       document.querySelector("#splitStems").disabled = false;
-      document.querySelector("#stemStatus").textContent = `Loaded ${item.name}. Ready to split.`;
-      renderStemResults();
+      setStemStatus(`Loaded ${item.name}. Ready to separate.`);
+      renderStemLab();
       switchView("stems");
     }
     setSourceStatus(`${item.name} loaded from URL.`);
@@ -11621,6 +12046,8 @@ initializePlaybackRegistry();
 readSmartPromptStorage();
 setupEvents();
 setupProducerStudioEvents();
+renderStemLab();
+initializeStemCapabilities();
 renderPads();
 renderPadEditor();
 renderPadWorkspaceControls();
@@ -11631,6 +12058,7 @@ if (drums.restored) renderBeatForge(); else applyDrumPreset(drums.preset);
 renderSources();
 renderAiContext();
 initializeProducerMemory();
+applyStemMemoryPreferences();
 initializeProjectIntelligence();
 initializeRecommendationEngine();
 initializeMissionEngine();

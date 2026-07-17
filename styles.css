@@ -1842,6 +1842,134 @@ input[type="range"] {
   color: var(--muted);
 }
 
+#stems[data-stem-mode="simple"] .stem-advanced-only { display: none !important; }
+
+.stem-mode-toggle,
+.stem-local-transport,
+.stem-empty-actions,
+.stem-panel-heading,
+.stem-route-builder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.stem-mode-toggle .is-active { border-color: var(--accent); color: var(--accent); }
+
+.stem-toolbar {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 10px);
+  background: rgba(17, 21, 27, 0.94);
+}
+
+.stem-toolbar label,
+.stem-local-transport label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: .82rem;
+  font-weight: 800;
+}
+
+.stem-toolbar select { min-width: 142px; }
+.stem-toolbar #stemStatus { flex: 1; min-width: 210px; color: var(--muted); }
+
+.stem-local-transport {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(49, 207, 220, .22);
+  border-radius: var(--radius-md, 10px);
+  background: rgba(49, 207, 220, .05);
+}
+
+.preview-button { border: 1px solid #31cfdc; background: rgba(49, 207, 220, .14); color: #8af5ff; }
+#stemTransportTime, #stemSyncState { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.stem-lab-layout {
+  display: grid;
+  grid-template-columns: minmax(205px, .75fr) minmax(500px, 2.5fr) minmax(230px, .9fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.stem-sidebar,
+.stem-workspace,
+.stem-inspector,
+.stem-graph-panel,
+.stem-mashup-panel {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 10px);
+  background: rgba(17, 21, 27, .94);
+}
+
+.stem-sidebar h3, .stem-inspector h3 { margin: 4px 0 10px; }
+.stem-sidebar .drop-zone { min-height: 126px; margin-bottom: 10px; }
+.stem-empty-actions { margin-bottom: 18px; }
+.stem-empty-actions button { flex: 1 1 82px; }
+
+.stem-job-list { display: grid; gap: 8px; max-height: 300px; overflow: auto; }
+.stem-job {
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #11161c;
+}
+.stem-job strong, .stem-job small { display: block; }
+.stem-job progress { width: 100%; accent-color: #ef852d; }
+.stem-job[data-status="Complete"] progress { accent-color: #4ac47c; }
+.stem-job[data-status="Failed"] { border-color: rgba(255, 79, 94, .5); }
+
+.stem-grid { grid-template-columns: 1fr; }
+.stem-empty-workspace { display: grid; place-items: center; gap: 8px; min-height: 260px; color: var(--muted); }
+.stem-lane {
+  display: grid;
+  grid-template-columns: minmax(135px, .8fr) minmax(180px, 1.5fr) minmax(270px, 1.2fr);
+  gap: 12px;
+  align-items: center;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: linear-gradient(90deg, rgba(49, 207, 220, .035), transparent 45%), #141920;
+}
+.stem-lane.is-selected { border-color: rgba(239, 133, 45, .65); }
+.stem-lane.is-muted { opacity: .64; }
+.stem-lane-waveform {
+  height: 48px;
+  border-radius: 6px;
+  background: repeating-linear-gradient(90deg, rgba(49, 207, 220, .5) 0 2px, transparent 2px 6px), linear-gradient(transparent 47%, rgba(255,255,255,.14) 48% 52%, transparent 53%);
+  mask-image: linear-gradient(180deg, transparent, #000 15% 85%, transparent);
+}
+.stem-lane-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.stem-lane-controls label { display: grid; gap: 2px; color: var(--muted); font-size: .72rem; }
+.stem-lane-controls input[type="range"] { width: 78px; }
+.stem-lane button[aria-pressed="true"] { border-color: #ef852d; color: #ffb879; }
+
+.stem-inspector label { display: grid; gap: 5px; margin: 9px 0; color: var(--muted); font-size: .8rem; }
+.stem-inspector input[type="range"] { width: 100%; }
+.stem-graph-panel, .stem-mashup-panel { margin-top: 12px; }
+.stem-panel-heading { justify-content: space-between; }
+.stem-graph-panel textarea { width: 100%; box-sizing: border-box; margin: 8px 0; }
+.stem-graph-canvas { display: flex; flex-wrap: wrap; gap: 10px; min-height: 120px; margin: 12px 0; padding: 12px; border: 1px dashed rgba(141, 91, 255, .48); border-radius: 9px; background: rgba(141, 91, 255, .055); }
+.stem-graph-node { min-width: 120px; padding: 10px; border: 1px solid rgba(141, 91, 255, .55); border-radius: 8px; background: #171324; }
+.stem-graph-node strong, .stem-graph-node small { display: block; }
+.stem-graph-route { flex-basis: 100%; color: #c9b8ff; font-size: .82rem; }
+.stem-route-builder select { min-width: 150px; }
+
+@media (max-width: 1100px) {
+  .stem-lab-layout { grid-template-columns: 220px 1fr; }
+  .stem-inspector { grid-column: 1 / -1; }
+}
+
+@media (max-width: 760px) {
+  .stem-lab-layout, .stem-lane { grid-template-columns: 1fr; }
+  .stem-sidebar, .stem-workspace, .stem-inspector { grid-column: auto; }
+}
+
 .editor-toolbar {
   display: flex;
   flex-wrap: wrap;

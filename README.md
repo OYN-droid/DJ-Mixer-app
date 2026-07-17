@@ -14,7 +14,7 @@ The repository contains substantial prototype implementations for two decks, mix
 - `styles.css` contains the complete visual layer.
 - `app.js` is a single browser script containing state, Web Audio graphs, rendering, analysis and event handling.
 - `src/audio/playback-registry.js` coordinates playback ownership and Global Stop while leaving feature audio engines intact.
-- `stem_server.py` serves the frontend and provides optional `POST /api/stems` separation through Demucs.
+- `stem_server.py` serves the frontend and provides bounded asynchronous `POST /api/stem-jobs` separation through Demucs, plus capability, status, and cancellation endpoints.
 
 No build step is required.
 
@@ -35,15 +35,15 @@ Python 3 is required. Demucs is optional but required for true model-based stem 
 ```sh
 python3 -m venv .venv-stems
 source .venv-stems/bin/activate
-python3 -m pip install demucs
+python3 -m pip install "demucs==4.0.1" "numpy<2"
 python3 stem_server.py
 ```
 
-Set `PORT` to change the default port of 8000. Set `DECKFORGE_STEM_MODEL` to change the default `htdemucs_6s` model. If Demucs is unavailable, the frontend can create rough filtered previews. Those previews are not true isolated stems.
+Set `PORT` to change the default port of 8000. Set `DECKFORGE_STEM_MODEL` to change the six-stem model, `DECKFORGE_STEM_CONCURRENCY` to change the default two-job processing limit, and `DECKFORGE_STEM_MAX_BYTES` to change the 500 MB upload limit. If Demucs is unavailable, Stem Lab records the failure and offers an explicit rough browser-preview action. Those previews are not true isolated stems.
 
 ## Security
 
-Never commit `.env` files, API keys, tokens, credentials or private keys. Current optional fingerprint-provider configuration is read from localStorage and is not suitable for production secrets. A future server proxy should own credentials. The development stem server has no authentication, upload limit or cleanup policy, so bind and expose it only in a trusted local environment.
+Never commit `.env` files, API keys, tokens, credentials or private keys. Current optional fingerprint-provider configuration is read from localStorage and is not suitable for production secrets. A future server proxy should own credentials. The development stem server validates file type and size, removes temporary inputs, bounds Demucs concurrency, and binds to localhost, but it still has no authentication or automatic expiry for completed outputs. Use it only on a trusted local machine and remove unneeded generated outputs.
 
 ## Current limitations
 

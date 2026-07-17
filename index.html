@@ -645,24 +645,61 @@
           <div class="section-heading">
             <div>
               <h2 id="stemsTitle">Stem Lab</h2>
-              <p>Drop a song, split it into isolated vocals, drums, bass, guitar, and synth stems, then load stems into decks or pads.</p>
+              <p>Stem Separation, Remixing, and Routing</p>
             </div>
-            <label class="file-button">
-              Add Track
-              <input id="stemFile" type="file" accept="audio/*">
-            </label>
+            <div class="stem-mode-toggle" role="group" aria-label="Stem Lab workspace mode">
+              <button id="stemSimpleMode" class="secondary-button is-active" aria-pressed="true">Simple</button>
+              <button id="stemAdvancedMode" class="secondary-button" aria-pressed="false">Advanced</button>
+            </div>
           </div>
-          <div id="stemDrop" class="drop-zone">
-            <strong>Drop audio for stem splitting</strong>
-            <span>Uses AI separation when the local stem server is running; falls back to quick browser stems.</span>
+          <div class="stem-toolbar" aria-label="Stem processing toolbar">
+            <label class="file-button">Source Track<input id="stemFile" type="file" accept=".wav,.mp3,.aif,.aiff,.flac,.m4a,.ogg,.opus,audio/*"></label>
+            <label>Separation <select id="stemSeparationMode"><option value="two">Two Stem</option><option value="four" selected>Four Stem</option><option value="six" disabled>Six Stem, checking backend…</option></select></label>
+            <label class="stem-advanced-only">Quality <select id="stemQuality"><option value="balanced">Balanced</option></select></label>
+            <button id="splitStems" class="primary-button" disabled>Separate</button>
+            <button id="cancelStemJob" class="secondary-button" disabled>Cancel</button>
+            <span id="stemStatus" role="status" aria-live="polite">No track loaded.</span>
           </div>
-          <div class="stem-toolbar">
-            <button id="splitStems" class="primary-button" disabled>Split Stems</button>
-            <button id="stopStemPreview" class="secondary-button" disabled>Stop Preview</button>
-            <p id="stemStatus">No track loaded.</p>
+          <div class="stem-local-transport" aria-label="Local Stem Lab transport">
+            <button id="playAllStems" class="preview-button" disabled>Play All</button>
+            <button id="pauseAllStems" class="secondary-button" disabled>Pause</button>
+            <button id="stopStemPreview" class="secondary-button" disabled>Stop</button>
+            <button id="restartAllStems" class="secondary-button" disabled>Restart</button>
+            <label><input id="loopAllStems" type="checkbox"> Loop</label>
+            <span id="stemTransportTime">0:00 / 0:00</span>
+            <span id="stemSyncState">Sync: idle</span>
+            <button id="exportAcapella" class="secondary-button" disabled>Export Acapella</button>
+            <button id="exportInstrumental" class="secondary-button" disabled>Export Instrumental</button>
           </div>
-          <div id="stemResults" class="stem-grid"></div>
-          <p class="fine-print">For true isolation, run the local AI stem server. Browser fallback stems are only rough previews.</p>
+          <div class="stem-lab-layout">
+            <aside class="stem-sidebar" aria-label="Stem Lab sources and jobs">
+              <h3>Sources</h3>
+              <div id="stemDrop" class="drop-zone"><strong>Choose a track and separate it into vocals, drums, bass, and music.</strong><span>Drop supported local audio here.</span></div>
+              <div class="stem-empty-actions"><button id="stemUseDeckA">Use Deck A</button><button id="stemUseDeckB">Use Deck B</button><button id="stemOpenDitc">Select from DITC</button><button id="stemStartRemix">Start Remix Mission</button></div>
+              <h3>Processing Queue</h3>
+              <div id="stemJobQueue" class="stem-job-list"><p class="fine-print">No processing jobs.</p></div>
+              <div class="stem-advanced-only"><h3>Collections</h3><p id="stemCollections" class="fine-print">Favorites, recent separations, and mashup candidates appear here.</p></div>
+            </aside>
+            <main class="stem-workspace" aria-label="Stem lanes and graph">
+              <div id="stemResults" class="stem-grid"><div class="stem-empty-workspace"><strong>No separated stems</strong><span>Select a source and press Separate.</span></div></div>
+              <section class="stem-advanced-only stem-graph-panel" aria-labelledby="stemGraphTitle">
+                <div class="stem-panel-heading"><div><p class="eyebrow">AI routing</p><h3 id="stemGraphTitle">AI Stem Graph</h3></div><button id="saveStemGraph" class="ai-button">Save Graph</button></div>
+                <textarea id="stemGraphPrompt" rows="2" placeholder="Use Deck A's vocal over Deck B's instrumental."></textarea>
+                <div class="stem-actions"><button id="buildStemGraph" class="ai-button">Build Proposal</button><button id="previewStemGraph" disabled>Preview Graph</button><button id="applyStemGraph" disabled>Apply Plan</button><button id="cancelStemGraph" disabled>Cancel</button></div>
+                <div id="stemGraphProposal" class="fine-print">Describe a route. Review is required before Apply.</div>
+                <div id="stemGraphCanvas" class="stem-graph-canvas" aria-label="Stem routing graph"></div>
+                <div class="stem-route-builder"><select id="stemRouteFrom" aria-label="Route source"></select><span>→</span><select id="stemRouteTo" aria-label="Route destination"></select><button id="addStemRoute">Add Route</button></div>
+              </section>
+              <section class="stem-advanced-only stem-mashup-panel"><h3>Mashup Builder</h3><p id="stemMashupStatus">Select a vocal and instrumental stem. Compatibility checks use available project BPM, key, duration, and local-audio evidence.</p><button id="createStemMashup" class="ai-button">Validate Mashup</button><button id="sendStemGroupArrangement">Send Stem Group to Arrangement</button></section>
+            </main>
+            <aside class="stem-inspector" aria-label="Selected stem inspector">
+              <h3>Selected Stem</h3>
+              <div id="stemInspector"><p class="fine-print">Select a stem lane to inspect it.</p></div>
+              <div class="stem-advanced-only"><h3>AI Recommendations</h3><div id="stemRecommendations"><p class="fine-print">Recommendations appear after separation.</p></div></div>
+            </aside>
+          </div>
+          <p class="fine-print">True separation requires the local Demucs server. Browser fallback can be chosen after a server failure and is always labelled as a rough filtered preview.</p>
+          <details id="stemDiagnostics" hidden><summary>Stem Lab diagnostics</summary><pre id="stemDiagnosticsOutput"></pre></details>
         </section>
 
         <section id="editor" class="view" aria-labelledby="editorTitle">
@@ -1074,6 +1111,7 @@
     <script src="src/producer-memory.js"></script>
     <script src="src/recommendation-engine.js"></script>
     <script src="src/creative-missions.js"></script>
+    <script src="src/stem-lab.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
