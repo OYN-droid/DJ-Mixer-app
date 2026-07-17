@@ -8,6 +8,7 @@
   const subscribers = new Set();
   let projectId = "deckforge-session";
   let getContext = () => null;
+  let getMemorySummary = () => ({ preferences: [] });
   let executeAction = async () => ({ success: false, message: "No recommendation action adapter is registered." });
   let current = [];
   let history = {};
@@ -49,12 +50,20 @@
     return "Experimental";
   }
 
+  function memoryPreferences() { const summary = getMemorySummary() || {}; return Array.isArray(summary.preferences) ? summary.preferences : []; }
+
+  function memoryForDomain(domain) {
+    const categoryMap = { DITC: ["DJ Preferences", "Project Identity", "Avoidances"], Decks: ["DJ Preferences", "Transition Preferences"], "Smart Mix": ["Transition Preferences", "DJ Preferences"], Pads: ["Pad Preferences", "Avoidances"], "Beat Forge": ["Beat Forge Preferences", "Avoidances"], "Harmony Lab": ["Harmony Lab Preferences", "Avoidances"], Arrangement: ["Arrangement Preferences", "Project Identity"], "Project Planning": ["Project Identity", "Arrangement Preferences"] };
+    return memoryPreferences().filter((memory) => (categoryMap[domain] || []).includes(memory.category)).slice(0, 3);
+  }
+
   function normalizeRecommendation(rule, context) {
     const evidence = (rule.evidence || []).filter((item) => item && item.value !== undefined && item.value !== null);
     const confidence = Math.max(0, Math.min(1, Number(rule.confidence ?? (evidence.length ? 0.5 : 0))));
     const fingerprint = rule.fingerprint || evidence.map((item) => `${item.label}:${item.value}`).join("|") || String(context.contextVersion);
     const recommendationId = `${rule.ruleId}:${compact(fingerprint)}`;
     const prior = history[recommendationId] || {};
+    const memoryInfluence = memoryForDomain(rule.domain);
     return {
       recommendationId,
       ruleId: rule.ruleId,
@@ -64,7 +73,7 @@
       domainIcon: DOMAIN_ICONS[rule.domain] || "✦",
       title: rule.title,
       summary: rule.summary,
-      explanation: rule.explanation,
+      explanation: `${rule.explanation}${memoryInfluence.length ? ` Producer Memory context: ${memoryInfluence.map((memory) => memory.summary).join("; ")}.` : ""}`,
       evidence,
       confidence,
       confidenceLabel: confidenceLabel(confidence),
@@ -96,7 +105,8 @@
       rejectionReason: prior.rejectionReason || null,
       savedForLater: Boolean(prior.savedForLater),
       undoToken: prior.undoToken || null,
-      rankingScore: 0
+      rankingScore: 0,
+      memoryInfluence
     };
   }
 
@@ -391,6 +401,7 @@
       if (recommendation.previewCapability.available) score += 8;
       if (recommendation.beginnerFriendly) score += 4;
       if (recommendation.savedForLater) score -= 20;
+      if (recommendation.memoryInfluence?.length) score += Math.min(18, recommendation.memoryInfluence.length * 6);
       recommendation.rankingScore = score;
       rankingScores[recommendation.recommendationId] = score;
       return recommendation;
@@ -402,7 +413,8 @@
     const rules = generateRules(context);
     triggeredRuleIds = rules.map((rule) => rule.ruleId);
     generatedCount = rules.length;
-    const normalized = rules.map((rule) => normalizeRecommendation(rule, context));
+    const rejectedTypes = new Set(memoryPreferences().filter((memory) => memory.category === "Recommendation Preferences" && memory.key.startsWith("rejected-recommendation-type")).map((memory) => String(memory.value)));
+    const normalized = rules.map((rule) => normalizeRecommendation(rule, context)).filter((recommendation) => recommendation.priority === "Needs Attention" || !rejectedTypes.has(recommendation.ruleId));
     const generated = normalized.filter((recommendation) => {
       const prior = history[recommendation.recommendationId];
       return !(prior && ["Rejected", "Dismissed"].includes(prior.status));
@@ -551,6 +563,7 @@
   function configure(options = {}) {
     projectId = String(options.projectId || projectId);
     if (typeof options.getContext === "function") getContext = options.getContext;
+    if (typeof options.getMemorySummary === "function") getMemorySummary = options.getMemorySummary;
     if (typeof options.executeAction === "function") executeAction = options.executeAction;
     loadHistory();
     return refreshRecommendations({ reason: "Engine initialized" });
@@ -559,7 +572,7 @@
   function subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); }
   function getRecommendations() { return safeClone(current, []); }
   function getRecommendation(id) { return safeClone(current.find((item) => item.recommendationId === id), null); }
-  function getDiagnostics() { return { engineStatus: "Ready", contextVersionUsed: getContext()?.contextVersion ?? null, numberGenerated: generatedCount, numberValidated: validatedCount, numberRejectedByValidation: rejectedByValidation, recommendationDomains: [...new Set(current.map((item) => item.domain))], ruleIdsTriggered: triggeredRuleIds, rankingScores, staleCount, lastRefreshReason, lastApplyResult, lastUndoResult, lastEngineError: lastError, activeRecommendations: current.length, historyRecords: Object.keys(history).length }; }
+  function getDiagnostics() { return { engineStatus: "Ready", contextVersionUsed: getContext()?.contextVersion ?? null, numberGenerated: generatedCount, numberValidated: validatedCount, numberRejectedByValidation: rejectedByValidation, recommendationDomains: [...new Set(current.map((item) => item.domain))], ruleIdsTriggered: triggeredRuleIds, rankingScores, memoryInfluencedRecommendations: current.filter((item) => item.memoryInfluence?.length).length, staleCount, lastRefreshReason, lastApplyResult, lastUndoResult, lastEngineError: lastError, activeRecommendations: current.length, historyRecords: Object.keys(history).length }; }
 
   global.ContextualRecommendations = Object.freeze({
     configure, generateProjectRecommendations, generateDomainRecommendations, rankRecommendations, validateRecommendation,

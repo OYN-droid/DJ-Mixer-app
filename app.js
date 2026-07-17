@@ -111,6 +111,7 @@ const ditcState = {
   smartMixIds: new Set(),
   advanced: false,
   comfortable: false,
+  prioritizeMemory: true,
   lastImportResult: "No import yet",
   lastError: "None",
   dragTarget: "None"
@@ -165,6 +166,7 @@ const mixtapeReferenceState = {
 
 const PRODUCER_STUDIO_KEY = "deckforge-producer-studio";
 const ProjectIntelligenceEngine = window.ProjectIntelligence;
+const MemoryEngine = window.ProducerMemory;
 const RecommendationEngine = window.ContextualRecommendations;
 const MissionEngine = window.CreativeMissions;
 const projectContext = ProjectIntelligenceEngine.getProjectContext();
@@ -192,6 +194,8 @@ const producerStudioState = {
   pendingRecommendationRejectionId: null,
   lastDismissedRecommendationId: null,
   missionCatalogExpanded: false,
+  memoryExclusions: new Set(),
+  lastMemoryId: null,
   promptDomains: { ditc: true, decks: true, smartMix: true, beatForge: true, harmonyLab: true, pads: true, stems: true, arrangement: true, mixtape: true, aiHistory: true },
   pendingStaleAction: null,
   contextUnsubscribe: null
@@ -199,6 +203,7 @@ const producerStudioState = {
 let projectIntelligenceReady = false;
 let recommendationEngineReady = false;
 let missionEngineReady = false;
+let producerMemoryReady = false;
 
 const AudioIdentificationService = {
   providers: [],
@@ -3343,6 +3348,77 @@ async function handleRecommendationPromptCommand(prompt) {
   return true;
 }
 
+function interpretExplicitMemory(text) {
+  const raw = String(text || "").trim();
+  const lower = raw.toLowerCase();
+  const bpm = lower.match(/(?:between|from)\s+(\d{2,3})\s+(?:and|to)\s+(\d{2,3})\s*bpm|\b(\d{2,3})\s*(?:-|–|to)\s*(\d{2,3})\s*bpm/);
+  if (bpm) { const min = Number(bpm[1] || bpm[3]), max = Number(bpm[2] || bpm[4]); return { category: "Project Identity", key: "bpm-range", value: { min: Math.min(min, max), max: Math.max(min, max), unit: "BPM" }, summary: `Preferred project tempo: ${Math.min(min, max)}–${Math.max(min, max)} BPM` }; }
+  const transition = ["smooth blend", "smooth transition", "smooth", "quick cut", "echo out", "bass swap", "long blend"].find((value) => lower.includes(value));
+  if (transition && /transition|blend|cut/.test(lower)) { const label = transition === "smooth" || transition === "smooth transition" ? "Smooth Blend" : transition.replace(/\b\w/g, (letter) => letter.toUpperCase()); return { category: "Transition Preferences", key: "transition-style", value: label, summary: `Preferred transition style: ${label}` }; }
+  if (/intro/.test(lower) && /cinematic/.test(lower)) return { category: "Arrangement Preferences", key: "intro-style", value: "Cinematic", summary: "Preferred intro direction: Cinematic" };
+  const ending = lower.match(/(?:preferred )?(?:ending|outro)(?: should be| to)? (?:a )?(.+?)(?:\.|$)/);
+  if (ending) return { category: "Arrangement Preferences", key: "outro-style", value: ending[1].trim().replace(/\b\w/g, (letter) => letter.toUpperCase()), summary: `Preferred ending: ${ending[1].trim()}` };
+  if (/do not want|avoid|do not use|never use/.test(lower) && /trap/.test(lower) && /drum|hat/.test(lower)) return { category: "Avoidances", key: "beat-forge-style", value: "Trap drums", summary: "Avoid Trap drums in this project" };
+  if (/do not use|avoid|never use/.test(lower) && /sports/.test(lower) && /clip|pad/.test(lower)) return { category: "Avoidances", key: "pad-category", value: "Sports", summary: "Avoid Sports clips in this project" };
+  if (/rhodes/.test(lower)) return { category: /avoid|do not/.test(lower) ? "Avoidances" : "Harmony Lab Preferences", key: "harmony-instrument", value: "Warm Rhodes", summary: `${/avoid|do not/.test(lower) ? "Avoid" : "Preferred Harmony instrument:"} Warm Rhodes` };
+  if (/local[- ]only|only local/.test(lower)) return { category: "DJ Preferences", key: "local-only", value: true, summary: "Prefer local playable tracks" };
+  if (/four[- ]bar|4[- ]bar/.test(lower) && /pattern/.test(lower)) return { category: "Beat Forge Preferences", key: "pattern-length", value: 4, summary: "Preferred Beat Forge pattern length: 4 bars" };
+  const statement = raw.replace(/^.*?remember(?: that)?\s+/i, "").replace(/[.!]+$/, "");
+  return { category: "User-Confirmed Facts", key: statement.slice(0, 60), value: statement, summary: statement };
+}
+
+function memoryPromptSummary() {
+  if (!producerMemoryReady) return { projectId: producerStudioState.projectId, count: 0, preferences: [] };
+  return MemoryEngine.getMemorySummary(producerStudioState.projectId, { excludeCategories: [...producerStudioState.memoryExclusions] });
+}
+
+function resetPromptMemoryExclusions() {
+  producerStudioState.memoryExclusions.clear();
+  document.querySelectorAll("[data-memory-exclusion]").forEach((input) => { input.checked = false; });
+  renderMemoryContextPreview();
+}
+
+async function handleProducerMemoryPromptCommand(prompt) {
+  if (!producerMemoryReady) return false;
+  const lower = prompt.toLowerCase().trim();
+  if (/show me what you remember|what do you remember|show (the )?project memory/.test(lower)) {
+    const summary = MemoryEngine.getMemorySummary(producerStudioState.projectId);
+    renderRecommendationPromptResponse(prompt, null, summary.preferences.length ? summary.preferences.map((item) => ({ title: item.summary, detail: `${item.category} · ${item.status} · ${item.confidence}` })) : [{ title: "No project memory yet", detail: "DeckForge has not stored any project preferences." }]);
+    document.querySelector("#producerMemoryTitle")?.scrollIntoView({ block: "start" });
+    return true;
+  }
+  if (/use this as a default for future projects|make this a user default/.test(lower)) {
+    const success = producerStudioState.lastMemoryId && MemoryEngine.promoteToUserDefault(producerStudioState.lastMemoryId);
+    renderRecommendationPromptResponse(prompt, null, [{ title: success ? "Saved as a user default" : "No confirmed memory to promote", detail: success ? "This was explicitly copied to User Defaults; project memory remains unchanged." : "Confirm or create a project memory first." }]);
+    return true;
+  }
+  if (/^forget\b/.test(lower)) {
+    const needle = lower.replace(/^forget (?:the )?(?:preference for )?/, "").replace(/[.!]+$/, "");
+    const memory = MemoryEngine.getProjectMemories(producerStudioState.projectId).find((item) => `${item.key} ${item.value} ${item.summary}`.toLowerCase().includes(needle));
+    const forgotten = memory && MemoryEngine.forgetMemory(memory.memoryId);
+    renderRecommendationPromptResponse(prompt, null, [{ title: forgotten ? "Project memory forgotten" : "Memory not found", detail: forgotten ? forgotten.summary : `No active project memory matched “${needle}”.` }]);
+    return true;
+  }
+  const changeEnding = /^change\b/.test(lower) && /ending|outro/.test(lower);
+  const explicit = /\bremember(?: that)?\b/.test(lower) || /^(?:do not use|never use)/.test(lower) || changeEnding;
+  if (!explicit) return false;
+  const interpreted = interpretExplicitMemory(prompt);
+  if (changeEnding) {
+    const existing = MemoryEngine.getProjectMemories(producerStudioState.projectId).find((item) => item.category === interpreted.category && item.key === interpreted.key);
+    if (existing) {
+      const edited = MemoryEngine.editMemory(existing.memoryId, interpreted.value, interpreted.summary);
+      producerStudioState.lastMemoryId = edited.memoryId;
+      renderRecommendationPromptResponse(prompt, null, [{ title: "Project memory updated", detail: edited.summary }]);
+      return true;
+    }
+  }
+  const memory = MemoryEngine.proposeMemory({ ...interpreted, source: "Explicit Prompt Studio instruction", userConfirmed: true, status: "Confirmed", confidence: 1 });
+  producerStudioState.lastMemoryId = memory.memoryId;
+  const conflict = memory.status === "Conflicted";
+  renderRecommendationPromptResponse(prompt, null, [{ title: conflict ? "Memory conflict needs your choice" : "Remembered for this project", detail: conflict ? `${memory.summary} conflicts with an existing confirmed preference. Use the Producer Memory panel to replace the previous memory or keep both as contextual options.` : `${memory.summary} · Scope: This Project` }]);
+  return true;
+}
+
 async function handleMissionPromptCommand(prompt) {
   if (!missionEngineReady) return false;
   const lower = prompt.toLowerCase();
@@ -3407,6 +3483,7 @@ async function handleMissionPromptCommand(prompt) {
   const mission = MissionEngine.createMission(type, { source: "Prompt Studio", userGoal: prompt });
   renderRecommendationPromptResponse(prompt, null, [{ title: `Mission draft: ${mission.title}`, detail: `DeckForge interpreted this as ${mission.title}. Review the goal and choose Create Plan; no project changes were applied.` }]);
   renderProducerMissions();
+  renderProducerMemory();
   document.querySelector("#activeMissionPanel")?.scrollIntoView({ block: "start" });
   return true;
 }
@@ -3414,24 +3491,30 @@ async function handleMissionPromptCommand(prompt) {
 async function generateAiPlan() {
   const prompt = document.querySelector("#aiPrompt").value.trim();
   if (!prompt) return;
+  if (await handleProducerMemoryPromptCommand(prompt)) return;
   if (await handleMissionPromptCommand(prompt)) return;
   if (await handleRecommendationPromptCommand(prompt)) return;
   emitProjectContextChange("AI", "prompt-submitted", { summary: "Submitted a Producer Studio prompt", decision: { domain: "AI", action: "Prompt submitted", summary: prompt, initiatedBy: "user" } });
   const includedDomains = selectedPromptContextDomains();
   const intelligenceSummary = ProjectIntelligenceEngine.getContextSummary({ include: ["project", ...includedDomains] });
   intelligenceSummary.recommendations = recommendationEngineReady ? RecommendationEngine.getPromptSummary() : [];
+  intelligenceSummary.producerMemory = memoryPromptSummary();
   const context = collectAiContext();
   context.projectIntelligence = intelligenceSummary;
   context.recommendations = intelligenceSummary.recommendations;
+  context.producerMemory = intelligenceSummary.producerMemory;
   aiPlanState = buildLocalAiPlan(prompt, context);
   aiPlanState.contextVersion = intelligenceSummary.contextVersion;
   aiPlanState.projectContext = intelligenceSummary;
   aiPlanState.includedContextDomains = [...includedDomains];
+  aiPlanState.memoryUsed = intelligenceSummary.producerMemory;
+  if (producerMemoryReady) MemoryEngine.recordMemoryUse(intelligenceSummary.producerMemory.preferences.map((item) => item.memoryId));
   rememberProducerPrompt(prompt);
   renderAiPlan(aiPlanState);
   document.querySelector("#applyAiPlan").disabled = false;
   document.querySelector("#startAiMix").disabled = !(aiPlanState.tags.mixtape || aiPlanState.tags.liveSet);
   resetPromptContextDomains();
+  resetPromptMemoryExclusions();
 }
 
 async function analyzeMixtapeInspiration() {
@@ -4581,6 +4664,8 @@ function applyMixtapeBlueprintAsPlan() {
 
 function buildLocalAiPlan(prompt, context) {
   const text = prompt.toLowerCase();
+  const memoryPreferences = context.producerMemory?.preferences || [];
+  const memoryValue = (category, key) => memoryPreferences.find((item) => item.category === category && item.key === key)?.value;
   const tags = {
     jungle: /jungle|breakbeat|drum.?and.?bass|dnb|goldie|everything but the girl/.test(text),
     house: /house|garage|club|dance|four on the floor|909/.test(text),
@@ -4600,10 +4685,17 @@ function buildLocalAiPlan(prompt, context) {
   tags.render = /render|export|finished mix|record/.test(text);
   tags.beatmatch = /beat.?match|sync|tempo match|matched/.test(text);
   tags.interpolate = /interpolate|mash.?up|blend these|vocal drop|instrumental fade/.test(text);
-  const bpm = inferPromptBpm(text, tags, context.bpm);
+  const rememberedGroove = memoryValue("Beat Forge Preferences", "preferred-groove");
+  const explicitDrumDirection = /jungle|breakbeat|house|garage|trap|808|boom.?bap|dusty|soul|funk|new wave/.test(text);
+  if (!explicitDrumDirection && /boom|bap|dusty|loose/i.test(rememberedGroove || "")) tags.boomBap = true;
+  if (!explicitDrumDirection && /house|four/i.test(rememberedGroove || "")) tags.house = true;
+  const bpmRangeMemory = memoryValue("Project Identity", "bpm-range");
+  const explicitBpm = /\b([6-9]\d|1[0-8]\d)\s*bpm\b/.test(text);
+  const bpm = !explicitBpm && bpmRangeMemory?.min && bpmRangeMemory?.max ? Math.round((Number(bpmRangeMemory.min) + Number(bpmRangeMemory.max)) / 2) : inferPromptBpm(text, tags, context.bpm);
   const drumPreset = pickDrumPreset(tags);
   const drumMachine = pickDrumMachine(tags);
-  const synthPreset = pickSynthPreset(tags);
+  const preferredHarmony = memoryValue("Harmony Lab Preferences", "harmony-instrument");
+  const synthPreset = (!/rhodes|piano|organ|synth|pad|keys/.test(text) && preferredHarmony ? instrumentPresets.find((preset) => preset.name.toLowerCase().includes(String(preferredHarmony).toLowerCase().replace("warm ", ""))) : null) || pickSynthPreset(tags);
   const synthMachine = pickSynthMachine(tags);
   const stemIdeas = planStemUsage(context, tags);
   const padIdeas = planPadUsage(context, tags);
@@ -4622,7 +4714,9 @@ function buildLocalAiPlan(prompt, context) {
     synthPreset,
     synthMachine,
     executableActions,
+    memoryUsed: context.producerMemory,
     steps: [
+      ...(memoryPreferences.length ? [{ title: "Producer Memory Defaults", detail: memoryPreferences.map((memory) => memory.summary).join(" · ") } ] : []),
       { title: "Track Analysis", detail: analysisIdeas },
       { title: "Tempo & Pocket", detail: `Set tempo to ${bpm} BPM. Use ${drumMachine.name} with ${drumPreset.name} for the rhythmic center.` },
       { title: "Deck Arrangement", detail: deckIdeas },
@@ -5062,7 +5156,10 @@ function parseSmartMixPrompt(rawPrompt) {
     transitionTrigger = `Next ${barsUntilTransition}-bar boundary`;
     warnings.push(`${section[0].toUpperCase() + section.slice(1)} detection is unavailable, using the next ${barsUntilTransition}-bar boundary.`);
   }
-  const style = supportedPromptStyle(text);
+  const hasExplicitStyle = /quick|cut|smooth|blend|filter|echo|bass swap|long blend/.test(text);
+  const rememberedTransitionStyle = projectMemoryValue("Transition Preferences", "transition-style");
+  const style = supportedPromptStyle(!hasExplicitStyle && rememberedTransitionStyle ? `${text} ${rememberedTransitionStyle}` : text);
+  if (!hasExplicitStyle && rememberedTransitionStyle) warnings.push(`Using confirmed Producer Memory default: ${rememberedTransitionStyle}.`);
   if (/echo/.test(text)) { unsupported.push("True echo processing is not available yet"); warnings.push("Echo-out is unavailable, using a quick filter-assisted blend."); style.style = "filter-sweep"; style.label = "Filter-assisted quick blend"; }
   if (/acapella|stem\s*swap/.test(text)) unsupported.push("Independent stem routing is not available in Smart Mix");
   if (/keep.*vocal.*over|vocal.*over.*intro/.test(text)) { unsupported.push("Outgoing vocal overlays require independent stem routing"); warnings.push("Vocal overlay routing is unavailable, using a full-mix blend."); }
@@ -7088,6 +7185,7 @@ function snapshotHarmony(label = "Edit") {
 function touchHarmony(source = "Manual") {
   instrument.pattern.version += 1; instrument.pattern.source = source; saveHarmonyState(); renderHarmonyLab();
   const generated = /AI Composer|Harmony Match|Live Recording|Apply/i.test(source);
+  if (producerMemoryReady && generated) MemoryEngine.observePreference({ category: "Harmony Lab Preferences", key: "harmony-instrument", value: getInstrumentPreset().name, summary: `Preferred Harmony Lab instrument: ${getInstrumentPreset().name}`, evidenceLabel: source, threshold: 4 });
   emitProjectContextChange("harmonyLab", "harmony-pattern-changed", { summary: `${instrument.pattern.name} updated from ${source}`, decision: generated ? { domain: "Harmony Lab", action: /Live/.test(source) ? "Harmony recorded" : "Harmony generated", summary: `${instrument.pattern.name}: ${instrument.pattern.notes.length} notes in ${instrument.key} ${instrument.scale}`, after: { pattern: instrument.pattern.name, notes: instrument.pattern.notes.length, key: instrument.key, scale: instrument.scale, source }, initiatedBy: /AI|Match/.test(source) ? "AI" : "user" } : null });
 }
 
@@ -7480,6 +7578,7 @@ function touchDrumPattern(source = "User Edited") {
   renderBeatForgeSummary();
   renderBeatDiagnostics();
   const generated = /AI|Groove Applied|Imported|Live Recording|Prompt|Match/i.test(source);
+  if (producerMemoryReady && /AI|Groove Applied|Prompt|Match/i.test(source)) MemoryEngine.observePreference({ category: "Beat Forge Preferences", key: "preferred-groove", value: activeDrumGroove().name, summary: `Preferred Beat Forge groove: ${activeDrumGroove().name}`, evidenceLabel: source, threshold: 4 });
   emitProjectContextChange("beatForge", "beat-pattern-changed", { summary: `${drums.name} updated from ${source}`, decision: generated ? { domain: "Beat Forge", action: /Groove/.test(source) ? "Groove applied" : "Pattern generated", summary: `${drums.name}: ${drums.groove} groove, version ${drums.version}`, after: { pattern: drums.name, groove: drums.groove, version: drums.version, source }, initiatedBy: /AI|Prompt|Match/.test(source) ? "AI" : "user" } : null });
 }
 
@@ -8022,9 +8121,12 @@ function createSeededGenerator(seed) { let state = seed >>> 0; return () => { st
 
 function inferBeatPrompt(prompt) {
   const lower = prompt.toLowerCase();
-  const style = beatStyles.find((item) => lower.includes(item.toLowerCase().replace("-", " "))) || (lower.includes("cinematic") ? "Cinematic Trap" : lower.includes("trap") ? "Trap" : lower.includes("house") ? "House" : lower.includes("garage") ? "Garage" : lower.includes("break") ? "Breakbeat" : lower.includes("r&b") ? "R&B" : "Boom Bap");
+  const rememberedGroove = projectMemoryValue("Beat Forge Preferences", "preferred-groove");
+  const rememberedBars = Number(projectMemoryValue("Beat Forge Preferences", "pattern-length"));
+  const rememberedStyle = /house/i.test(rememberedGroove || "") ? "House" : /break|jungle/i.test(rememberedGroove || "") ? "Breakbeat" : /boom|bap|dusty|loose/i.test(rememberedGroove || "") ? "Boom Bap" : null;
+  const style = beatStyles.find((item) => lower.includes(item.toLowerCase().replace("-", " "))) || (lower.includes("cinematic") ? "Cinematic Trap" : lower.includes("trap") ? "Trap" : lower.includes("house") ? "House" : lower.includes("garage") ? "Garage" : lower.includes("break") ? "Breakbeat" : lower.includes("r&b") ? "R&B" : rememberedStyle || "Boom Bap");
   const bpmMatch = lower.match(/\b(\d{2,3})\s*bpm\b/); const section = ["intro", "verse", "hook", "breakdown", "transition", "outro"].find((item) => lower.includes(item)) || drums.section.toLowerCase();
-  return { style, bpm: bpmMatch ? Math.max(60, Math.min(190, Number(bpmMatch[1]))) : Number(document.querySelector("#globalBpm")?.value) || 124, section: section[0].toUpperCase() + section.slice(1), bars: lower.includes("eight-bar") || lower.includes("8 bar") ? 8 : lower.includes("four-bar") || lower.includes("4 bar") ? 4 : Math.max(2, drums.bars), preserveKick: /keep|preserve/.test(lower) && lower.includes("kick"), preserveSnare: /keep|preserve/.test(lower) && lower.includes("snare"), hatsOnly: /hat/.test(lower) && /(only|regenerate)/.test(lower), preserveBars12: /preserve bars? 1( and| &) 2/.test(lower), keepKit: lower.includes("keep") && lower.includes("kit"), keepGroove: lower.includes("keep") && lower.includes("groove") };
+  return { style, bpm: bpmMatch ? Math.max(60, Math.min(190, Number(bpmMatch[1]))) : Number(document.querySelector("#globalBpm")?.value) || 124, section: section[0].toUpperCase() + section.slice(1), bars: lower.includes("eight-bar") || lower.includes("8 bar") ? 8 : lower.includes("four-bar") || lower.includes("4 bar") ? 4 : rememberedBars || Math.max(2, drums.bars), preserveKick: /keep|preserve/.test(lower) && lower.includes("kick"), preserveSnare: /keep|preserve/.test(lower) && lower.includes("snare"), hatsOnly: /hat/.test(lower) && /(only|regenerate)/.test(lower), preserveBars12: /preserve bars? 1( and| &) 2/.test(lower), keepKit: lower.includes("keep") && lower.includes("kit"), keepGroove: lower.includes("keep") && lower.includes("groove") };
 }
 
 function generateBeatPattern(style, bars, seed, density = 1) {
@@ -8279,6 +8381,15 @@ function contextEvidence(value, options = {}) {
   };
 }
 
+function projectMemoryEntry(category, key) {
+  if (!producerMemoryReady) return null;
+  return MemoryEngine.getRelevantMemories({}, { limit: 100 }).find((memory) => memory.category === category && memory.key === key) || null;
+}
+
+function projectMemoryValue(category, key) {
+  return projectMemoryEntry(category, key)?.value ?? null;
+}
+
 function camelotKey(key) {
   const normalized = String(key || "").toLowerCase().replace(/\s+/g, " ").trim();
   const map = { "c major": "8B", "g major": "9B", "d major": "10B", "a major": "11B", "e major": "12B", "b major": "1B", "f# major": "2B", "gb major": "2B", "db major": "3B", "c# major": "3B", "ab major": "4B", "eb major": "5B", "bb major": "6B", "f major": "7B", "a minor": "8A", "e minor": "9A", "b minor": "10A", "f# minor": "11A", "gb minor": "11A", "c# minor": "12A", "db minor": "12A", "g# minor": "1A", "ab minor": "1A", "d# minor": "2A", "eb minor": "2A", "bb minor": "3A", "a# minor": "3A", "f minor": "4A", "c minor": "5A", "g minor": "6A", "d minor": "7A" };
@@ -8343,20 +8454,23 @@ function projectIdentityModel() {
   const harmonyKey = instrument.pattern.notes.length ? `${instrument.key} ${instrument.scale}` : null;
   const keyValue = deckKey || harmonyKey;
   const analyzedBpms = analyzed.map((analysis) => Number(analysis.bpm)).filter(Number.isFinite);
-  const genreValue = producerStudioState.genre || genreResult.value;
-  const genreConfirmed = Boolean(producerStudioState.genre);
+  const genreMemory = projectMemoryEntry("Project Identity", "genre");
+  const bpmMemory = projectMemoryEntry("Project Identity", "bpm-range");
+  const transitionMemory = projectMemoryEntry("Transition Preferences", "transition-style");
+  const genreValue = genreMemory?.value || producerStudioState.genre || genreResult.value;
+  const genreConfirmed = Boolean(genreMemory?.userConfirmed || producerStudioState.genre);
   const identity = {
-    genre: contextEvidence(genreValue, { confidence: genreConfirmed ? 100 : genreResult.total ? genreResult.count / genreResult.total * 100 : 0, source: genreConfirmed ? "User confirmed" : genreResult.total ? "Analyzed decks and DITC tracks" : "Not set", userConfirmed: genreConfirmed, conflictingEvidence: genreResult.conflicts }),
+    genre: contextEvidence(genreValue, { confidence: genreConfirmed ? 100 : genreResult.total ? genreResult.count / genreResult.total * 100 : 0, source: genreMemory ? "Confirmed Producer Memory" : genreConfirmed ? "User confirmed project identity" : genreResult.total ? "Current-content analysis" : "Not set", userConfirmed: genreConfirmed, conflictingEvidence: genreResult.conflicts }),
     subgenre: contextEvidence(producerStudioState.subgenre, { source: producerStudioState.subgenre ? "User confirmed" : "Not set", userConfirmed: Boolean(producerStudioState.subgenre) }),
     era: contextEvidence(producerStudioState.era, { source: producerStudioState.era ? "User confirmed" : "Not set", userConfirmed: Boolean(producerStudioState.era) }),
     region: contextEvidence(producerStudioState.region, { source: producerStudioState.region ? "User confirmed" : "Not set", userConfirmed: Boolean(producerStudioState.region) }),
     mood: contextEvidence(producerStudioState.mood || moodResult.value, { confidence: producerStudioState.mood ? 100 : moodResult.total ? moodResult.count / moodResult.total * 100 : 0, source: producerStudioState.mood ? "User confirmed" : moodResult.total ? "Analyzed tracks" : "Not set", userConfirmed: Boolean(producerStudioState.mood), conflictingEvidence: moodResult.conflicts }),
     energy: contextEvidence(producerStudioState.energy || energyResult.value, { confidence: producerStudioState.energy ? 100 : energyResult.total ? energyResult.count / energyResult.total * 100 : 0, source: producerStudioState.energy ? "User confirmed" : energyResult.total ? "Analyzed tracks" : "Not set", userConfirmed: Boolean(producerStudioState.energy), conflictingEvidence: energyResult.conflicts }),
-    bpmRange: contextEvidence(analyzedBpms.length ? `${Math.min(...analyzedBpms)}–${Math.max(...analyzedBpms)} BPM` : null, { confidence: analyzedBpms.length ? 90 : 0, source: analyzedBpms.length ? "Analyzed decks and DITC tracks" : "Not analyzed" }),
+    bpmRange: contextEvidence(bpmMemory?.value ? `${bpmMemory.value.min}–${bpmMemory.value.max} BPM` : analyzedBpms.length ? `${Math.min(...analyzedBpms)}–${Math.max(...analyzedBpms)} BPM` : null, { confidence: bpmMemory ? 100 : analyzedBpms.length ? 90 : 0, source: bpmMemory ? "Confirmed Producer Memory" : analyzedBpms.length ? "Analyzed decks and DITC tracks" : "Not analyzed", userConfirmed: Boolean(bpmMemory?.userConfirmed) }),
     keyCenter: contextEvidence(keyValue, { confidence: deckKey ? 88 : harmonyKey ? 100 : 0, source: deckKey ? "Loaded deck analysis" : harmonyKey ? "Active Harmony Lab material" : "Not analyzed" }),
     influences: contextEvidence(mixtapeInspirationState?.structure?.theme || null, { confidence: mixtapeInspirationState ? 80 : 0, source: mixtapeInspirationState ? "Reference mixtape analysis" : "Not set" }),
     themes: contextEvidence(mixtapeInspirationState?.structure?.sampleWorld || null, { confidence: mixtapeInspirationState ? 75 : 0, source: mixtapeInspirationState ? "Reference mixtape analysis" : "Not set" }),
-    preferredTransitions: contextEvidence(tempoSafetyPreferences.transitionPreference || null, { confidence: 100, source: "Configured tempo safety preference" }),
+    preferredTransitions: contextEvidence(transitionMemory?.value || tempoSafetyPreferences.transitionPreference || null, { confidence: transitionMemory ? 100 : 100, source: transitionMemory ? "Confirmed Producer Memory" : "Configured tempo safety preference", userConfirmed: Boolean(transitionMemory?.userConfirmed) }),
     preferredDrumFeel: contextEvidence(drums.source !== "Preset" ? drums.groove : null, { confidence: drums.source !== "Preset" ? 85 : 0, source: drums.source !== "Preset" ? "Active created Beat Forge pattern" : "Not set" }),
     preferredHarmony: contextEvidence(instrument.pattern.notes.length ? `${instrument.key} ${instrument.scale}` : null, { confidence: instrument.pattern.notes.length ? 90 : 0, source: instrument.pattern.notes.length ? "Active Harmony Lab pattern" : "Not set" }),
     preferredClipsOrPads: contextEvidence(sampler.buffers.some(Boolean) ? sampler.names.filter((_, index) => sampler.buffers[index]).slice(0, 8) : null, { confidence: sampler.buffers.some(Boolean) ? 100 : 0, source: sampler.buffers.some(Boolean) ? "Active pad bank" : "Not set" })
@@ -8543,7 +8657,8 @@ function buildProjectIntelligenceSnapshot() {
       recordingStatus: AudioEngine.recorder?.state === "recording" ? "Recording" : AudioEngine.mixUrl ? "Take ready" : "Not recording"
     },
     aiHistory: { ...previousHistory, recentSummary },
-    creativePreferences: { transitionPreference: tempoSafetyPreferences.transitionPreference, preferredTempoShift: tempoSafetyPreferences.preferredShift, warningThreshold: tempoSafetyPreferences.warningThreshold, absoluteMaximumShift: tempoSafetyPreferences.absoluteMaximumShift, preserveIncomingBpm: tempoSafetyPreferences.preserveIncomingBpm },
+    creativePreferences: { transitionPreference: projectMemoryValue("Transition Preferences", "transition-style") || tempoSafetyPreferences.transitionPreference, preferredTempoShift: tempoSafetyPreferences.preferredShift, warningThreshold: tempoSafetyPreferences.warningThreshold, absoluteMaximumShift: tempoSafetyPreferences.absoluteMaximumShift, preserveIncomingBpm: tempoSafetyPreferences.preserveIncomingBpm },
+    producerMemory: producerMemoryReady ? MemoryEngine.getMemorySummary(producerStudioState.projectId) : { projectId: producerStudioState.projectId, count: 0, preferences: [] },
     systemStatus: {
       activeModules: [sourceFiles.length && "DITC", (deckState.a.buffer || deckState.b.buffer) && "Decks", autoMixState.running && "Smart Mix", assignedPads.length && "Pads", drums.source !== "Preset" && "Beat Forge", instrument.pattern.notes.length && "Harmony Lab", stemState.stems.length && "Stems", arrangement.clipCount && "Arrangement", mixtapeInspirationState && "Mixtape Analyzer"].filter(Boolean),
       missingContext,
@@ -8564,6 +8679,24 @@ function initializeProjectIntelligence() {
     if (recommendationEngineReady) RecommendationEngine.scheduleRefresh("Project context updated");
     if (document.querySelector("#ai")?.classList.contains("is-active")) renderProducerStudio({ sync: false });
     renderProjectIntelligenceDiagnostics();
+  });
+}
+
+function initializeProducerMemory() {
+  MemoryEngine.configure({ projectId: producerStudioState.projectId });
+  producerMemoryReady = true;
+  MemoryEngine.subscribe((memories, meta) => {
+    const label = meta?.memory?.summary || "project memory";
+    const action = String(meta?.type || "updated").replace(/-/g, " ");
+    if (projectIntelligenceReady) emitProjectContextChange("producerMemory", `memory-${meta?.type || "updated"}`, { summary: `Producer Memory ${action}: ${label}`, decision: { domain: "Producer Memory", action: `Memory ${action}`, summary: `Producer Memory ${action}: ${label}`, initiatedBy: "user" } });
+    if (recommendationEngineReady) RecommendationEngine.scheduleRefresh("Producer Memory updated");
+    renderProducerMemory(); renderMemoryContextPreview(); renderProducerMemoryDiagnostics();
+    if (missionEngineReady) renderProducerMissions();
+  });
+  MemoryEngine.getProjectMemories(producerStudioState.projectId).forEach((memory) => {
+    if (memory.category === "Beat Forge Preferences" && /drum-kit/.test(memory.key) && !drumMachines.some((item) => item.name === memory.value)) MemoryEngine.markUnresolved(memory.memoryId, `Preferred kit “${memory.value}” is no longer available.`);
+    if (memory.category === "Harmony Lab Preferences" && /instrument/.test(memory.key) && !instrumentPresets.some((item) => item.name === memory.value || String(memory.value).includes(item.name))) MemoryEngine.markUnresolved(memory.memoryId, `Preferred instrument “${memory.value}” is no longer available.`);
+    if (memory.category === "Pad Preferences" && memory.key === "pad-bank" && !sampler.banks[memory.value]) MemoryEngine.markUnresolved(memory.memoryId, `Pad Bank ${memory.value} is no longer available.`);
   });
 }
 
@@ -8601,7 +8734,8 @@ async function executeContextualRecommendationAction(actionId, recommendation, o
   if (actionId === "open-mixtape-analysis") { producerStudioState.mode = "advanced"; switchView("ai"); document.querySelector("#mixtapeInspirationNotes")?.closest("details")?.setAttribute("open", ""); return { success: true, message: "Opened the reference mixtape blueprint." }; }
   if (actionId === "smart-safe-transition") {
     switchView("decks");
-    document.querySelector("#smartMixPrompt").value = "Use a short filter handoff or quick cut at original tempo in 8 bars. Keep the active deck tempo and avoid a long blend.";
+    const rememberedStyle = recommendation.memoryDefaults?.find((item) => item.enabled !== false && item.category === "Transition Preferences" && item.key === "transition-style")?.value;
+    document.querySelector("#smartMixPrompt").value = rememberedStyle ? `Use a ${rememberedStyle} in 8 bars while keeping tempo safety active. Keep the active deck tempo.` : "Use a short filter handoff or quick cut at original tempo in 8 bars. Keep the active deck tempo and avoid a long blend.";
     planSmartPrompt();
     if (!smartPromptState.plan) return { success: false, message: "Smart Mix could not build a transition plan from the current decks." };
     if (smartPromptState.plan.requiresSaferPlan) {
@@ -8669,7 +8803,7 @@ async function executeContextualRecommendationAction(actionId, recommendation, o
 }
 
 function initializeRecommendationEngine() {
-  RecommendationEngine.configure({ projectId: producerStudioState.projectId, getContext: () => ProjectIntelligenceEngine.getProjectContext(), executeAction: executeContextualRecommendationAction });
+  RecommendationEngine.configure({ projectId: producerStudioState.projectId, getContext: () => ProjectIntelligenceEngine.getProjectContext(), getMemorySummary: () => producerMemoryReady ? MemoryEngine.getMemorySummary(producerStudioState.projectId) : { preferences: [] }, executeAction: executeContextualRecommendationAction });
   recommendationEngineReady = true;
   RecommendationEngine.subscribe((recommendations, meta) => {
     if (document.querySelector("#ai")?.classList.contains("is-active")) renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext(), recommendations);
@@ -8772,6 +8906,7 @@ function renderProducerSuggestions(context, suppliedRecommendations = null) {
     const evidence = item.evidence.map((entry) => `<li><span>${escapeHtml(entry.label)}</span><strong>${escapeHtml(entry.value)}</strong></li>`).join("");
     const advanced = Object.entries(item.advancedDetails || {}).map(([key, value]) => `<li><span>${escapeHtml(key.replace(/([A-Z])/g, " $1"))}</span><strong>${escapeHtml(value)}</strong></li>`).join("");
     const alternatives = item.alternativeActions.map((action) => `<li><span>Alternative</span><strong>${escapeHtml(action.label)}</strong></li>`).join("");
+    const memoryEvidence = (item.memoryInfluence || []).map((memory) => `<li><span>Producer Memory</span><strong>${escapeHtml(memory.summary)}</strong></li>`).join("");
     const primary = item.applyCapability.available
       ? `<button data-suggestion-action="apply" class="is-primary">${escapeHtml(applied ? "Applied" : item.applyCapability.label || "Apply")}</button>`
       : item.suggestedAction ? `<button data-suggestion-action="navigate" class="is-primary">${escapeHtml(item.suggestedAction.label)}</button>` : "";
@@ -8780,7 +8915,7 @@ function renderProducerSuggestions(context, suppliedRecommendations = null) {
       <h4 id="recommendation-title-${index}">${escapeHtml(item.title)}</h4><p>${escapeHtml(item.summary)}</p>
       <p class="producer-expected-impact"><span>Expected effect</span>${escapeHtml(item.expectedImpact)}</p>
       ${item.applyCapability.available ? `<small class="recommendation-affected">Affects: ${escapeHtml((item.suggestedAction?.affectedDomains || [item.domain]).join(", "))}</small>` : ""}
-      <div class="producer-card-explanation" hidden><p><strong>Why it matters:</strong> ${escapeHtml(item.explanation)}</p><ul class="recommendation-evidence">${evidence}${alternatives}</ul>${item.learningNote ? `<p><strong>Learning note:</strong> ${escapeHtml(item.learningNote)}</p>` : ""}${advanced ? `<ul class="recommendation-evidence producer-advanced-only">${advanced}</ul>` : ""}${!item.previewCapability.available ? `<p><strong>Preview unavailable:</strong> ${escapeHtml(item.previewCapability.reason)}</p>` : ""}<small>Context v${item.contextVersion} · ${escapeHtml(item.confidenceBasis)}</small></div>
+      <div class="producer-card-explanation" hidden><p><strong>Why it matters:</strong> ${escapeHtml(item.explanation)}</p><ul class="recommendation-evidence">${evidence}${memoryEvidence}${alternatives}</ul>${item.learningNote ? `<p><strong>Learning note:</strong> ${escapeHtml(item.learningNote)}</p>` : ""}${advanced ? `<ul class="recommendation-evidence producer-advanced-only">${advanced}</ul>` : ""}${!item.previewCapability.available ? `<p><strong>Preview unavailable:</strong> ${escapeHtml(item.previewCapability.reason)}</p>` : ""}<small>Context v${item.contextVersion} · ${escapeHtml(item.confidenceBasis)}</small></div>
       ${item.warnings.length ? `<p class="recommendation-warning">${escapeHtml(item.warnings.join(" "))}</p>` : ""}
       <div class="producer-card-actions">
         ${item.previewCapability.available ? `<button data-suggestion-action="preview">${escapeHtml(item.previewCapability.label || "Preview")}</button>` : ""}
@@ -8816,6 +8951,9 @@ function renderActiveMission() {
   document.querySelector("#activeMissionTitle").textContent = mission.title;
   document.querySelector("#activeMissionDescription").textContent = mission.userGoal;
   document.querySelector("#activeMissionSummary").innerHTML = `<span>${mission.affectedDomains.map(escapeHtml).join(" · ")}</span><span>${mission.estimatedSteps || "Draft"} step${mission.estimatedSteps === 1 ? "" : "s"}</span><span>${escapeHtml(mission.difficulty)}</span><span>${Math.round(mission.confidence * 100)}% supported</span>`;
+  const memoryDefaults = document.querySelector("#activeMissionMemoryDefaults");
+  const defaults = mission.memoryDefaults || [];
+  memoryDefaults.innerHTML = defaults.length ? `<strong>Defaults from Producer Memory</strong><div>${defaults.map((item) => `<label><input type="checkbox" data-mission-memory-default="${escapeHtml(item.memoryId)}" ${item.enabled ? "checked" : ""}> ${escapeHtml(item.summary)}</label>`).join("")}</div><small>Uncheck a default to override it for this mission only. Project memory will not change.</small>` : "";
   const list = document.querySelector("#activeMissionSteps");
   list.innerHTML = mission.plan.length ? mission.plan.map((item) => `<article class="mission-step status-${item.status.toLowerCase().replace(/\s+/g, "-")}" data-mission-step-id="${escapeHtml(item.stepId)}" tabindex="-1">
     <div class="mission-step-order" aria-hidden="true">${item.order}</div>
@@ -8865,16 +9003,18 @@ async function executeCreativeMissionStep(missionStep, mission, options = {}) {
     return { success: false, message: "This mission step has no reversible before-state." };
   }
   const action = missionStep.actionType;
+  const missionMemory = (category, key) => { const oneTime = mission.userOverrides?.producerMemoryMissionOnly; return oneTime?.category === category && oneTime?.key === key ? oneTime.value : (mission.memoryDefaults || []).find((item) => item.enabled !== false && item.category === category && item.key === key)?.value; };
   if (action === "open-ditc") { switchView("sources"); return { success: true, message: "Opened DITC." }; }
   if (action === "open-decks" || action === "open-recording") { switchView("decks"); return { success: true, message: action === "open-recording" ? "Opened Deck recording controls." : "Opened Decks." }; }
   if (action === "open-pads") { switchView("sampler"); return { success: true, message: "Opened Pads." }; }
   if (action === "open-stems") { switchView("stems"); return { success: true, message: "Opened Stem Lab." }; }
   if (action === "open-arrangement") { switchView("editor"); return { success: true, message: "Opened Arrangement." }; }
-  if (action === "build-transition") return executeContextualRecommendationAction("smart-safe-transition", { relatedPadIds: [], evidence: [] }, { mode: options.mode === "preview" ? "preview" : "apply" });
+  if (action === "build-transition") return executeContextualRecommendationAction("smart-safe-transition", { relatedPadIds: [], evidence: [], memoryDefaults: mission.memoryDefaults || [] }, { mode: options.mode === "preview" ? "preview" : "apply" });
   if (["generate-beat", "generate-intro-beat", "generate-outro-beat"].includes(action)) {
     switchView("drums");
     const input = document.querySelector("#beatPrompt");
-    input.value = action === "generate-intro-beat" ? `Create an 8 bar ${producerStudioState.genre || "project"} intro at ${document.querySelector("#globalBpm")?.value || 124} BPM with a restrained first half` : action === "generate-outro-beat" ? `Create a restrained 8 bar outro at ${document.querySelector("#globalBpm")?.value || 124} BPM with a deliberate ending` : `Create a ${producerStudioState.genre || "project-aware"} groove at ${document.querySelector("#globalBpm")?.value || 124} BPM`;
+    const groove = missionMemory("Beat Forge Preferences", "preferred-groove"); const avoided = missionMemory("Avoidances", "beat-forge-style");
+    input.value = `${action === "generate-intro-beat" ? `Create an 8 bar ${producerStudioState.genre || "project"} intro` : action === "generate-outro-beat" ? "Create a restrained 8 bar outro with a deliberate ending" : `Create a ${producerStudioState.genre || "project-aware"} groove`} at ${document.querySelector("#globalBpm")?.value || 124} BPM${groove ? ` using ${groove}` : ""}${avoided ? ` without ${avoided}` : ""}`;
     buildBeatPromptPlan("new");
     if (options.mode === "preview") { await previewGeneratedBeat(); return { success: true, message: "Previewing the Beat Forge candidate through the registered Beat Forge preview source.", previewSource: "Beat Forge" }; }
     applyBeatPromptPlan();
@@ -8883,7 +9023,9 @@ async function executeCreativeMissionStep(missionStep, mission, options = {}) {
   if (["generate-harmony", "generate-intro-harmony", "generate-outro-harmony"].includes(action)) {
     switchView("keys");
     const input = document.querySelector("#harmonyPrompt");
-    input.value = action === "generate-intro-harmony" ? "Create a cinematic intro pad with restrained movement" : action === "generate-outro-harmony" ? "Create a resolving outro chord progression with a gentle ending" : "Create soulful project-aware chords";
+    const preferredInstrument = missionMemory("Harmony Lab Preferences", "harmony-instrument");
+    if (preferredInstrument) { const preset = instrumentPresets.find((item) => item.name.toLowerCase().includes(String(preferredInstrument).toLowerCase().replace("warm ", ""))); if (preset) instrument.preset = preset.id; }
+    input.value = `${action === "generate-intro-harmony" ? "Create a cinematic intro pad with restrained movement" : action === "generate-outro-harmony" ? "Create a resolving outro chord progression with a gentle ending" : "Create soulful project-aware chords"}${preferredInstrument ? ` using ${preferredInstrument}` : ""}`;
     buildHarmonyPlan(false);
     if (options.mode === "preview") { await previewHarmonyPattern(); return { success: true, message: "Previewing the Harmony Lab candidate through the registered Harmony preview source.", previewSource: "Harmony Lab" }; }
     applyHarmonyPlan();
@@ -8908,6 +9050,7 @@ function initializeMissionEngine() {
   MissionEngine.configure({
     projectId: producerStudioState.projectId,
     getContext: () => ProjectIntelligenceEngine.getProjectContext(),
+    getMemorySummary: () => producerMemoryReady ? MemoryEngine.getMemorySummary(producerStudioState.projectId) : { preferences: [] },
     executeStep: executeCreativeMissionStep,
     onEvent: (event) => recordProducerEvent(event.summary, { domain: "Creative Missions", action: `Mission ${event.type.replace(/-/g, " ")}`, summary: event.summary, initiatedBy: "user" })
   });
@@ -8920,6 +9063,70 @@ function renderCreativeMissionDiagnostics() {
   if (details) details.hidden = !DECKFORGE_DEVELOPMENT;
   const output = document.querySelector("#creativeMissionDiagnosticsOutput");
   if (output && DECKFORGE_DEVELOPMENT && missionEngineReady) output.textContent = JSON.stringify(MissionEngine.getDiagnostics(), null, 2);
+}
+
+const PRODUCER_MEMORY_GROUPS = ["Project Identity", "DJ Preferences", "Transition Preferences", "Beat Forge Preferences", "Harmony Lab Preferences", "Pad Preferences", "Arrangement Preferences", "Recommendation Preferences", "Avoidances", "User-Confirmed Facts", "Inferred Preferences", "Archived Memories"];
+
+function memoryDisplayGroup(memory) {
+  if (memory.status === "Archived") return "Archived Memories";
+  if (["Inferred", "Proposed"].includes(memory.status)) return "Inferred Preferences";
+  return PRODUCER_MEMORY_GROUPS.includes(memory.category) ? memory.category : "User-Confirmed Facts";
+}
+
+function memoryValueLabel(value) {
+  if (value && typeof value === "object") return Object.entries(value).map(([key, item]) => `${key}: ${item}`).join(" · ");
+  if (Array.isArray(value)) return value.join(", ");
+  return String(value);
+}
+
+function renderMemoryContextPreview() {
+  const output = document.querySelector("#producerMemoryContextPreview");
+  if (!output || !producerMemoryReady) return;
+  const summary = memoryPromptSummary();
+  document.querySelector("#producerMemoryUsedCount").textContent = `${summary.count} preference${summary.count === 1 ? "" : "s"}`;
+  output.textContent = summary.preferences.length ? summary.preferences.map((item) => `• ${item.summary} (${item.status})`).join("\n") : "No confirmed or usable project memory is included for the next prompt.";
+}
+
+function renderProducerMemory() {
+  if (!producerMemoryReady) return;
+  const active = MemoryEngine.getProjectMemories(producerStudioState.projectId);
+  const all = MemoryEngine.getProjectMemories(producerStudioState.projectId, { includeInactive: true });
+  const simple = document.querySelector("#producerMemorySimpleList");
+  if (simple) simple.innerHTML = active.filter((memory) => !["Proposed", "Conflicted"].includes(memory.status)).slice(0, 6).map((memory) => `<div><span>${escapeHtml(memory.summary)}</span><small>${memory.userConfirmed ? "Confirmed by you" : MemoryEngine.confidenceLabel(memory)}</small></div>`).join("") || `<p class="fine-print">Nothing yet. Tell Prompt Studio “Remember that…” to add a project preference.</p>`;
+  const groups = document.querySelector("#producerMemoryGroups");
+  if (!groups) return;
+  groups.innerHTML = PRODUCER_MEMORY_GROUPS.map((group) => {
+    const items = all.filter((memory) => memoryDisplayGroup(memory) === group && memory.status !== "Forgotten" && memory.status !== "Rejected");
+    if (!items.length) return "";
+    return `<section class="producer-memory-group"><h4>${escapeHtml(group)}</h4><div>${items.map((memory) => `<article class="producer-memory-card status-${memory.status.toLowerCase()}" data-memory-id="${escapeHtml(memory.memoryId)}" tabindex="0">
+      <div><strong>${escapeHtml(memory.summary)}</strong><span>${escapeHtml(memory.scope)} · ${escapeHtml(memory.status)} · ${escapeHtml(MemoryEngine.confidenceLabel(memory))}</span></div>
+      <p>${escapeHtml(memoryValueLabel(memory.value))}</p>
+      <small>Source: ${escapeHtml(memory.source)} · Updated ${new Date(memory.updatedAt).toLocaleString()} · Used ${memory.useCount} time${memory.useCount === 1 ? "" : "s"}</small>
+      ${memory.evidence.length ? `<details><summary>Evidence (${memory.evidence.length})</summary><ul>${memory.evidence.map((item) => `<li>${escapeHtml(item.label)}: ${escapeHtml(item.value)}</li>`).join("")}</ul></details>` : ""}
+      ${memory.unresolved ? `<p class="memory-unresolved">This preference references something unavailable. Choose a replacement, keep it as a note, or forget it.</p>` : ""}
+      <div class="producer-card-actions">
+        ${memory.status === "Proposed" ? `<button data-memory-action="confirm" class="is-primary">Remember for This Project</button><button data-memory-action="default">Make User Default</button><button data-memory-action="reject">Not Now</button><button data-memory-action="suppress">Do Not Suggest Again</button>` : ""}
+        ${memory.status === "Conflicted" ? `<button data-memory-action="replace" class="is-primary">Replace Previous Memory</button><button data-memory-action="keep-both">Keep Both</button><button data-memory-action="mission-only">Use for Active Mission Only</button><button data-memory-action="cancel-conflict">Cancel</button>` : ""}
+        ${memory.unresolved ? `<button data-memory-action="edit">Choose Replacement</button><button data-memory-action="keep-note">Keep as Note</button>` : ""}
+        <button data-memory-action="edit">Edit</button>
+        ${!memory.userConfirmed && memory.status !== "Archived" ? `<button data-memory-action="confirm">Confirm</button>` : ""}
+        ${memory.userConfirmed ? `<button data-memory-action="default">Make User Default</button>` : ""}
+        ${memory.status !== "Archived" ? `<button data-memory-action="archive">Archive</button>` : ""}
+        <button data-memory-action="forget">Forget</button>
+      </div>
+    </article>`).join("")}</div></section>`;
+  }).join("") || `<div class="producer-empty-state">No Producer Memory is stored for this project.</div>`;
+  const diagnostics = MemoryEngine.getDiagnostics();
+  document.querySelector("#undoProducerMemory").disabled = !diagnostics.undoDepth;
+  document.querySelector("#restoreProjectMemory").disabled = !diagnostics.recoverableSnapshot;
+  document.querySelector("#producerMemoryStatus").textContent = `${active.length} active project memor${active.length === 1 ? "y" : "ies"}. ${diagnostics.persistenceStatus}.`;
+}
+
+function renderProducerMemoryDiagnostics() {
+  const details = document.querySelector("#producerMemoryDiagnostics");
+  if (details) details.hidden = !DECKFORGE_DEVELOPMENT;
+  const output = document.querySelector("#producerMemoryDiagnosticsOutput");
+  if (output && DECKFORGE_DEVELOPMENT && producerMemoryReady) output.textContent = JSON.stringify(MemoryEngine.getDiagnostics(), null, 2);
 }
 
 function rememberProducerPrompt(prompt, options = {}) {
@@ -9065,6 +9272,7 @@ function renderProducerStudio(options = {}) {
   renderProducerPromptLibrary();
   renderProducerSuggestions(context);
   renderProducerMissions();
+  renderProducerMemory();
   renderProducerTimeline();
   renderProducerIntelligence(context);
   renderProducerWelcome(context);
@@ -9072,6 +9280,8 @@ function renderProducerStudio(options = {}) {
   renderProjectIntelligenceDiagnostics();
   renderRecommendationDiagnostics();
   renderCreativeMissionDiagnostics();
+  renderProducerMemoryDiagnostics();
+  renderMemoryContextPreview();
   renderAiContext();
   const sync = document.querySelector("#producerSyncStatus");
   if (sync) sync.textContent = context.timestamps.lastMeaningfulUpdate ? `Project context updated · v${context.contextVersion} · ${new Date(context.timestamps.lastMeaningfulUpdate).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : `Context v${context.contextVersion} · No meaningful updates yet`;
@@ -9127,7 +9337,10 @@ async function runContextualRecommendationAction(recommendationId, mode, options
     renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext());
     return result;
   }
-  if (mode === "apply") recordProducerEvent(`Applied ${recommendation.title}`, { domain: recommendation.domain, action: "Recommendation applied", summary: `Applied ${recommendation.title}`, initiatedBy: "user", before: { contextVersion: recommendation.contextVersion }, after: { affectedDomains: recommendation.suggestedAction?.affectedDomains || [] } });
+  if (mode === "apply") {
+    recordProducerEvent(`Applied ${recommendation.title}`, { domain: recommendation.domain, action: "Recommendation applied", summary: `Applied ${recommendation.title}`, initiatedBy: "user", before: { contextVersion: recommendation.contextVersion }, after: { affectedDomains: recommendation.suggestedAction?.affectedDomains || [] } });
+    if (producerMemoryReady) MemoryEngine.proposeMemory({ category: "Recommendation Preferences", key: `accepted-recommendation-type-${recommendation.ruleId}`, value: recommendation.ruleId, summary: `Accepted recommendation type: ${recommendation.title}`, source: "Accepted Contextual Recommendation", confidence: 1, userConfirmed: true, status: "Confirmed", relatedRecommendationIds: [recommendation.recommendationId] });
+  }
   if (mode === "undo") recordProducerEvent(`Undid ${recommendation.title}`, { domain: recommendation.domain, action: "Recommendation undone", summary: `Undid ${recommendation.title}`, initiatedBy: "user" });
   renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext());
   const card = document.querySelector(`[data-suggestion-id="${CSS.escape(recommendationId)}"]`);
@@ -9151,11 +9364,45 @@ function setupProducerStudioEvents() {
     producerStudioState.promptDomains[input.dataset.promptContextDomain] = input.checked;
     renderPromptContextPreview();
   });
+  document.querySelector("#producerMemoryExclusions").addEventListener("change", (event) => {
+    const input = event.target.closest("[data-memory-exclusion]");
+    if (!input) return;
+    input.checked ? producerStudioState.memoryExclusions.add(input.dataset.memoryExclusion) : producerStudioState.memoryExclusions.delete(input.dataset.memoryExclusion);
+    renderMemoryContextPreview();
+  });
+  document.querySelector("#reviewProducerMemory").addEventListener("click", () => { producerStudioState.mode = "advanced"; writeProducerStudioStorage(); renderProducerStudio({ sync: false }); document.querySelector("#producerMemoryGroups")?.scrollIntoView({ behavior: "smooth", block: "start" }); });
+  document.querySelector("#producerMemoryGroups").addEventListener("click", (event) => {
+    const card = event.target.closest("[data-memory-id]"); const button = event.target.closest("[data-memory-action]");
+    if (!card || !button) return;
+    const memoryId = card.dataset.memoryId; const memory = MemoryEngine.getProjectMemories(producerStudioState.projectId, { includeInactive: true }).find((item) => item.memoryId === memoryId); if (!memory) return;
+    const action = button.dataset.memoryAction;
+    if (action === "confirm") MemoryEngine.confirmMemory(memoryId);
+    if (action === "edit") { const value = window.prompt(`Edit ${memory.summary}`, memoryValueLabel(memory.value)); if (value !== null) MemoryEngine.editMemory(memoryId, value, `${memory.key.replace(/-/g, " ")}: ${value}`); }
+    if (action === "reject") MemoryEngine.rejectMemory(memoryId, { suppress: false, reason: "Not now" });
+    if (action === "suppress") MemoryEngine.rejectMemory(memoryId, { suppress: true, reason: "Do not suggest again" });
+    if (action === "archive") MemoryEngine.archiveMemory(memoryId);
+    if (action === "forget" && window.confirm(`Forget “${memory.summary}” for this project?`)) MemoryEngine.forgetMemory(memoryId);
+    if (action === "replace") MemoryEngine.resolveMemoryConflict(memoryId, "replace");
+    if (action === "keep-both") MemoryEngine.resolveMemoryConflict(memoryId, "keep-both");
+    if (action === "mission-only") { const activeMission = missionEngineReady && MissionEngine.getActiveMission(); if (activeMission) MissionEngine.updateMission(activeMission.missionId, { userOverrides: { producerMemoryMissionOnly: { category: memory.category, key: memory.key, value: memory.value } } }); MemoryEngine.resolveMemoryConflict(memoryId, "mission-only"); }
+    if (action === "cancel-conflict") MemoryEngine.resolveMemoryConflict(memoryId, "cancel");
+    if (action === "keep-note") MemoryEngine.editMemory(memoryId, memory.value, `${memory.summary} (kept as a note)`);
+    if (action === "default") { if (!memory.userConfirmed) MemoryEngine.confirmMemory(memoryId); MemoryEngine.promoteToUserDefault(memoryId); }
+    document.querySelector("#producerMemoryStatus")?.focus();
+  });
+  document.querySelector("#undoProducerMemory").addEventListener("click", () => MemoryEngine.undoLastChange());
+  document.querySelector("#clearSessionMemory").addEventListener("click", () => MemoryEngine.clearSessionMemory());
+  document.querySelector("#resetInferredMemory").addEventListener("click", () => { if (window.confirm("Reset inferred and proposed preferences? Confirmed project memory will remain.")) MemoryEngine.resetInferredPreferences(); });
+  document.querySelector("#restoreProjectMemory").addEventListener("click", () => MemoryEngine.restoreDefaultProjectMemory());
+  document.querySelector("#clearProjectMemory").addEventListener("click", () => { if (window.confirm("Clear all Producer Memory for this project? A recoverable snapshot will be kept temporarily.")) MemoryEngine.clearProjectMemory(); });
+  document.querySelector("#exportProjectMemory").addEventListener("click", () => { const data = MemoryEngine.exportProjectMemory(producerStudioState.projectId); const url = URL.createObjectURL(new Blob([data], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = `${producerStudioState.projectId}-producer-memory.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 0); });
+  document.querySelector("#importProjectMemory").addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (!file) return; const result = MemoryEngine.importProjectMemory(producerStudioState.projectId, await file.text()); document.querySelector("#producerMemoryStatus").textContent = result.success ? `Imported ${result.count} validated memories.` : result.reason; event.target.value = ""; });
   document.querySelector(".producer-prompt-library").addEventListener("click", (event) => {
     const favorite = event.target.closest("[data-producer-favorite-index]");
     if (favorite) {
       const item = producerStudioState.history[Number(favorite.dataset.producerFavoriteIndex)];
       if (item) item.favorite = !item.favorite;
+      if (item?.favorite && producerMemoryReady) MemoryEngine.proposeMemory({ category: "User-Confirmed Facts", key: `favorite-prompt-${item.prompt}`, value: item.prompt, summary: `Favorite Producer Studio prompt: ${item.prompt}`, source: "Favorite Prompt", confidence: 1, userConfirmed: true, status: "Confirmed" });
       writeProducerStudioStorage(); renderProducerPromptLibrary(); return;
     }
     const button = event.target.closest("[data-producer-prompt-kind]");
@@ -9199,6 +9446,7 @@ function setupProducerStudioEvents() {
     document.querySelector(`[data-mission-step-id="${CSS.escape(stepId)}"]`)?.focus();
   });
   document.querySelector("#activeMissionSteps").addEventListener("change", (event) => { const input = event.target.closest("[data-mission-step-approved]"); const card = event.target.closest("[data-mission-step-id]"); const active = MissionEngine.getActiveMission(); if (input && card && active) MissionEngine.setStepApproved(active.missionId, card.dataset.missionStepId, input.checked); });
+  document.querySelector("#activeMissionMemoryDefaults").addEventListener("change", (event) => { const input = event.target.closest("[data-mission-memory-default]"); const active = MissionEngine.getActiveMission(); if (input && active) MissionEngine.setMemoryDefaultEnabled(active.missionId, input.dataset.missionMemoryDefault, input.checked); });
   document.querySelector("#producerMissionHistory").addEventListener("click", (event) => { const row = event.target.closest("[data-mission-history-id]"); const button = event.target.closest("[data-mission-history-action]"); if (!row || !button) return; const id = row.dataset.missionHistoryId; const mission = MissionEngine.getMission(id); const action = button.dataset.missionHistoryAction; if (action === "reopen") MissionEngine.setActiveMission(id); if (action === "duplicate") MissionEngine.duplicateMission(id); if (action === "rename") { const title = window.prompt("Rename mission", mission?.title || ""); if (title) MissionEngine.updateMission(id, { title }); } if (action === "favorite") MissionEngine.updateMission(id, { favorite: !mission?.favorite }); if (action === "template") MissionEngine.updateMission(id, { savedAsTemplate: true }); if (action === "delete") MissionEngine.deleteMission(id); renderProducerMissions(); });
   document.querySelector("#producerSuggestionGrid").addEventListener("click", (event) => {
     const button = event.target.closest("[data-suggestion-action]");
@@ -9213,6 +9461,7 @@ function setupProducerStudioEvents() {
       const recommendation = RecommendationEngine.getRecommendation(card.dataset.suggestionId);
       if (!recommendation) return;
       RecommendationEngine.dismissRecommendation(recommendation.recommendationId);
+      if (producerMemoryReady) MemoryEngine.proposeMemory({ category: "Recommendation Preferences", key: `dismissed-domain-${recommendation.domain}`, value: recommendation.domain, summary: `Dismissed a ${recommendation.domain} creative suggestion`, source: "Dismissed Contextual Recommendation", confidence: 0.4, status: "Inferred", relatedRecommendationIds: [recommendation.recommendationId] });
       producerStudioState.lastDismissedRecommendationId = recommendation.recommendationId;
       const undo = document.querySelector("#undoDismissedRecommendation");
       if (undo) { undo.hidden = false; undo.textContent = `Undo Dismiss: ${recommendation.title}`; }
@@ -9274,7 +9523,10 @@ function setupProducerStudioEvents() {
     const id = producerStudioState.pendingRecommendationRejectionId;
     const recommendation = id && RecommendationEngine.getRecommendation(id);
     const reason = document.querySelector("#rejectRecommendationReason").value;
-    if (recommendation && RecommendationEngine.rejectRecommendation(id, reason)) recordProducerEvent(`Rejected ${recommendation.title}`, { domain: recommendation.domain, action: "Recommendation rejected", summary: `Rejected ${recommendation.title}: ${reason}`, initiatedBy: "user", before: { contextVersion: recommendation.contextVersion }, after: { reason, evidenceFingerprint: recommendation.fingerprint } });
+    if (recommendation && RecommendationEngine.rejectRecommendation(id, reason)) {
+      recordProducerEvent(`Rejected ${recommendation.title}`, { domain: recommendation.domain, action: "Recommendation rejected", summary: `Rejected ${recommendation.title}: ${reason}`, initiatedBy: "user", before: { contextVersion: recommendation.contextVersion }, after: { reason, evidenceFingerprint: recommendation.fingerprint } });
+      if (producerMemoryReady) MemoryEngine.proposeMemory({ category: "Recommendation Preferences", key: `rejected-recommendation-type-${recommendation.ruleId}`, value: recommendation.ruleId, summary: `Rejected recommendation type: ${recommendation.title}`, source: `Rejected Contextual Recommendation · ${reason}`, confidence: 1, userConfirmed: true, status: "Confirmed", relatedRecommendationIds: [recommendation.recommendationId] });
+    }
     producerStudioState.pendingRecommendationRejectionId = null;
     document.querySelector("#rejectRecommendationDialog")?.close();
     renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext());
@@ -10076,7 +10328,7 @@ function setupEvents() {
   document.querySelector("#kitStopPreview").addEventListener("click", stopBeatPreview);
   document.querySelector("#loadDrumKit").addEventListener("click", loadSelectedDrumKit);
   document.querySelector("#loadDrumKitPattern").addEventListener("click", loadSelectedDrumKitAndPattern);
-  document.querySelector("#favoriteDrumKit").addEventListener("click", () => { const machine = drums.filteredKits?.[drums.kitIndex]; if (!machine) return; const favorites = new Set(JSON.parse(localStorage.getItem("deckforge-beat-kit-favorites") || "[]")); favorites.has(machine.id) ? favorites.delete(machine.id) : favorites.add(machine.id); localStorage.setItem("deckforge-beat-kit-favorites", JSON.stringify([...favorites])); renderKitBrowser(); });
+  document.querySelector("#favoriteDrumKit").addEventListener("click", () => { const machine = drums.filteredKits?.[drums.kitIndex]; if (!machine) return; const favorites = new Set(JSON.parse(localStorage.getItem("deckforge-beat-kit-favorites") || "[]")); const adding = !favorites.has(machine.id); adding ? favorites.add(machine.id) : favorites.delete(machine.id); localStorage.setItem("deckforge-beat-kit-favorites", JSON.stringify([...favorites])); if (adding && producerMemoryReady) MemoryEngine.proposeMemory({ category: "Beat Forge Preferences", key: `favorite-drum-kit-${machine.id}`, value: machine.name, summary: `Favorite Beat Forge kit: ${machine.name}`, source: "Explicit kit favorite", confidence: 1, userConfirmed: true, status: "Confirmed" }); renderKitBrowser(); });
   document.querySelector("#beatGroove").addEventListener("change", (event) => buildGrooveCandidate(event.target.value));
   document.querySelector("#grooveIntensity").addEventListener("input", (event) => { drums.grooveCandidateIntensity = Number(event.target.value); buildGrooveCandidate(document.querySelector("#beatGroove").value); });
   document.querySelectorAll("[data-groove-lock]").forEach((input) => input.addEventListener("change", () => { drums.grooveLocks[input.dataset.grooveLock] = input.checked; buildGrooveCandidate(document.querySelector("#beatGroove").value); }));
@@ -10157,7 +10409,7 @@ function setupEvents() {
   document.querySelector("#harmonyInstrumentResults").addEventListener("click", (event) => { const button = event.target.closest("[data-harmony-instrument-index]"); if (!button) return; instrument.selectedInstrumentIndex = Number(button.dataset.harmonyInstrumentIndex); renderHarmonyInstrumentBrowser(); });
   document.querySelector("#previewHarmonyInstrument").addEventListener("click", previewHarmonyInstrument);
   document.querySelector("#loadHarmonyInstrument").addEventListener("click", loadHarmonyInstrument);
-  document.querySelector("#favoriteHarmonyInstrument").addEventListener("click", () => { const preset = instrument.filteredPresets?.[instrument.selectedInstrumentIndex]; if (!preset) return; instrument.favorites = instrument.favorites.includes(preset.id) ? instrument.favorites.filter((id) => id !== preset.id) : [...instrument.favorites, preset.id]; saveHarmonyState(); renderHarmonyInstrumentBrowser(); });
+  document.querySelector("#favoriteHarmonyInstrument").addEventListener("click", () => { const preset = instrument.filteredPresets?.[instrument.selectedInstrumentIndex]; if (!preset) return; const adding = !instrument.favorites.includes(preset.id); instrument.favorites = adding ? [...instrument.favorites, preset.id] : instrument.favorites.filter((id) => id !== preset.id); if (adding && producerMemoryReady) MemoryEngine.proposeMemory({ category: "Harmony Lab Preferences", key: `favorite-harmony-instrument-${preset.id}`, value: preset.name, summary: `Favorite Harmony Lab instrument: ${preset.name}`, source: "Explicit instrument favorite", confidence: 1, userConfirmed: true, status: "Confirmed" }); saveHarmonyState(); renderHarmonyInstrumentBrowser(); });
   document.querySelector("#enableHarmonyMidi").addEventListener("click", enableHarmonyMidi);
   document.querySelector("#harmonyArp").addEventListener("change", (event) => { instrument.arpeggiator.enabled = event.target.checked; saveHarmonyState(); });
   document.querySelector("#harmonyArpRate").addEventListener("change", (event) => { instrument.arpeggiator.rate = event.target.value; saveHarmonyState(); });
@@ -10340,6 +10592,12 @@ function setupEvents() {
   });
   document.querySelector("#ditcSort").addEventListener("change", (event) => {
     ditcState.sort = event.target.value;
+    renderSources();
+  });
+  document.querySelector("#ditcMemoryToggle").addEventListener("click", (event) => {
+    ditcState.prioritizeMemory = !ditcState.prioritizeMemory;
+    event.currentTarget.setAttribute("aria-pressed", String(ditcState.prioritizeMemory));
+    event.currentTarget.textContent = ditcState.prioritizeMemory ? "Prioritize Project Memory" : "Ignore Memory for This Search";
     renderSources();
   });
   document.querySelector("#ditcCollectionList").addEventListener("click", (event) => {
@@ -11169,6 +11427,20 @@ function sortedDitcTracks(tracks) {
     return track.addedAt || 0;
   };
   return [...tracks].sort((a, b) => {
+    if (ditcState.prioritizeMemory && producerMemoryReady) {
+      const score = (track) => {
+        const memories = MemoryEngine.getRelevantMemories({}, { limit: 100 }); let total = 0;
+        memories.forEach((memory) => {
+          const valueText = memoryValueLabel(memory.value).toLowerCase(); const haystack = ditcSearchText(track);
+          if (["Project Identity", "DJ Preferences"].includes(memory.category) && haystack.includes(valueText)) total += memory.userConfirmed ? 5 : 2;
+          if (memory.key === "bpm-range" && track.analysis?.bpm >= memory.value.min && track.analysis?.bpm <= memory.value.max) total += 5;
+          if (memory.category === "Avoidances" && haystack.includes(valueText)) total -= 8;
+        });
+        return total;
+      };
+      const memoryDifference = score(b) - score(a);
+      if (memoryDifference) return memoryDifference;
+    }
     const left = value(a, ditcState.sort);
     const right = value(b, ditcState.sort);
     if (typeof left === "number" && typeof right === "number") return ditcState.sort === "recent" ? right - left : left - right;
@@ -11358,6 +11630,7 @@ renderPresetOptions();
 if (drums.restored) renderBeatForge(); else applyDrumPreset(drums.preset);
 renderSources();
 renderAiContext();
+initializeProducerMemory();
 initializeProjectIntelligence();
 initializeRecommendationEngine();
 initializeMissionEngine();

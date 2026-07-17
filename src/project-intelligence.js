@@ -3,7 +3,7 @@
 
   const SCHEMA_VERSION = 1;
   const STORAGE_PREFIX = "deckforge-project-intelligence";
-  const DOMAINS = ["project", "ditc", "decks", "smartMix", "pads", "beatForge", "harmonyLab", "stems", "arrangement", "mixtape", "playback", "aiHistory", "creativePreferences", "systemStatus"];
+  const DOMAINS = ["project", "ditc", "decks", "smartMix", "pads", "beatForge", "harmonyLab", "stems", "arrangement", "mixtape", "playback", "aiHistory", "creativePreferences", "producerMemory", "systemStatus"];
   const subscribers = new Set();
   let projectId = "deckforge-session";
   let adapter = null;
@@ -30,6 +30,7 @@
       playback: {},
       aiHistory: { decisions: [], recentSummary: null },
       creativePreferences: {},
+      producerMemory: { projectId: id, count: 0, preferences: [] },
       systemStatus: {},
       timestamps: { createdAt: now, updatedAt: now, lastMeaningfulUpdate: null },
       contextVersion: 0,
@@ -243,7 +244,7 @@
   }
 
   function getContextSummary(options = {}) {
-    const include = new Set(options.include || ["project", "ditc", "decks", "smartMix", "pads", "beatForge", "harmonyLab", "stems", "arrangement", "mixtape", "aiHistory"]);
+    const include = new Set(options.include || ["project", "ditc", "decks", "smartMix", "pads", "beatForge", "harmonyLab", "stems", "arrangement", "mixtape", "aiHistory", "producerMemory"]);
     const summary = { contextVersion: context.contextVersion, generatedAt: new Date().toISOString() };
     if (include.has("project")) summary.project = context.project;
     if (include.has("ditc")) summary.ditc = {
@@ -260,6 +261,7 @@
     if (include.has("arrangement")) summary.arrangement = { timelineLength: context.arrangement.timelineLength, clipCount: context.arrangement.clipCount, introStatus: context.arrangement.introStatus, outroStatus: context.arrangement.outroStatus, unresolvedGaps: context.arrangement.unresolvedGaps };
     if (include.has("mixtape")) summary.mixtape = { referenceAnalysis: context.mixtape.referenceAnalysis, detectedIdentity: context.mixtape.detectedIdentity, themes: context.mixtape.themes };
     if (include.has("aiHistory")) summary.recentDecisions = (context.aiHistory?.decisions || []).slice(0, 8).map(({ timestamp, domain, action, summary: detail, initiatedBy }) => ({ timestamp, domain, action, summary: detail, initiatedBy }));
+    if (include.has("producerMemory")) summary.producerMemory = context.producerMemory;
     return summary;
   }
 

@@ -800,6 +800,18 @@
               </div>
               <pre id="producerContextPreview" class="producer-context-preview"></pre>
             </details>
+            <details id="producerMemoryUsed" class="producer-context-used">
+              <summary>Memory Used <span id="producerMemoryUsedCount">0 preferences</span></summary>
+              <p class="fine-print">Exclude a memory category for the next prompt only. Stored memory remains unchanged.</p>
+              <div id="producerMemoryExclusions" class="producer-context-domains">
+                <label><input type="checkbox" data-memory-exclusion="Transition Preferences"> Ignore transition preferences</label>
+                <label><input type="checkbox" data-memory-exclusion="Beat Forge Preferences"> Ignore Beat Forge memory</label>
+                <label><input type="checkbox" data-memory-exclusion="Harmony Lab Preferences"> Ignore Harmony Lab memory</label>
+                <label><input type="checkbox" data-memory-exclusion="Arrangement Preferences"> Ignore arrangement memory</label>
+                <label><input type="checkbox" data-memory-exclusion="Pad Preferences"> Ignore pad memory</label>
+              </div>
+              <pre id="producerMemoryContextPreview" class="producer-context-preview">No confirmed project memory yet.</pre>
+            </details>
             <article class="ai-plan-panel producer-plan-output">
               <div class="producer-plan-heading"><span>Generated Plan</span><small>Review before applying</small></div>
               <div id="aiPlanOutput" class="ai-plan-output">No plan generated yet.</div>
@@ -838,6 +850,7 @@
               </div>
               <p id="activeMissionDescription"></p>
               <div id="activeMissionSummary" class="mission-summary"></div>
+              <div id="activeMissionMemoryDefaults" class="mission-memory-defaults"></div>
               <div id="activeMissionSteps" class="mission-step-list" aria-live="polite"></div>
               <p id="activeMissionLiveStatus" class="fine-print" aria-live="polite"></p>
               <div class="ai-actions mission-primary-actions">
@@ -853,6 +866,31 @@
               <summary>Recent Missions</summary>
               <div id="producerMissionHistory" class="mission-history-list"></div>
             </details>
+          </section>
+
+          <section class="producer-section producer-memory" aria-labelledby="producerMemoryTitle">
+            <div class="producer-section-heading">
+              <div><p class="eyebrow">Project-Specific Creative Context</p><h3 id="producerMemoryTitle">Producer Memory</h3></div>
+              <button id="reviewProducerMemory" class="secondary-button">Review Memory</button>
+            </div>
+            <p class="producer-memory-privacy">Producer Memory stores creative preferences for this project so suggestions can remain consistent. You can review, edit, or clear it at any time. It is not public-model training.</p>
+            <article class="producer-memory-summary">
+              <h4>This Project Likes</h4>
+              <div id="producerMemorySimpleList" aria-live="polite"></div>
+            </article>
+            <div id="producerMemoryAdvanced" class="producer-advanced-only">
+              <div id="producerMemoryGroups" class="producer-memory-groups" aria-live="polite"></div>
+              <div class="ai-actions producer-memory-tools">
+                <button id="undoProducerMemory" class="secondary-button">Undo Last Memory Change</button>
+                <button id="clearSessionMemory" class="secondary-button">Clear Session Memory</button>
+                <button id="resetInferredMemory" class="secondary-button">Reset Inferred Preferences</button>
+                <button id="restoreProjectMemory" class="secondary-button">Restore Project Memory</button>
+                <button id="exportProjectMemory" class="secondary-button">Export Memory</button>
+                <label class="file-button">Import Memory<input id="importProjectMemory" type="file" accept="application/json,.json"></label>
+                <button id="clearProjectMemory" class="danger-button">Clear Project Memory</button>
+              </div>
+            </div>
+            <p id="producerMemoryStatus" class="fine-print" aria-live="polite" tabindex="-1">No project memory yet.</p>
           </section>
 
           <section class="producer-section project-timeline" aria-labelledby="projectTimelineTitle">
@@ -933,6 +971,10 @@
                 <summary>Creative Missions diagnostics</summary>
                 <pre id="creativeMissionDiagnosticsOutput"></pre>
               </details>
+              <details id="producerMemoryDiagnostics" class="producer-tool-drawer" hidden>
+                <summary>Producer Memory diagnostics</summary>
+                <pre id="producerMemoryDiagnosticsOutput"></pre>
+              </details>
             </div>
           </section>
           <dialog id="staleRecommendationDialog" class="stale-recommendation-dialog" aria-labelledby="staleRecommendationTitle">
@@ -983,6 +1025,7 @@
             <button id="ditcClearSearch" class="secondary-button">Clear</button>
             <label>Sort <select id="ditcSort"><option value="recent">Recently Added</option><option value="title">Title</option><option value="artist">Artist</option><option value="album">Album</option><option value="bpm">BPM</option><option value="key">Key</option><option value="duration">Duration</option><option value="energy">Energy</option><option value="transition">Transition Match</option></select></label>
             <button id="ditcViewToggle" class="secondary-button" aria-pressed="false">Comfortable View</button>
+            <button id="ditcMemoryToggle" class="secondary-button" aria-pressed="true">Prioritize Project Memory</button>
             <span id="ditcResultCount">0 results</span>
           </div>
           <div id="sourceDrop" class="drop-zone ditc-drop-zone">
@@ -1028,6 +1071,7 @@
 
     <script src="src/audio/playback-registry.js"></script>
     <script src="src/project-intelligence.js"></script>
+    <script src="src/producer-memory.js"></script>
     <script src="src/recommendation-engine.js"></script>
     <script src="src/creative-missions.js"></script>
     <script src="app.js"></script>
