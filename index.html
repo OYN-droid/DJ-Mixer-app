@@ -17,7 +17,8 @@
           </span>
         </div>
         <nav class="rail-tabs" aria-label="Sections">
-          <button class="tab-button is-active" data-target="decks" title="Decks">Decks</button>
+          <button class="tab-button is-active" data-target="projectLibrary" title="Project Library">Projects</button>
+          <button class="tab-button" data-target="decks" title="Decks">Decks</button>
           <button class="tab-button" data-target="sampler" title="Sampler">Pads</button>
           <button class="tab-button" data-target="drums" title="Beat Forge drum machine">Beat Forge</button>
           <button class="tab-button" data-target="keys" title="Harmony Lab keys and composition">Harmony Lab</button>
@@ -42,7 +43,7 @@
               <summary><span id="activeProjectName">DeckForge Session</span></summary>
               <div class="project-menu-panel">
                 <label>Open Project <select id="projectSelector"></select></label>
-                <div class="project-menu-actions"><button id="openProject" class="primary-button" type="button">Open</button><button id="createProject" class="primary-button" type="button">New</button><button id="renameProject" class="secondary-button" type="button">Rename</button><button id="closeProject" class="secondary-button" type="button">Close</button></div>
+                <div class="project-menu-actions"><button id="openProjectLibrary" class="primary-button" type="button">Project Library</button><button id="openProject" class="secondary-button" type="button">Open</button><button id="createProject" class="secondary-button" type="button">New</button><button id="renameProject" class="secondary-button" type="button">Rename</button><button id="closeProject" class="secondary-button" type="button">Close</button></div>
                 <p id="projectMigrationStatus" class="fine-print"></p>
                 <details><summary>Project diagnostics</summary><pre id="projectDiagnostics"></pre></details>
               </div>
@@ -80,7 +81,28 @@
           <pre id="globalAudioDiagnosticsOutput"></pre>
         </details>
 
-        <section id="decks" class="view is-active" aria-labelledby="decksTitle">
+        <section id="projectLibrary" class="view project-library-view is-active" aria-labelledby="projectLibraryTitle">
+          <header class="project-library-header">
+            <div><p class="eyebrow">Creative Home</p><h2 id="projectLibraryTitle">Project Library</h2><p>Open recent work, or start with a simple project type.</p></div>
+            <button id="projectLibraryCreate" class="primary-button" type="button">Create Project</button>
+          </header>
+          <div class="project-library-toolbar" role="search">
+            <label class="project-library-search"><span>Search projects</span><input id="projectLibrarySearch" type="search" placeholder="Name, tag, genre, or type" autocomplete="off"></label>
+            <label><span>Sort</span><select id="projectLibrarySort" aria-label="Sort projects"></select></label>
+            <label><span>Filter</span><select id="projectLibraryFilter" aria-label="Filter projects"></select></label>
+          </div>
+          <div id="projectLibraryStatus" class="project-library-status" role="status" aria-live="polite"></div>
+          <div id="projectLibraryStats" class="project-library-stats" aria-label="Project Library summary"></div>
+          <div id="projectLibraryGrid" class="project-library-grid" aria-live="polite"></div>
+          <section id="projectLibraryEmpty" class="project-library-empty" hidden>
+            <p class="eyebrow">Project Library</p><h3>Start your next creative project.</h3>
+            <div><button type="button" data-project-empty-type="Mixtape">Create Mixtape</button><button type="button" data-project-empty-type="Live Set">Create Live Set</button><button type="button" data-project-empty-type="Remix">Create Remix</button><button id="openExistingProject" type="button">Open Existing Project</button></div>
+            <p class="fine-print">Open Existing Project shows registered projects. Folder-based projects are unavailable because this browser build has no durable folder-handle integration.</p>
+          </section>
+          <details class="project-library-diagnostics"><summary>Project Library diagnostics</summary><pre id="projectLibraryDiagnostics"></pre></details>
+        </section>
+
+        <section id="decks" class="view" aria-labelledby="decksTitle">
           <div class="decks-header">
             <h2 id="decksTitle">Turntables</h2>
             <div class="deck-smart-controls">
@@ -1181,8 +1203,23 @@
       </main>
     </div>
 
+    <dialog id="createProjectDialog" class="project-dialog" aria-labelledby="createProjectDialogTitle">
+      <form method="dialog" id="createProjectForm">
+        <header><div><p class="eyebrow">New Project</p><h2 id="createProjectDialogTitle">Start something</h2></div><button type="button" data-project-dialog-close aria-label="Close create project dialog">×</button></header>
+        <label>Project name<input id="newProjectName" name="name" required maxlength="100" value="Untitled Project"></label>
+        <fieldset><legend>Project type</legend><div id="newProjectTypes" class="project-type-grid"></div></fieldset>
+        <p class="fine-print">Only the name and type are required. You can add tracks, artwork, and details later.</p>
+        <footer><button type="button" class="secondary-button" data-project-dialog-close>Cancel</button><button class="primary-button" value="create" type="submit">Create Project</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="projectDetailsDialog" class="project-dialog project-details-dialog" aria-labelledby="projectDetailsTitle">
+      <article><header><div><p class="eyebrow">Project Details</p><h2 id="projectDetailsTitle">Project</h2></div><button type="button" data-project-details-close aria-label="Close project details">×</button></header><div id="projectDetailsContent"></div><footer><button type="button" class="primary-button" data-project-details-close>Done</button></footer></article>
+    </dialog>
+
     <script src="src/project-registry.js"></script>
     <script src="src/project-assets.js"></script>
+    <script src="src/project-library.js"></script>
     <script src="src/audio/playback-registry.js"></script>
     <script src="src/project-intelligence.js"></script>
     <script src="src/producer-memory.js"></script>

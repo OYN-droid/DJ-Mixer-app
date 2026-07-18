@@ -3,10 +3,11 @@ const DECKFORGE_DEVELOPMENT = ["localhost", "127.0.0.1"].includes(window.locatio
 const DECKFORGE_LOG_PREFIX = "[DeckForge]";
 const ProjectRegistry = window.DeckForgeProjectRegistry;
 const ProjectAssets = window.DeckForgeProjectAssets;
-const initialProject = ProjectRegistry.getActiveProject();
-const initialProjectSession = ProjectRegistry.getSession();
-const ACTIVE_PROJECT_ID = initialProject?.projectId || "deckforge-session";
-function projectStorageKey(domain, projectId = ACTIVE_PROJECT_ID) { return ProjectRegistry.storageKey(domain, projectId); }
+const ProjectLibrary = window.DeckForgeProjectLibrary;
+let initialProject = ProjectRegistry.getActiveProject();
+let initialProjectSession = ProjectRegistry.getSession();
+let ACTIVE_PROJECT_ID = initialProject?.projectId || null;
+function projectStorageKey(domain, projectId = ACTIVE_PROJECT_ID) { return projectId ? ProjectRegistry.storageKey(domain, projectId) : `deckforge-inactive-project:${domain}`; }
 
 window.addEventListener("error", (event) => {
   console.error(DECKFORGE_LOG_PREFIX, "Unhandled application error", event.error || event.message);
@@ -107,8 +108,8 @@ const sourceFiles = [];
 const droppedFilePaths = new WeakMap();
 const supportedAudioExtensions = [".mp3", ".wav", ".wave", ".aif", ".aiff", ".flac", ".m4a", ".aac", ".alac"];
 const supportedImageExtensions = [".jpg", ".jpeg", ".png", ".webp"];
-const DITC_METADATA_KEY = projectStorageKey("ditc-metadata");
-const DITC_SOURCES_KEY = projectStorageKey("ditc-sources");
+let DITC_METADATA_KEY = projectStorageKey("ditc-metadata");
+let DITC_SOURCES_KEY = projectStorageKey("ditc-sources");
 const ditcState = {
   search: "",
   filter: "all",
@@ -200,7 +201,7 @@ const crateSelection = {
   saved: new Set()
 };
 
-const stemWorkspaceState = window.StemLabEngine?.restore(ACTIVE_PROJECT_ID) || { projectId: ACTIVE_PROJECT_ID, mode: "simple", separationMode: "four", quality: "balanced", jobs: [], graph: { nodes: [], routes: [] }, favorites: [], recentPrompts: [], mixSettings: {}, exportHistory: [] };
+const stemWorkspaceState = (ACTIVE_PROJECT_ID ? window.StemLabEngine?.restore(ACTIVE_PROJECT_ID) : null) || { projectId: ACTIVE_PROJECT_ID, mode: "simple", separationMode: "two", quality: "balanced", jobs: [], graph: { nodes: [], routes: [] }, favorites: [], recentPrompts: [], mixSettings: {}, exportHistory: [] };
 const stemState = {
   file: null,
   sourceTrackId: null,
@@ -244,7 +245,7 @@ const mixtapeReferenceState = {
   artworkAnalysis: null
 };
 
-const PRODUCER_STUDIO_KEY = projectStorageKey("producer-studio");
+let PRODUCER_STUDIO_KEY = projectStorageKey("producer-studio");
 const ProjectIntelligenceEngine = window.ProjectIntelligence;
 const MemoryEngine = window.ProducerMemory;
 const RecommendationEngine = window.ContextualRecommendations;
@@ -287,6 +288,10 @@ let projectIntelligenceReady = false;
 let recommendationEngineReady = false;
 let missionEngineReady = false;
 let producerMemoryReady = false;
+let producerMemoryUnsubscribe = null;
+let recommendationUnsubscribe = null;
+let missionUnsubscribe = null;
+let projectRuntimeDefaults = null;
 
 const AudioIdentificationService = {
   providers: [],
@@ -379,8 +384,8 @@ const autoMixState = {
   lastError: "None"
 };
 
-const SMART_PROMPT_HISTORY_KEY = projectStorageKey("smart-mix-history");
-const SMART_PROMPT_RECIPES_KEY = projectStorageKey("smart-mix-recipes");
+let SMART_PROMPT_HISTORY_KEY = projectStorageKey("smart-mix-history");
+let SMART_PROMPT_RECIPES_KEY = projectStorageKey("smart-mix-recipes");
 const smartPromptState = {
   rawPrompt: "",
   parsedIntent: null,
@@ -9235,12 +9240,17 @@ async function toggleMixRecording() {
 function readProducerStudioStorage() {
   try {
     const saved = JSON.parse(localStorage.getItem(PRODUCER_STUDIO_KEY) || "null");
+    const registeredProject = ProjectRegistry.getProject(ACTIVE_PROJECT_ID);
+    producerStudioState.projectId = ACTIVE_PROJECT_ID;
+    producerStudioState.projectName = registeredProject?.name || producerStudioState.projectName;
+    producerStudioState.description = registeredProject?.description || "";
+    producerStudioState.createdAt = registeredProject?.createdAt || producerStudioState.createdAt;
     if (!saved) return;
     producerStudioState.mode = saved.mode === "advanced" ? "advanced" : "simple";
     if (saved.projectId && saved.projectId !== ACTIVE_PROJECT_ID) throw new Error("Producer Studio storage belongs to another project.");
     producerStudioState.projectId = ACTIVE_PROJECT_ID;
-    producerStudioState.projectName = initialProject?.name || saved.projectName || producerStudioState.projectName;
-    producerStudioState.description = initialProject?.description || saved.description || "";
+    producerStudioState.projectName = registeredProject?.name || saved.projectName || producerStudioState.projectName;
+    producerStudioState.description = registeredProject?.description || saved.description || "";
     producerStudioState.genre = saved.genre && saved.genre !== "Open Format" ? saved.genre : null;
     producerStudioState.subgenre = saved.subgenre && saved.subgenre !== "Live Remix" ? saved.subgenre : null;
     producerStudioState.era = saved.era || null;
@@ -9611,6 +9621,7 @@ function buildProjectIntelligenceSnapshot() {
 }
 
 function initializeProjectIntelligence() {
+  producerStudioState.contextUnsubscribe?.();
   ProjectIntelligenceEngine.configure({ projectId: producerStudioState.projectId, adapter: buildProjectIntelligenceSnapshot });
   projectIntelligenceReady = true;
   ProjectIntelligenceEngine.syncFromAdapter({ domain: "systemStatus", type: "context-initialized", summary: "Project context initialized", meaningful: false, force: true });
@@ -9624,7 +9635,8 @@ function initializeProjectIntelligence() {
 function initializeProducerMemory() {
   MemoryEngine.configure({ projectId: producerStudioState.projectId });
   producerMemoryReady = true;
-  MemoryEngine.subscribe((memories, meta) => {
+  producerMemoryUnsubscribe?.();
+  producerMemoryUnsubscribe = MemoryEngine.subscribe((memories, meta) => {
     const label = meta?.memory?.summary || "project memory";
     const action = String(meta?.type || "updated").replace(/-/g, " ");
     if (projectIntelligenceReady) emitProjectContextChange("producerMemory", `memory-${meta?.type || "updated"}`, { summary: `Producer Memory ${action}: ${label}`, decision: { domain: "Producer Memory", action: `Memory ${action}`, summary: `Producer Memory ${action}: ${label}`, initiatedBy: "user" } });
@@ -9747,7 +9759,8 @@ async function executeContextualRecommendationAction(actionId, recommendation, o
 function initializeRecommendationEngine() {
   RecommendationEngine.configure({ projectId: producerStudioState.projectId, getContext: () => ProjectIntelligenceEngine.getProjectContext(), getMemorySummary: () => producerMemoryReady ? MemoryEngine.getMemorySummary(producerStudioState.projectId) : { preferences: [] }, executeAction: executeContextualRecommendationAction });
   recommendationEngineReady = true;
-  RecommendationEngine.subscribe((recommendations, meta) => {
+  recommendationUnsubscribe?.();
+  recommendationUnsubscribe = RecommendationEngine.subscribe((recommendations, meta) => {
     if (document.querySelector("#ai")?.classList.contains("is-active")) renderProducerSuggestions(ProjectIntelligenceEngine.getProjectContext(), recommendations);
     renderRecommendationDiagnostics();
     const status = document.querySelector("#producerRecommendationStatus");
@@ -10000,7 +10013,8 @@ function initializeMissionEngine() {
     onEvent: (event) => recordProducerEvent(event.summary, { domain: "Creative Missions", action: `Mission ${event.type.replace(/-/g, " ")}`, summary: event.summary, initiatedBy: "user" })
   });
   missionEngineReady = true;
-  MissionEngine.subscribe(() => { renderActiveMission(); renderMissionHistory(); renderCreativeMissionDiagnostics(); });
+  missionUnsubscribe?.();
+  missionUnsubscribe = MissionEngine.subscribe(() => { renderActiveMission(); renderMissionHistory(); renderCreativeMissionDiagnostics(); });
 }
 
 function renderCreativeMissionDiagnostics() {
@@ -10479,7 +10493,19 @@ function setupProducerStudioEvents() {
   document.querySelector("#cancelRejectRecommendation").addEventListener("click", () => { producerStudioState.pendingRecommendationRejectionId = null; document.querySelector("#rejectRecommendationDialog")?.close(); });
 }
 
-function switchView(target) {
+const PROJECT_WORKSPACE_VIEWS = new Set(["ai", "decks", "sources", "sampler", "drums", "keys", "stems", "editor", "finishing"]);
+function readProjectRoute() {
+  const value = String(window.location.hash || ""); const match = value.match(/^#\/project\/([^/]+)\/([^/]+)/);
+  if (!match) return { kind: value.startsWith("#/project") ? "invalid-project" : "library", projectId: null, view: null };
+  try { return { kind: "project", projectId: decodeURIComponent(match[1]), view: PROJECT_WORKSPACE_VIEWS.has(match[2]) ? match[2] : "ai" }; }
+  catch { return { kind: "invalid-project", projectId: null, view: null }; }
+}
+function writeProjectRoute(target) {
+  const hash = target === "projectLibrary" ? "#/library" : ACTIVE_PROJECT_ID && PROJECT_WORKSPACE_VIEWS.has(target) ? `#/project/${encodeURIComponent(ACTIVE_PROJECT_ID)}/${target}` : "#/library";
+  if (window.location.hash !== hash) window.history.replaceState(null, "", hash);
+}
+function switchView(target, options = {}) {
+  if (target !== "projectLibrary" && (!ACTIVE_PROJECT_ID || !ProjectRegistry.owns(ACTIVE_PROJECT_ID))) { target = "projectLibrary"; setProjectLibraryStatus("Open or create a project to continue.", "error"); }
   const leavingDitc = document.querySelector("#sources")?.classList.contains("is-active") && target !== "sources";
   if (leavingDitc && ditcState.previewTrackId) stopDitcPreview();
   document.querySelectorAll(".tab-button, .view").forEach((el) => el.classList.remove("is-active"));
@@ -10490,6 +10516,8 @@ function switchView(target) {
   if (target === "ai") renderProducerStudio();
   if (target === "editor") renderEditor();
   if (target === "finishing") renderFinishingStudio();
+  document.body.classList.toggle("project-library-landing", target === "projectLibrary");
+  if (options.route !== false) writeProjectRoute(target);
 }
 
 function persistActiveProjectDomains() {
@@ -10502,6 +10530,64 @@ function persistActiveProjectDomains() {
   window.StemLabEngine?.save(stemWorkspaceState);
   writeProducerStudioStorage();
   return true;
+}
+
+function cloneProjectRuntime(value) {
+  return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
+}
+
+function captureProjectRuntimeDefaults() {
+  return cloneProjectRuntime({ sampler, drums, instrument, editorState, producerStudioState: { ...producerStudioState, contextUnsubscribe: null }, smartPromptState, autoMixState, ditcState: { ...ditcState, smartMixIds: new Set() }, mixtapeReferenceState });
+}
+
+function replaceProjectRuntimeState(target, source) {
+  Object.keys(target).forEach((key) => delete target[key]);
+  Object.assign(target, cloneProjectRuntime(source));
+}
+
+function updateProjectStorageBindings(projectId) {
+  ACTIVE_PROJECT_ID = projectId;
+  initialProject = ProjectRegistry.getProject(projectId);
+  initialProjectSession = ProjectRegistry.getSession();
+  DITC_METADATA_KEY = projectStorageKey("ditc-metadata");
+  DITC_SOURCES_KEY = projectStorageKey("ditc-sources");
+  PRODUCER_STUDIO_KEY = projectStorageKey("producer-studio");
+  SMART_PROMPT_HISTORY_KEY = projectStorageKey("smart-mix-history");
+  SMART_PROMPT_RECIPES_KEY = projectStorageKey("smart-mix-recipes");
+}
+
+function resetProjectRuntime(projectId) {
+  if (!projectRuntimeDefaults) projectRuntimeDefaults = captureProjectRuntimeDefaults();
+  producerStudioState.contextUnsubscribe?.(); producerStudioState.contextUnsubscribe = null;
+  deckState.a = createDeckState("a"); deckState.b = createDeckState("b");
+  replaceProjectRuntimeState(sampler, projectRuntimeDefaults.sampler);
+  replaceProjectRuntimeState(drums, projectRuntimeDefaults.drums);
+  replaceProjectRuntimeState(instrument, projectRuntimeDefaults.instrument);
+  replaceProjectRuntimeState(editorState, projectRuntimeDefaults.editorState); editorState.projectId = projectId; editorState.lanes = editorState.tracks;
+  replaceProjectRuntimeState(producerStudioState, projectRuntimeDefaults.producerStudioState); producerStudioState.projectId = projectId; producerStudioState.projectName = initialProject?.name || "Untitled Project"; producerStudioState.description = initialProject?.description || ""; producerStudioState.createdAt = initialProject?.createdAt || new Date().toISOString(); producerStudioState.undoActions = new Map(); producerStudioState.memoryExclusions = new Set();
+  replaceProjectRuntimeState(smartPromptState, projectRuntimeDefaults.smartPromptState);
+  replaceProjectRuntimeState(autoMixState, projectRuntimeDefaults.autoMixState);
+  replaceProjectRuntimeState(ditcState, projectRuntimeDefaults.ditcState); ditcState.smartMixIds = new Set();
+  replaceProjectRuntimeState(mixtapeReferenceState, projectRuntimeDefaults.mixtapeReferenceState);
+  sourceFiles.splice(0); crateSelection.local.clear(); crateSelection.saved.clear();
+  aiPlanState = null; aiSearchResultsState = []; mixtapeInspirationState = null;
+  stemState.pollTimers.forEach((timer) => clearTimeout(timer));
+  stemState.pollTimers.clear();
+  const restoredStemWorkspace = window.StemLabEngine?.restore(projectId) || { projectId, mode: "simple", separationMode: "two", quality: "balanced", jobs: [], graph: { nodes: [], routes: [] }, favorites: [], recentPrompts: [], mixSettings: {}, exportHistory: [] };
+  Object.keys(stemWorkspaceState).forEach((key) => delete stemWorkspaceState[key]); Object.assign(stemWorkspaceState, restoredStemWorkspace);
+  Object.assign(stemState, { file: null, sourceTrackId: null, sourceAnalysis: null, sourceBuffer: null, sourceName: "", stems: [], previewSource: null, previewGain: null, previewStemId: null, previewMode: null, voices: [], playing: false, paused: false, loop: false, offset: 0, startedAt: 0, duration: 0, transportTimer: null, syncState: "idle", activeJobId: null, selectedStemId: restoredStemWorkspace.selectedStemId || null, graphProposal: null, lastBackendError: null, lastPreviewError: null, workspace: stemWorkspaceState });
+  Object.assign(finishingState, { activeRecordingId: null, selectedRecordingId: null, activeExportId: null, recordingTimer: null, recordingStartedAt: 0, peak: 0, lastRecordingError: null, lastExportError: null, lastDownloadError: null, lastEncodingError: null });
+  AudioEngine.recorder = null; AudioEngine.mixUrl = null;
+}
+
+async function restoreProjectRuntime(projectId) {
+  updateProjectStorageBindings(projectId);
+  resetProjectRuntime(projectId);
+  restorePadWorkspace(); restoreBeatForgeState(); restoreHarmonyState(); readProducerStudioStorage();
+  editorState.projectId = projectId; editorState.name = producerStudioState.projectName ? `${producerStudioState.projectName} Arrangement` : editorState.name; restoreArrangementProject();
+  readSmartPromptStorage();
+  initializeProducerMemory(); initializeFinishingServices(); initializeProjectIntelligence(); initializeRecommendationEngine(); initializeMissionEngine(); initializeStemCapabilities(); applyStemMemoryPreferences(); resumeOwnedStemJobs();
+  renderPads(); renderPadEditor(); renderPadWorkspaceControls(); renderInstrumentOptions(); renderHarmonyLab(); renderPresetOptions(); if (drums.restored) renderBeatForge(); else applyDrumPreset(drums.preset); renderSources(); renderAiContext(); renderStemLab(); renderProducerStudio(); renderEditor(); drawWaveform("a"); drawWaveform("b"); setDeckStatus("a", "empty"); setDeckStatus("b", "empty"); restoreDeckProjectState(); renderSmartMixPanel(); renderSmartPromptPlan(); renderSmartPromptLibrary(); renderTempoSafetyPreferences(); renderBpmRecovery(); renderGlobalTransport(); renderProjectRegistry(); renderProjectLibrary();
 }
 
 function saveDeckProjectState() {
@@ -10520,25 +10606,34 @@ function renderProjectRegistry() {
   const name = document.querySelector("#activeProjectName"); if (name) name.textContent = active?.name || "No project open";
   const selector = document.querySelector("#projectSelector"); if (selector) { selector.innerHTML = projects.map((item) => `<option value="${escapeHtml(item.projectId)}" ${item.projectId === active?.projectId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join(""); selector.disabled = !projects.length; }
   const migration = document.querySelector("#projectMigrationStatus"); if (migration) migration.textContent = active?.migration ? `Migration: ${active.migration.status}${active.migration.copiedDomains?.length ? ` · copied ${active.migration.copiedDomains.join(", ")}` : " · no legacy data copied"}. Legacy backup preserved.` : "No migration record.";
-  const diagnostics = document.querySelector("#projectDiagnostics"); if (diagnostics) diagnostics.textContent = JSON.stringify({ ...ProjectRegistry.diagnostics(), ...ProjectAssets.diagnostics(), activeSession: session, storageIsolation: "Project Registry authoritative", switchBoundary: "Global Stop → persist → open → reload" }, null, 2);
+  const diagnostics = document.querySelector("#projectDiagnostics"); if (diagnostics) diagnostics.textContent = JSON.stringify({ ...ProjectRegistry.diagnostics(), ...ProjectAssets.diagnostics(), activeSession: session, storageIsolation: "Project Registry authoritative", switchBoundary: "Global Stop → persist → runtime reset → rebind" }, null, 2);
   document.body.classList.toggle("project-closed", !active);
 }
 
 async function openRegisteredProject(projectId) {
   if (!projectId) return;
-  if (projectId === ProjectRegistry.getSession()?.projectId && ProjectRegistry.getActiveProject()) return;
-  if (!ProjectRegistry.getActiveProject()) { ProjectRegistry.openProject(projectId, { reason: "user-open" }); window.location.reload(); return; }
-  await stopAllAudio();
-  persistActiveProjectDomains();
-  ProjectRegistry.beginSwitch(projectId);
-  RecordingService.cleanup(); ExportService.cleanup();
-  ProjectRegistry.openProject(projectId, { reason: "user-switch" });
-  window.location.reload();
+  const target = ProjectRegistry.getProject(projectId); if (!target) return setProjectLibraryStatus("Project not found.", "error");
+  if (target.status === "Archived") return setProjectLibraryStatus("Restore this archived project before opening it.", "error");
+  const validation = ProjectRegistry.validateProject(projectId); const blockingIssues = validation.issues.filter((issue) => !issue.repairable);
+  if (blockingIssues.length) return setProjectLibraryStatus(`${target.name} cannot open until ${blockingIssues.map((issue) => issue.message).join(" ")}`, "error");
+  if (projectId === ProjectRegistry.getSession()?.projectId && ProjectRegistry.getActiveProject()) { ProjectRegistry.markProjectOpened(projectId); switchView("ai"); setProjectLibraryStatus(`Opened ${target.name}.`, "success"); renderProjectRegistry(); renderProjectLibrary(); return; }
+  if (finishingState.activeRecordingId && !window.confirm("A recording is active. Stop and finalize it before switching projects?")) return;
+  if (finishingState.activeRecordingId) await stopMasterRecording();
+  if (editorState.autosaveState === "Unsaved Changes" && !window.confirm("Save current project changes and switch projects?")) return;
+  setProjectLibraryStatus(`Opening ${target.name}…`, "loading"); document.body.classList.add("project-switching");
+  try {
+    if (ProjectRegistry.getActiveProject()) { await stopAllAudio(); if (!persistActiveProjectDomains()) throw new Error("The active project could not be saved safely."); ProjectRegistry.beginSwitch(projectId); }
+    RecordingService.cleanup(); ExportService.cleanup();
+    ProjectRegistry.openProject(projectId, { reason: ProjectRegistry.getActiveProject() ? "user-switch" : "user-open" });
+    await restoreProjectRuntime(projectId);
+    document.body.classList.remove("project-closed"); switchView("ai"); setProjectLibraryStatus(`Opened ${target.name}.`, "success");
+  } catch (error) { setProjectLibraryStatus(`Open failed: ${error.message}`, "error"); }
+  finally { document.body.classList.remove("project-switching"); }
 }
 
-async function createRegisteredProject() {
-  const name = window.prompt("New project name", "Untitled Project"); if (!name?.trim()) return;
-  const created = ProjectRegistry.createProject({ name }, { open: false });
+async function createRegisteredProject(name = null, type = "Empty Project") {
+  if (!name) return openCreateProjectDialog(type);
+  const created = ProjectRegistry.createProject({ name, type, metadata: { type, favorite: false, tags: [] } }, { open: false });
   await openRegisteredProject(created.projectId);
 }
 
@@ -10548,20 +10643,108 @@ function renameActiveProject() {
   const renamed = ProjectRegistry.renameProject(active.projectId, name); producerStudioState.projectName = renamed.name; writeProducerStudioStorage(); renderProjectRegistry(); renderProducerStudio();
 }
 
-async function closeActiveProject() {
-  const active = ProjectRegistry.getActiveProject(); if (!active || !window.confirm(`Close ${active.name}? Playback will stop and the project will be saved.`)) return;
-  await stopAllAudio(); persistActiveProjectDomains(); RecordingService.cleanup(); ExportService.cleanup(); ProjectRegistry.closeProject(active.projectId); if (AudioEngine.context?.state === "running") await AudioEngine.context.suspend(); renderProjectRegistry();
+async function closeActiveProject(options = {}) {
+  const active = ProjectRegistry.getActiveProject(); if (!active || (options.confirm !== false && !window.confirm(`Close ${active.name}? Playback will stop and the project will be saved.`))) return false;
+  if (finishingState.activeRecordingId && !window.confirm("Stop and finalize the active recording before closing this project?")) return false;
+  if (finishingState.activeRecordingId) await stopMasterRecording();
+  await stopAllAudio(); persistActiveProjectDomains(); RecordingService.cleanup(); ExportService.cleanup(); ProjectRegistry.closeProject(active.projectId); if (AudioEngine.context?.state === "running") await AudioEngine.context.suspend(); renderProjectRegistry(); switchView("projectLibrary"); renderProjectLibrary(); return true;
+}
+
+async function returnToProjectLibrary() {
+  const active = ProjectRegistry.getActiveProject();
+  if (active) {
+    if (finishingState.activeRecordingId && !window.confirm("Stop and finalize the active recording before returning to the Project Library?")) return false;
+    if (finishingState.activeRecordingId) await stopMasterRecording();
+    if (editorState.autosaveState === "Unsaved Changes" && !window.confirm("Save current project changes before returning to the Project Library?")) return false;
+    await stopAllAudio();
+    if (!persistActiveProjectDomains()) { setProjectLibraryStatus("The project could not be saved safely. Stay in the workspace and try again.", "error"); return false; }
+  }
+  switchView("projectLibrary"); renderProjectRegistry(); renderProjectLibrary();
+  if (active) setProjectLibraryStatus(`${active.name} was saved. Choose Continue to return to Producer Studio.`, "success");
+  return true;
+}
+
+const projectLibraryState = { search: "", sort: "Recently Opened", filter: "All", selectedProjectId: null };
+function setProjectLibraryStatus(message = "", state = "idle") { const output = document.querySelector("#projectLibraryStatus"); if (output) { output.textContent = message; output.dataset.state = state; } }
+function projectTypeInitials(type) { return String(type || "Project").split(/\s+/).map((part) => part[0]).join("").slice(0, 3).toUpperCase(); }
+function projectDate(value, empty = "Never") { return value ? new Date(value).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : empty; }
+function projectCard(project, recentProjectId = null) {
+  const active = ProjectRegistry.getSession()?.projectId === project.projectId;
+  const recent = project.projectId === recentProjectId;
+  const archived = project.status === "Archived";
+  const progressLabel = project.progress == null ? "Not measured" : `${project.progress}%`;
+  const latestExport = project.latestExport ? `${project.latestExport.name} · ${project.latestExport.status}` : "None";
+  const artwork = project.artwork ? `<img src="${escapeHtml(project.artwork)}" alt="${escapeHtml(project.name)} artwork">` : `<span aria-label="No artwork; ${escapeHtml(project.type)} project">${escapeHtml(projectTypeInitials(project.type))}</span>`;
+  return `<article class="project-card${active ? " is-active" : ""}${recent ? " is-recent" : ""}" data-project-id="${escapeHtml(project.projectId)}" tabindex="0" aria-labelledby="project-card-${escapeHtml(project.projectId)}">
+    <div class="project-card__art">${artwork}</div><div class="project-card__body"><div class="project-card__head"><div><h3 id="project-card-${escapeHtml(project.projectId)}">${escapeHtml(project.name)}</h3><small>${escapeHtml(project.type)}</small></div>${project.favorite ? `<span class="project-favorite" aria-label="Favorite project">★</span>` : ""}</div>
+    <div class="project-card__meta"><span class="project-status-chip">${active ? "Open" : escapeHtml(project.status)}</span>${recent ? `<span class="project-status-chip">Most recent</span>` : ""}${project.migration && !["Complete", "Not required"].includes(project.migration.status) ? `<span class="project-status-chip is-warning">Migration: ${escapeHtml(project.migration.status)}</span>` : ""}${project.missingAssetCount ? `<span class="project-status-chip is-warning">${project.missingAssetCount} missing asset${project.missingAssetCount === 1 ? "" : "s"}</span>` : ""}${project.needsRepair ? `<span class="project-status-chip is-warning">Needs repair</span>` : ""}</div>
+    <div class="project-card__progress" title="Progress: ${escapeHtml(progressLabel)}"><span style="width:${project.progress || 0}%"></span></div>
+    <dl class="project-card__facts"><div><dt>Last opened</dt><dd>${escapeHtml(projectDate(project.lastOpenedAt))}</dd></div><div><dt>Created</dt><dd>${escapeHtml(projectDate(project.createdAt, "Unknown"))}</dd></div><div><dt>Progress</dt><dd>${escapeHtml(progressLabel)}</dd></div><div><dt>Duration</dt><dd>${escapeHtml(project.durationLabel || "No arrangement duration")}</dd></div><div><dt>Tracks</dt><dd>${project.trackCount}</dd></div><div><dt>Arrangement</dt><dd>${escapeHtml(project.arrangementStatus)}</dd></div><div><dt>Recordings</dt><dd>${project.recordingCount}</dd></div><div><dt>Latest export</dt><dd title="${escapeHtml(latestExport)}">${escapeHtml(latestExport)}</dd></div></dl>
+    <div class="project-card__actions">${archived ? `<button type="button" data-project-action="restore">Restore</button>` : `<button type="button" data-project-action="open">${active ? "Continue" : "Open"}</button>`}<button type="button" data-project-action="favorite" aria-pressed="${project.favorite}">${project.favorite ? "Unfavorite" : "Favorite"}</button><button type="button" data-project-action="details">Details</button><button type="button" data-project-action="rename">Rename</button><button type="button" data-project-action="duplicate">Duplicate</button>${!archived ? `<button type="button" data-project-action="archive">Archive</button>` : ""}<button type="button" data-project-action="validate">Validate</button>${project.validation.issues.some((issue) => issue.repairable) ? `<button type="button" data-project-action="repair">Repair</button>` : ""}<button type="button" data-project-action="delete">Delete</button></div></div></article>`;
+}
+
+function renderProjectLibrary() {
+  if (!ProjectLibrary) return;
+  const projects = ProjectLibrary.query(projectLibraryState); const diagnostics = ProjectLibrary.diagnostics();
+  const recentProjectId = ProjectLibrary.query({ search: "", filter: "All", sort: "Recently Opened" })[0]?.projectId || null;
+  const grid = document.querySelector("#projectLibraryGrid"); const empty = document.querySelector("#projectLibraryEmpty");
+  if (grid) grid.innerHTML = projects.map((project) => projectCard(project, recentProjectId)).join(""); if (empty) empty.hidden = projects.length > 0;
+  const stats = document.querySelector("#projectLibraryStats"); if (stats) stats.innerHTML = `<span>${diagnostics.projectCount} project${diagnostics.projectCount === 1 ? "" : "s"}</span><span>${diagnostics.favoriteCount} favorite${diagnostics.favoriteCount === 1 ? "" : "s"}</span><span>${diagnostics.archivedCount} archived</span><span>${diagnostics.missingAssetCount} missing asset${diagnostics.missingAssetCount === 1 ? "" : "s"}</span>`;
+  const openExisting = document.querySelector("#openExistingProject"); if (openExisting) { openExisting.disabled = diagnostics.projectCount === 0; openExisting.title = diagnostics.projectCount ? "Clear search and filters to show registered projects" : "No registered project is available to open"; }
+  const output = document.querySelector("#projectLibraryDiagnostics"); if (output) output.textContent = JSON.stringify(diagnostics, null, 2);
+}
+
+function openCreateProjectDialog(type = "Empty Project") {
+  const dialog = document.querySelector("#createProjectDialog"); if (!dialog) return;
+  document.querySelector("#newProjectTypes").innerHTML = ProjectLibrary.PROJECT_TYPES.map((item) => `<label><input type="radio" name="projectType" value="${escapeHtml(item)}" ${item === type ? "checked" : ""}> ${escapeHtml(item)}</label>`).join("");
+  const name = document.querySelector("#newProjectName"); name.value = type === "Empty Project" ? "Untitled Project" : `Untitled ${type}`; dialog.showModal(); name.select();
+}
+
+function revealProjectDetails(projectId) {
+  const registered = ProjectRegistry.getProject(projectId); if (!registered) return; const project = ProjectLibrary.projectOverview(registered);
+  projectLibraryState.selectedProjectId = projectId; document.querySelector("#projectDetailsTitle").textContent = project.name;
+  const issues = project.validation.issues.length ? `<ul>${project.validation.issues.map((issue) => `<li>${escapeHtml(issue.message)}</li>`).join("")}</ul>` : "No validation issues found.";
+  document.querySelector("#projectDetailsContent").innerHTML = `<dl class="project-details-list"><div><dt>Immutable project ID</dt><dd>${escapeHtml(project.projectId)}</dd></div><div><dt>Type</dt><dd>${escapeHtml(project.type)}</dd></div><div><dt>Status</dt><dd>${escapeHtml(project.status)}</dd></div><div><dt>Favorite</dt><dd>${project.favorite ? "Yes" : "No"}</dd></div><div><dt>Created</dt><dd>${escapeHtml(projectDate(project.createdAt, "Unknown"))}</dd></div><div><dt>Last opened</dt><dd>${escapeHtml(projectDate(project.lastOpenedAt))}</dd></div><div><dt>Progress</dt><dd>${project.progress == null ? "Not measured" : `${project.progress}%`}</dd></div><div><dt>Duration</dt><dd>${escapeHtml(project.durationLabel || "No arrangement duration")}</dd></div><div><dt>Track references</dt><dd>${project.trackCount}</dd></div><div><dt>Arrangement</dt><dd>${escapeHtml(project.arrangementStatus)} · ${project.arrangementClipCount} clips</dd></div><div><dt>Recordings</dt><dd>${project.recordingCount}</dd></div><div><dt>Missing assets</dt><dd>${project.missingAssetCount}</dd></div></dl><section><h3>Validation</h3>${issues}</section><p class="fine-print">Open Folder is unavailable in this browser build because no durable folder handle is registered for this project.</p>`;
+  document.querySelector("#projectDetailsDialog").showModal();
+}
+
+async function handleProjectLibraryAction(projectId, action) {
+  const project = ProjectRegistry.getProject(projectId); if (!project) return setProjectLibraryStatus("Project not found.", "error");
+  try {
+    if (action === "open") await openRegisteredProject(projectId);
+    if (action === "details") revealProjectDetails(projectId);
+    if (action === "favorite") { ProjectRegistry.favoriteProject(projectId, !project.metadata?.favorite); setProjectLibraryStatus(`${project.name} ${project.metadata?.favorite ? "removed from" : "added to"} favorites.`, "success"); }
+    if (action === "rename") { const name = window.prompt("Rename project", project.name); if (name?.trim()) { const renamed = ProjectRegistry.renameProject(projectId, name); if (projectId === ACTIVE_PROJECT_ID) { producerStudioState.projectName = renamed.name; writeProducerStudioStorage(); renderProducerStudio(); } setProjectLibraryStatus(`Renamed project to ${renamed.name}.`, "success"); } }
+    if (action === "duplicate") { if (projectId === ACTIVE_PROJECT_ID) persistActiveProjectDomains(); const copy = ProjectRegistry.duplicateProject(projectId); setProjectLibraryStatus(`Created ${copy.name}. Runtime-only audio remains relink-required.`, "success"); }
+    if (action === "archive") { if (!window.confirm(`Archive ${project.name}? You can restore it from the Archived filter.`)) return; if (projectId === ACTIVE_PROJECT_ID && !(await closeActiveProject({ confirm: false }))) return; ProjectRegistry.archiveProject(projectId); setProjectLibraryStatus(`Archived ${project.name}.`, "success"); }
+    if (action === "restore") { ProjectRegistry.restoreProject(projectId); setProjectLibraryStatus(`Restored ${project.name}.`, "success"); }
+    if (action === "validate") { const result = ProjectRegistry.validateProject(projectId); setProjectLibraryStatus(result.valid ? `${project.name} passed validation.` : `${project.name} has ${result.issues.length} validation issue${result.issues.length === 1 ? "" : "s"}.`, result.valid ? "success" : "error"); }
+    if (action === "repair") { if (!window.confirm(`Repair safe metadata and ownership issues in ${project.name}? A recovery backup will be preserved.`)) return; const result = ProjectRegistry.repairProject(projectId); setProjectLibraryStatus(result.message, result.repaired ? "success" : "error"); }
+    if (action === "delete") { if (!window.confirm(`Delete ${project.name} and its browser-stored project data? This cannot be undone.`)) return; if (projectId === ACTIVE_PROJECT_ID && !(await closeActiveProject({ confirm: false }))) return; ProjectRegistry.deleteProject(projectId, { purge: true }); setProjectLibraryStatus(`Deleted ${project.name}.`, "success"); }
+    renderProjectRegistry(); renderProjectLibrary();
+  } catch (error) { setProjectLibraryStatus(`${action} failed: ${error.message}`, "error"); }
 }
 
 function setupProjectRegistryEvents() {
   document.querySelector("#projectSelector")?.addEventListener("change", (event) => openRegisteredProject(event.target.value));
   document.querySelector("#openProject")?.addEventListener("click", () => openRegisteredProject(document.querySelector("#projectSelector")?.value));
-  document.querySelector("#createProject")?.addEventListener("click", createRegisteredProject);
+  document.querySelector("#createProject")?.addEventListener("click", () => openCreateProjectDialog());
   document.querySelector("#renameProject")?.addEventListener("click", renameActiveProject);
   document.querySelector("#closeProject")?.addEventListener("click", closeActiveProject);
-  window.addEventListener("keydown", (event) => { if (document.body.classList.contains("project-closed")) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+  document.querySelector("#openProjectLibrary")?.addEventListener("click", () => { document.querySelector("#projectMenu")?.removeAttribute("open"); returnToProjectLibrary(); });
+  document.querySelector("#projectLibraryCreate")?.addEventListener("click", () => openCreateProjectDialog());
+  document.querySelector("#projectLibrarySearch")?.addEventListener("input", (event) => { projectLibraryState.search = event.target.value; renderProjectLibrary(); });
+  const sort = document.querySelector("#projectLibrarySort"); if (sort) { sort.innerHTML = ProjectLibrary.SORTS.map((item) => `<option>${escapeHtml(item)}</option>`).join(""); sort.value = projectLibraryState.sort; sort.addEventListener("change", (event) => { projectLibraryState.sort = event.target.value; renderProjectLibrary(); }); }
+  const filter = document.querySelector("#projectLibraryFilter"); if (filter) { filter.innerHTML = ProjectLibrary.FILTERS.map((item) => `<option>${escapeHtml(item)}</option>`).join(""); filter.value = projectLibraryState.filter; filter.addEventListener("change", (event) => { projectLibraryState.filter = event.target.value; renderProjectLibrary(); }); }
+  document.querySelector("#projectLibraryGrid")?.addEventListener("click", (event) => { const button = event.target.closest("[data-project-action]"); const card = button?.closest("[data-project-id]"); if (button && card) handleProjectLibraryAction(card.dataset.projectId, button.dataset.projectAction); });
+  document.querySelector("#projectLibraryGrid")?.addEventListener("keydown", (event) => { if ((event.key === "Enter" || event.key === " ") && event.target.matches(".project-card")) { event.preventDefault(); revealProjectDetails(event.target.dataset.projectId); } });
+  document.querySelector("#projectLibraryEmpty")?.addEventListener("click", (event) => { const type = event.target.closest("[data-project-empty-type]")?.dataset.projectEmptyType; if (type) openCreateProjectDialog(type); if (event.target.id === "openExistingProject" && !event.target.disabled) { projectLibraryState.search = ""; projectLibraryState.filter = "All"; document.querySelector("#projectLibrarySearch").value = ""; document.querySelector("#projectLibraryFilter").value = "All"; renderProjectLibrary(); } });
+  document.querySelector("#createProjectForm")?.addEventListener("submit", async (event) => { event.preventDefault(); const name = document.querySelector("#newProjectName").value.trim(); const type = document.querySelector('input[name="projectType"]:checked')?.value || "Empty Project"; if (!name) return; document.querySelector("#createProjectDialog").close(); await createRegisteredProject(name, type); });
+  document.querySelectorAll("[data-project-dialog-close]").forEach((button) => button.addEventListener("click", () => document.querySelector("#createProjectDialog")?.close()));
+  document.querySelectorAll("[data-project-details-close]").forEach((button) => button.addEventListener("click", () => document.querySelector("#projectDetailsDialog")?.close()));
+  window.addEventListener("keydown", (event) => { if (document.body.classList.contains("project-closed") && !event.target.closest?.("#projectLibrary, .project-dialog")) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   window.addEventListener("beforeunload", persistActiveProjectDomains);
-  renderProjectRegistry();
+  renderProjectRegistry(); renderProjectLibrary();
 }
 
 function hasSupportedExtension(file, extensions) {
@@ -10750,8 +10933,9 @@ function setupEvents() {
   });
 
   document.querySelectorAll(".tab-button").forEach((button) => {
-    button.addEventListener("click", () => {
-      switchView(button.dataset.target);
+    button.addEventListener("click", async () => {
+      if (button.dataset.target === "projectLibrary") await returnToProjectLibrary();
+      else switchView(button.dataset.target);
     });
   });
 
@@ -12743,47 +12927,23 @@ function detectPlatform(url) {
   return "Link";
 }
 
-restorePadWorkspace();
-restoreBeatForgeState();
-restoreHarmonyState();
-readProducerStudioStorage();
-editorState.projectId = producerStudioState.projectId;
-editorState.name = producerStudioState.projectName ? `${producerStudioState.projectName} Arrangement` : editorState.name;
-restoreArrangementProject();
+async function initializeProjectEntryFlow() {
+  const route = readProjectRoute(); const active = ProjectRegistry.getActiveProject();
+  let fallbackMessage = "";
+  if (route.kind === "project" && active?.projectId === route.projectId) {
+    const validation = ProjectRegistry.validateProject(active.projectId); const blocking = validation.issues.filter((issue) => !issue.repairable);
+    if (!blocking.length) { await restoreProjectRuntime(active.projectId); document.body.classList.remove("project-closed"); switchView(route.view || "ai", { route: false }); return; }
+    ProjectRegistry.closeProject(active.projectId); updateProjectStorageBindings(null); fallbackMessage = "Open or create a project to continue.";
+  } else if (route.kind === "project" || route.kind === "invalid-project") fallbackMessage = "Open or create a project to continue.";
+  switchView("projectLibrary", { route: false }); writeProjectRoute("projectLibrary"); renderProjectRegistry(); renderProjectLibrary();
+  if (fallbackMessage) setProjectLibraryStatus(fallbackMessage, "error");
+}
+
+projectRuntimeDefaults = captureProjectRuntimeDefaults();
 initializePlaybackRegistry();
-readSmartPromptStorage();
 setupProjectRegistryEvents();
 setupEvents();
 setupProducerStudioEvents();
-renderStemLab();
-initializeStemCapabilities();
-resumeOwnedStemJobs();
-renderPads();
-renderPadEditor();
-renderPadWorkspaceControls();
-renderInstrumentOptions();
-renderHarmonyLab();
-renderPresetOptions();
-if (drums.restored) renderBeatForge(); else applyDrumPreset(drums.preset);
-renderSources();
-renderAiContext();
-initializeProducerMemory();
-initializeFinishingServices();
-applyStemMemoryPreferences();
-initializeProjectIntelligence();
-initializeRecommendationEngine();
-initializeMissionEngine();
-renderProducerStudio();
-renderEditor();
-drawWaveform("a");
-drawWaveform("b");
-setDeckStatus("a", "empty");
-setDeckStatus("b", "empty");
-restoreDeckProjectState();
-renderSmartMixPanel();
-renderSmartPromptPlan();
-renderSmartPromptLibrary();
-renderTempoSafetyPreferences();
-renderBpmRecovery();
 renderGlobalTransport();
+initializeProjectEntryFlow().catch((error) => { updateProjectStorageBindings(null); switchView("projectLibrary", { route: false }); writeProjectRoute("projectLibrary"); renderProjectRegistry(); renderProjectLibrary(); setProjectLibraryStatus(`Project startup recovery: ${error.message}`, "error"); });
 animationLoop();
