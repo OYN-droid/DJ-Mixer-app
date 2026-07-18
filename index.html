@@ -1186,6 +1186,15 @@
             <button id="ditcMemoryToggle" class="secondary-button" aria-pressed="true">Prioritize Project Memory</button>
             <span id="ditcResultCount">0 results</span>
           </div>
+          <section id="connectedMusicBrowser" class="provider-browser" aria-labelledby="providerBrowserTitle">
+            <header><div><p class="eyebrow">Connected Sources</p><h3 id="providerBrowserTitle">Connected Music Browser</h3><p>Search sources by their real capabilities. Catalog access never implies native DeckForge audio.</p></div><button id="providerSettingsOpen" class="secondary-button" type="button">Source Settings</button></header>
+            <div id="providerSourceChips" class="provider-source-chips" role="toolbar" aria-label="Music source filters"></div>
+            <form id="providerSearchForm" class="provider-search-form"><label><span class="sr-only">Search connected music sources</span><input id="providerSearchInput" type="search" placeholder="Search imported local music" required></label><button class="primary-button" type="submit">Search Music</button><button id="providerCancelSearch" class="secondary-button" type="button" disabled>Cancel</button><button id="providerRefreshSearch" class="secondary-button" type="button" disabled>Refresh</button></form>
+            <p id="providerBrowserStatus" class="provider-browser-status" role="status" aria-live="polite">Local Files is available after you import music. Other provider integrations are not installed.</p>
+            <div id="providerCards" class="provider-cards" aria-label="Registered music providers"></div>
+            <div id="providerSearchResults" class="provider-results" aria-live="polite"><div class="provider-empty"><strong>No provider search yet.</strong><span>Import local files, then search the Local Files provider.</span></div></div>
+            <details id="providerDiagnostics" class="ditc-advanced-only"><summary>Provider diagnostics</summary><pre id="providerDiagnosticsOutput"></pre></details>
+          </section>
           <div id="sourceDrop" class="drop-zone ditc-drop-zone">
             <strong>Drop music or a folder here</strong>
             <span>Then preview it, or load it onto Deck A or Deck B. Supported: MP3, WAV, AIFF, FLAC, M4A, AAC and ALAC.</span>
@@ -1218,7 +1227,7 @@
               <input id="sourceName" type="text" placeholder="Reference name">
               <button class="primary-button" type="submit">Add Reference</button>
             </form>
-            <p class="fine-print">References are metadata only unless the URL points directly to CORS-enabled audio.</p>
+            <p class="fine-print">Public references are metadata or external links until you explicitly link a supported local audio asset.</p>
           </details>
           <details id="ditcDiagnostics" class="ditc-diagnostics ditc-advanced-only">
             <summary>Development diagnostics</summary><pre id="ditcDiagnosticsOutput"></pre>
@@ -1241,9 +1250,14 @@
       <article><header><div><p class="eyebrow">Project Details</p><h2 id="projectDetailsTitle">Project</h2></div><button type="button" data-project-details-close aria-label="Close project details">×</button></header><div id="projectDetailsContent"></div><footer><button type="button" class="primary-button" data-project-details-close>Done</button></footer></article>
     </dialog>
 
+    <dialog id="providerSettingsDialog" class="project-dialog provider-settings-dialog" aria-labelledby="providerSettingsTitle">
+      <article><header><div><p class="eyebrow">Connected Sources</p><h2 id="providerSettingsTitle">Provider Settings</h2></div><button type="button" data-provider-settings-close aria-label="Close provider settings">×</button></header><div id="providerSettingsList"></div><footer><button id="clearProviderCache" class="secondary-button" type="button">Clear Search Cache</button><button class="primary-button" type="button" data-provider-settings-close>Done</button></footer></article>
+    </dialog>
+
     <script src="src/project-registry.js"></script>
     <script src="src/project-assets.js"></script>
     <script src="src/project-library.js"></script>
+    <script src="src/provider-foundation.js"></script>
     <script src="src/audio/playback-registry.js"></script>
     <script src="src/project-intelligence.js"></script>
     <script src="src/producer-memory.js"></script>

@@ -4,6 +4,10 @@ const DECKFORGE_LOG_PREFIX = "[DeckForge]";
 const ProjectRegistry = window.DeckForgeProjectRegistry;
 const ProjectAssets = window.DeckForgeProjectAssets;
 const ProjectLibrary = window.DeckForgeProjectLibrary;
+const ProviderFoundation = window.DeckForgeProviders;
+const ProviderRegistry = ProviderFoundation.ProviderRegistry;
+const ProviderConnections = ProviderFoundation.ProviderConnections;
+const ProviderSearch = ProviderFoundation.ProviderSearch;
 let initialProject = ProjectRegistry.getActiveProject();
 let initialProjectSession = ProjectRegistry.getSession();
 let ACTIVE_PROJECT_ID = initialProject?.projectId || null;
@@ -199,6 +203,7 @@ const finishingState = {
 
 const assetManagerState = { search: "", filter: "All", sort: "Name", mode: "simple", selectedAssetId: null, pendingRelinkAssetId: null, lastError: null };
 const assetPreviewState = { assetId: null, buffer: null, source: null, gain: null, startedAt: 0, playing: false };
+const providerBrowserState = { filter: "local", selectedProviderIds: ["local-files"], searchId: null, query: "", lastSearchStatus: null, lastError: null, selectedGroupId: null };
 
 const crateSelection = {
   local: new Set(),
@@ -10577,6 +10582,8 @@ function updateProjectStorageBindings(projectId) {
 }
 
 function resetProjectRuntime(projectId) {
+  if (providerBrowserState.searchId) ProviderSearch.cancelSearch(providerBrowserState.searchId);
+  Object.assign(providerBrowserState, { searchId: null, query: "", lastSearchStatus: null, lastError: null, selectedGroupId: null });
   if (!projectRuntimeDefaults) projectRuntimeDefaults = captureProjectRuntimeDefaults();
   producerStudioState.contextUnsubscribe?.(); producerStudioState.contextUnsubscribe = null;
   deckState.a = createDeckState("a"); deckState.b = createDeckState("b");
@@ -10700,7 +10707,7 @@ function refreshProjectAssetIndex() {
       ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Audio Track", sourceType: "Local File", sourceId: track.id, displayName: track.name, originalFilename: track.file?.name || track.name, mimeType: track.file?.type || null, sizeBytes: track.file?.size ?? null, duration: track.buffer?.duration || track.analysis?.duration || null, persistentReference: { kind: "browser-file-metadata", key: track.storageId }, shared: false, generated: false, linked: true, missing: !track.file, relinkRequired: !track.file, references: [assetReference("DITC", track.id, track.title || track.name, "Crate audio", true, false, track.addedAt ? new Date(track.addedAt).toISOString() : null), ...arrangementReferencesForSource(track.id)], metadata: { title: track.title, artist: track.artist, album: track.album, tags: track.tags || [], BPM: track.analysis?.bpm || null, key: track.analysis?.key || null, lastModified: track.file?.lastModified || null } }); indexed += 1;
     });
     const savedSources = (() => { try { return JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]"); } catch { return []; } })();
-    savedSources.forEach((source) => { ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Provider Metadata Reference", sourceType: "Metadata Only", sourceId: source.url, displayName: source.name, providerReference: { provider: detectPlatform(source.url), referenceId: source.url }, linked: Boolean(source.linkedAssetId), missing: false, relinkRequired: false, references: [assetReference("DITC", source.url, source.name, "Crate metadata", true)], metadataLink: source.linkedAssetId ? { metadataReferenceId: source.url, linkedAssetId: source.linkedAssetId, matchMethod: source.matchMethod || "Manual", matchConfidence: source.matchConfidence ?? null, userConfirmed: true, linkedAt: source.linkedAt || null, originalProvider: detectPlatform(source.url) } : null, metadata: { title: source.title || source.name, artist: source.artist || null, album: source.album || null, tags: source.tags || [], provider: detectPlatform(source.url) } }); indexed += 1; });
+    savedSources.forEach((source) => { const providerId = source.providerId || providerIdFromUrl(source.url); const playbackCapability = source.linkedAssetId ? "Local Audio Linked" : source.playbackCapability || "Metadata Only"; ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Provider Metadata Reference", sourceType: source.linkedAssetId ? "Local Audio Linked" : playbackCapability === "External Playback" ? "External Source" : playbackCapability === "Authorization Required" ? "Authorization Required" : "Metadata Only", sourceId: source.providerUrl || source.url || `${providerId}:${source.providerTrackId}`, displayName: source.title || source.name, duration: source.duration, providerReference: { provider: providerId, externalId: source.providerTrackId || source.url, publicUrl: source.providerUrl || (/^https?:/i.test(source.url || "") ? source.url : null) }, linked: Boolean(source.linkedAssetId), missing: false, relinkRequired: false, references: [assetReference("DITC", source.resultId || source.url, source.title || source.name, "Provider metadata import", true)], metadataLink: source.linkedAssetId ? { metadataReferenceId: source.resultId || source.url, linkedAssetId: source.linkedAssetId, matchMethod: source.matchMethod || "Manual", matchConfidence: source.matchConfidence ?? null, userConfirmed: true, linkedAt: source.linkedAt || null, originalProvider: providerId } : null, metadata: { title: source.title || source.name, artist: source.artist || null, album: source.album || null, version: source.version || null, isrc: source.isrc || null, explicit: source.explicit === true, tags: source.tags || [], provider: providerId, playbackCapability, localLinkStatus: source.linkedAssetId ? "Linked" : source.localLinkStatus || "Not Linked" } }); indexed += 1; });
     ["a", "b"].forEach((deckId) => { const deck = deckState[deckId]; if (!deck.trackName) return; ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Decks", createdBy: "user", assetType: "Deck State", sourceType: "Runtime Deck Reference", sourceId: `deck-${deckId}`, displayName: deck.trackName, duration: deck.buffer?.duration || null, linked: Boolean(deck.buffer), missing: !deck.buffer, relinkRequired: !deck.buffer, references: [assetReference("Decks", deckId, `Deck ${deckId.toUpperCase()}`, "Loaded deck source", Boolean(deck.buffer))], metadata: { deckId, analysis: deck.analysis || null } }); indexed += 1; });
     sampler.names.forEach((name, index) => { const buffer = sampler.buffers[index]; if (!buffer && !sampler.relink[index]) return; const sourceId = `pad:${sampler.bank}:${index}`; const linkedAssetId = sampler.assetIds?.[index] || null; ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Pads", createdBy: "user", assetType: "Pad Sample", sourceType: buffer ? "Runtime AudioBuffer" : "Missing Runtime Audio", sourceId, displayName: name, duration: buffer ? getPadRegion(index).end - getPadRegion(index).start : null, linked: Boolean(buffer), missing: !buffer, relinkRequired: !buffer, references: [assetReference("Pads", `${sampler.bank}:${index}`, `Bank ${sampler.bank}, Pad ${index + 1}`, "Pad assignment", Boolean(buffer)), ...arrangementReferencesForSource(String(index))], lineage: linkedAssetId ? [{ assetId: linkedAssetId, relationship: "Assigned from" }] : [], metadata: { bank: sampler.bank, padIndex: index, mode: sampler.modes[index], category: sampler.categories[index], sourceLabel: sampler.sources[index] } }); indexed += 1; });
     if (drums.source !== "Preset" || drums.patterns.length || drums.version > 1) { ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Beat Forge", createdBy: drums.source?.includes("AI") ? "AI" : "user", assetType: "Beat Sample", sourceType: "Project Pattern", sourceId: drums.patternId, displayName: drums.name, generated: drums.source !== "Manual", linked: true, missing: false, references: [assetReference("Beat Forge", drums.patternId, drums.name, "Canonical beat pattern", true), ...arrangementReferencesForSource(drums.patternId)], metadata: { version: drums.version, machine: drums.machine, bars: drums.bars, BPM: Number(document.querySelector("#globalBpm")?.value || 124) } }); indexed += 1; }
@@ -10726,7 +10733,7 @@ async function openProjectAssetManager(projectId = ACTIVE_PROJECT_ID) {
   refreshProjectAssetIndex(); switchView("assets"); renderAssetManager(); document.querySelector("#projectMenu")?.removeAttribute("open");
 }
 
-function assetDisplayStatus(asset) { if (asset.trash?.trashed) return "Trash"; if (asset.missing) return asset.relinkRequired ? "Needs Relink" : "Missing"; if (asset.activeJobId) return "Processing"; if (asset.sourceType === "Metadata Only" && !asset.linked) return "Metadata Only"; return asset.validationStatus === "Not Validated" ? "Available" : asset.validationStatus; }
+function assetDisplayStatus(asset) { if (asset.trash?.trashed) return "Trash"; if (asset.missing) return asset.relinkRequired ? "Needs Relink" : "Missing"; if (asset.activeJobId) return "Processing"; if (asset.assetType === "Provider Metadata Reference") { if (asset.linked || asset.metadataLink?.linkedAssetId) return "Local Audio Linked"; if (asset.sourceType === "Authorization Required") return "Authorization Required"; if (asset.sourceType === "External Source") return "External Source"; if (asset.metadata?.localLinkStatus === "Not Linked") return "Local Link Required"; return "Metadata Only"; } return asset.validationStatus === "Not Validated" ? "Available" : asset.validationStatus; }
 function assetLocationLabel(asset) { if (asset.backendReference) return "Backend output"; if (asset.persistentReference) return "Browser file reference"; if (asset.providerReference) return "Provider metadata"; if (/Runtime/.test(asset.sourceType)) return "Runtime only"; return asset.sourceType || "Project"; }
 function assetKnownSize(bytes) { return bytes == null ? "Unknown" : formatFileSize(bytes); }
 
@@ -10803,7 +10810,7 @@ function repointAssetDomainReferences(duplicate, retained) {
 async function handleAssetRelinkFile(file) {
   const target = ProjectAssets.get(assetManagerState.pendingRelinkAssetId, ACTIVE_PROJECT_ID); assetManagerState.pendingRelinkAssetId = null; if (!target || !file) return; if (!isSupportedAudioFile(file)) throw new Error("Choose a supported audio file for relinking."); const buffer = await loadAudioFile(file); const mismatch = target.duration && Math.abs(buffer.duration - target.duration) / Math.max(.01, target.duration) > .25; if (mismatch && !window.confirm(`The replacement is ${formatTime(buffer.duration)}, which differs substantially from the expected ${formatTime(target.duration)}. Keep existing timing and continue?`)) return;
   addLocalSourceFile(file, { buffer, silent: true }); const local = sourceFiles[0]; const localAsset = ProjectAssets.list(ACTIVE_PROJECT_ID).find((asset) => asset.owningDomain === "DITC" && asset.sourceId === local.id); if (!localAsset) throw new Error("The replacement file could not be registered.");
-  if (target.assetType === "Provider Metadata Reference") { ProjectAssets.linkMetadata(target.assetId, localAsset.assetId, { matchMethod: "Manual", userConfirmed: true, originalProvider: target.providerReference?.provider, title: target.metadata?.title, artist: target.metadata?.artist, album: target.metadata?.album }, ACTIVE_PROJECT_ID); const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]"); const source = sources.find((item) => item.url === target.sourceId); if (source) { Object.assign(source, { linkedAssetId: localAsset.assetId, matchMethod: "Manual", matchConfidence: null, linkedAt: new Date().toISOString() }); localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources)); } }
+  if (target.assetType === "Provider Metadata Reference") { ProjectAssets.linkMetadata(target.assetId, localAsset.assetId, { matchMethod: "Manual", userConfirmed: true, originalProvider: target.providerReference?.provider, title: target.metadata?.title, artist: target.metadata?.artist, album: target.metadata?.album }, ACTIVE_PROJECT_ID); const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]"); const source = sources.find((item) => item.url === target.sourceId || (item.providerId === target.providerReference?.provider && item.providerTrackId === target.providerReference?.externalId)); if (source) { Object.assign(source, { linkedAssetId: localAsset.assetId, matchMethod: "Manual", matchConfidence: null, linkedAt: new Date().toISOString(), playbackCapability: "Local Audio Linked", playbackLabel: "Local Audio Linked", localLinkStatus: "Linked" }); localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources)); } }
   else { const result = ProjectAssets.relink(target.assetId, { linkedAssetId: localAsset.assetId, matchMethod: "Manual", userConfirmed: true, keepExistingTiming: true, localReference: { kind: "linked-project-asset", assetId: localAsset.assetId }, originalFilename: file.name, mimeType: file.type, sizeBytes: file.size, duration: buffer.duration }, ACTIVE_PROJECT_ID); const impactedClips = editorState.clips.filter((clip) => clip.id === target.sourceId || clip.sourceId === target.sourceId); if (impactedClips.length) { pushArrangementHistory(`Relink ${target.displayName}`); impactedClips.forEach((clip) => { clip.source = { id: local.id, label: file.name, detail: "Relinked through Asset Manager", duration: buffer.duration, sourceKind: "crate", fileName: file.name, buffer, playable: true }; clip.sourceKind = "crate"; clip.sourceId = local.id; clip.missingSource = false; clip.relinkRequired = false; }); editorState.runtimeSourceCache.set(`crate:${local.id}`, buffer); arrangementChanged(`Relinked ${impactedClips.length} arrangement reference${impactedClips.length === 1 ? "" : "s"} through Asset Manager`, { type: "arrangement-source-relinked" }); renderEditor(); } if (result.warnings.length) assetManagerState.lastError = `Relinked with warning: ${result.warnings.join(" ")}`; }
   setSourceStatus(`Linked ${file.name} through Project Asset Manager.`); refreshProjectAssetIndex(); renderSources(); renderAssetManager();
 }
@@ -10845,6 +10852,21 @@ function setupAssetManagerEvents() {
   document.querySelector("#assetRelinkInput")?.addEventListener("change", async (event) => { try { await handleAssetRelinkFile(event.target.files[0]); } catch (error) { assetManagerState.lastError = `Relink failed: ${error.message}`; renderAssetManager(); } });
   document.querySelector("#openAssetManagerMenu")?.addEventListener("click", () => openProjectAssetManager()); document.querySelector("#openProducerAssets")?.addEventListener("click", () => openProjectAssetManager());
   window.addEventListener("deckforge:project-assets-changed", (event) => { if (event.detail?.projectId !== ACTIVE_PROJECT_ID) return; if (projectIntelligenceReady) emitProjectContextChange("assets", event.detail.type, { summary: `Project asset ${String(event.detail.type).replace(/-/g, " ")}` }); if (document.querySelector("#assets")?.classList.contains("is-active")) requestAnimationFrame(renderAssetManager); });
+}
+
+function setupProviderEvents() {
+  document.querySelector("#providerSourceChips")?.addEventListener("click", (event) => { const filter = event.target.closest("[data-provider-filter]")?.dataset.providerFilter; if (!filter) return; providerBrowserState.filter = filter; providerBrowserState.selectedProviderIds = providerIdsForFilter(filter); renderConnectedMusicBrowser(); });
+  document.querySelector("#providerSearchForm")?.addEventListener("submit", (event) => { event.preventDefault(); runProviderSearch(false); });
+  document.querySelector("#providerCancelSearch")?.addEventListener("click", () => { if (providerBrowserState.searchId) ProviderSearch.cancelSearch(providerBrowserState.searchId); document.querySelector("#providerCancelSearch").disabled = true; renderConnectedMusicBrowser(); });
+  document.querySelector("#providerRefreshSearch")?.addEventListener("click", () => runProviderSearch(true));
+  document.querySelector("#providerSearchResults")?.addEventListener("click", (event) => { const button = event.target.closest("[data-provider-result-action]"); const row = button?.closest("[data-provider-group]"); if (button && row) handleProviderResultAction(button.dataset.providerResultAction, row.dataset.providerGroup); });
+  const openSettings = (providerId = null) => { renderProviderSettings(providerId); const dialog = document.querySelector("#providerSettingsDialog"); if (!dialog.open) dialog.showModal(); if (providerId) requestAnimationFrame(() => document.querySelector(`[data-provider-settings-card="${CSS.escape(providerId)}"]`)?.scrollIntoView({ block: "start" })); };
+  document.querySelector("#providerSettingsOpen")?.addEventListener("click", () => openSettings());
+  document.querySelector("#providerCards")?.addEventListener("click", (event) => { const providerId = event.target.closest("[data-provider-settings]")?.dataset.providerSettings; if (providerId) openSettings(providerId); });
+  document.querySelectorAll("[data-provider-settings-close]").forEach((button) => button.addEventListener("click", () => document.querySelector("#providerSettingsDialog")?.close()));
+  document.querySelector("#providerSettingsList")?.addEventListener("click", async (event) => { const button = event.target.closest("[data-provider-connection-action]"); const card = button?.closest("[data-provider-settings-card]"); if (!button || !card) return; const providerId = card.dataset.providerSettingsCard; const action = button.dataset.providerConnectionAction; try { if (action === "connect") await ProviderConnections.connectProvider(providerId); if (action === "disconnect") await ProviderConnections.disconnectProvider(providerId); if (action === "refresh") await ProviderConnections.refreshProvider(providerId); if (action === "test") { const result = await ProviderConnections.testProviderConnection(providerId); document.querySelector("#providerBrowserStatus").textContent = result.success ? `${ProviderRegistry.getProvider(providerId).definition.displayName} connection test passed.` : `${ProviderRegistry.getProvider(providerId).definition.displayName} requires attention.`; } } catch (error) { providerBrowserState.lastError = error.userMessage || error.message; document.querySelector("#providerBrowserStatus").textContent = providerBrowserState.lastError; } renderProviderSettings(providerId); renderConnectedMusicBrowser(); });
+  document.querySelector("#clearProviderCache")?.addEventListener("click", () => { ProviderFoundation.clearSearchCache(); document.querySelector("#providerBrowserStatus").textContent = "Provider search metadata cache cleared. Imported DITC records were preserved."; });
+  ProviderRegistry.subscribeToProviderRegistry(() => { if (document.querySelector("#sources")?.classList.contains("is-active")) requestAnimationFrame(renderConnectedMusicBrowser); });
 }
 
 const projectLibraryState = { search: "", sort: "Recently Opened", filter: "All", selectedProjectId: null };
@@ -11074,15 +11096,13 @@ function setupDropZone(element, onFileDrop) {
 
 function addDroppedSourceUrl(url) {
   try {
-    const parsed = new URL(url);
+    const parsed = new URL(url); const sourceId = ProviderFoundation.sanitizePublicUrl(parsed.href); if (!sourceId) return; const providerId = providerIdFromUrl(sourceId); const name = parsed.hostname.replace("www.", "");
     const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
-    sources.unshift({
-      projectId: ACTIVE_PROJECT_ID,
-      url: parsed.href,
-      name: parsed.hostname.replace("www.", "")
-    });
-    localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources.slice(0, 20)));
-    ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Provider Metadata Reference", sourceType: "Metadata Only", sourceId: parsed.href, displayName: parsed.hostname, providerReference: { provider: detectPlatform(parsed.href), referenceId: parsed.href }, references: [assetReference("DITC", parsed.href, parsed.hostname, "Crate metadata", true)], missing: false, relinkRequired: false, metadata: { title: parsed.hostname, provider: detectPlatform(parsed.href) } });
+    if (sources.some((source) => source.url === sourceId)) { setSourceStatus("That provider reference is already in this project."); return; }
+    const item = { projectId: ACTIVE_PROJECT_ID, providerId, providerTrackId: sourceId, resultId: `${providerId}:${sourceId}`, url: sourceId, providerUrl: sourceId, name, title: name, playbackCapability: "External Playback", playbackLabel: "Opens Externally", localLinkStatus: "Not Linked", importedAt: new Date().toISOString() };
+    sources.unshift(item); localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources.slice(0, 100)));
+    ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Provider Metadata Reference", sourceType: item.playbackCapability === "External Playback" ? "External Source" : "Metadata Only", sourceId, displayName: name, providerReference: { provider: providerId, externalId: sourceId, publicUrl: sourceId }, references: [assetReference("DITC", item.resultId, name, "Provider metadata import", true)], missing: false, relinkRequired: false, metadata: { title: name, provider: providerId, playbackCapability: item.playbackCapability, localLinkStatus: item.localLinkStatus } });
+    setSourceStatus(`${name} added as ${item.playbackLabel}. Link local audio for native playback.`);
     renderSources();
   } catch {
     /* Ignore non-url text drops. */
@@ -12237,16 +12257,28 @@ function addSource(event) {
   event.preventDefault();
   const urlInput = document.querySelector("#sourceUrl");
   const nameInput = document.querySelector("#sourceName");
+  const parsed = new URL(urlInput.value); const sourceId = ProviderFoundation.sanitizePublicUrl(parsed.href); if (!sourceId) { setSourceStatus("Only public HTTP or HTTPS provider references can be saved."); return; } const providerId = providerIdFromUrl(sourceId); const provider = ProviderRegistry.getProvider(providerId)?.definition;
   const item = {
     projectId: ACTIVE_PROJECT_ID,
-    url: urlInput.value,
-    name: nameInput.value || new URL(urlInput.value).hostname.replace("www.", "")
+    providerId,
+    providerTrackId: sourceId,
+    resultId: `${providerId}:${sourceId}`,
+    url: sourceId,
+    providerUrl: sourceId,
+    name: nameInput.value || parsed.hostname.replace("www.", ""),
+    title: nameInput.value || parsed.hostname.replace("www.", ""),
+    playbackCapability: "External Playback",
+    playbackLabel: "Opens Externally",
+    localLinkStatus: "Not Linked",
+    importedAt: new Date().toISOString()
   };
   const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
+  if (sources.some((source) => source.url === item.url || (source.providerId === item.providerId && source.providerTrackId === item.providerTrackId))) { setSourceStatus("That provider reference is already in this project."); return; }
   sources.unshift(item);
-  localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources.slice(0, 20)));
-  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Provider Metadata Reference", sourceType: "Metadata Only", sourceId: item.url, displayName: item.name, providerReference: { provider: detectPlatform(item.url), referenceId: item.url }, references: [assetReference("DITC", item.url, item.name, "Crate metadata", true)], metadata: { title: item.name, provider: detectPlatform(item.url) } });
+  localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources.slice(0, 100)));
+  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Provider Metadata Reference", sourceType: item.playbackCapability === "External Playback" ? "External Source" : "Metadata Only", sourceId: item.url, displayName: item.name, providerReference: { provider: item.providerId, externalId: item.providerTrackId, publicUrl: item.providerUrl }, linked: false, references: [assetReference("DITC", item.resultId, item.name, "Provider metadata import", true)], metadata: { title: item.name, provider: item.providerId, playbackCapability: item.playbackCapability, localLinkStatus: item.localLinkStatus, providerStatus: provider?.status || "Unsupported" } });
   event.target.reset();
+  setSourceStatus(`${item.name} added as ${item.playbackLabel}. Link local audio for native DeckForge playback.`);
   renderSources();
 }
 
@@ -12602,34 +12634,18 @@ async function handleSavedSourceAction(action, index) {
     if (window.confirm(`Delete the ${item.name} reference from DITC?`)) deleteSavedSource(index);
     return;
   }
-  setSourceStatus(`Trying to load ${item.name}...`);
+  if (action === "external") { const target = item.providerUrl || (/^https?:/i.test(item.url || "") ? item.url : null); if (target) window.open(target, "_blank", "noopener,noreferrer"); else setSourceStatus("This metadata reference does not include a public provider URL."); return; }
+  if (action === "link") { refreshProjectAssetIndex(); const asset = ProjectAssets.list(ACTIVE_PROJECT_ID).find((candidate) => candidate.providerReference?.externalId === item.providerTrackId || candidate.sourceId === item.url); if (!asset) { setSourceStatus("The provider metadata asset could not be found. Refresh Asset Manager and try again."); return; } assetManagerState.selectedAssetId = asset.assetId; await openProjectAssetManager(ACTIVE_PROJECT_ID); return; }
+  if (!item.linkedAssetId) { setSourceStatus(`${item.name} is ${item.playbackLabel || "Metadata Only"}. Link local audio before using Decks, preview, analysis, Pads, Smart Mix, Stem Lab, or Arrangement.`); return; }
   try {
-    const buffer = await loadAudioFromUrl(item.url);
-    if (action === "deck-a") {
-      loadBufferToDeck(buffer, item.name, "a");
-      switchView("decks");
-    }
-    if (action === "deck-b") {
-      loadBufferToDeck(buffer, item.name, "b");
-      switchView("decks");
-    }
+    const asset = ProjectAssets.get(item.linkedAssetId, ACTIVE_PROJECT_ID); const buffer = await resolveAssetPreviewBuffer(asset); if (!buffer) throw new Error("Linked local audio is unavailable in this browser session.");
+    if (action === "preview") playBufferPreview(buffer);
+    if (action === "deck-a") { loadBufferToDeck(buffer, item.name, "a"); switchView("decks"); }
+    if (action === "deck-b") { loadBufferToDeck(buffer, item.name, "b"); switchView("decks"); }
     if (action === "pad") addBufferToPad(buffer, item.name);
-    if (action === "stems") {
-      stemState.file = null;
-      stemState.sourceTrackId = `reference-${index}`;
-      stemState.sourceBuffer = buffer;
-      stemState.sourceName = item.name;
-      stemState.sourceAnalysis = analyzeAudioBuffer(buffer, item.name);
-      stemState.stems = [];
-      document.querySelector("#splitStems").disabled = false;
-      setStemStatus(`Loaded ${item.name}. Ready to separate.`);
-      renderStemLab();
-      switchView("stems");
-    }
-    setSourceStatus(`${item.name} loaded from URL.`);
-  } catch {
-    setSourceStatus("This link could not be decoded as direct audio. Streaming platforms usually block browser loading; drop a downloaded file or use tab audio capture.");
-  }
+    if (action === "stems") { stemState.file = null; stemState.sourceTrackId = item.resultId || `reference-${index}`; stemState.sourceBuffer = buffer; stemState.sourceName = item.name; stemState.sourceAnalysis = analyzeAudioBuffer(buffer, item.name); stemState.stems = []; document.querySelector("#splitStems").disabled = false; setStemStatus(`Loaded linked local audio for ${item.name}. Ready to separate.`); renderStemLab(); switchView("stems"); }
+    setSourceStatus(`${item.name} loaded from its linked local asset.`);
+  } catch (error) { setSourceStatus(`${item.name} cannot play: ${error.message} Relink it through Asset Manager.`); }
 }
 
 async function loadAudioFromUrl(url) {
@@ -12868,6 +12884,93 @@ function handleAiSearchAction(action, id) {
   if (action === "deck-b") loadBufferToDeck(clip, result.label, "b");
 }
 
+function providerIdsForFilter(filter = providerBrowserState.filter) {
+  const providers = ProviderRegistry.listProviders({ enabled: true });
+  if (filter === "all") return providers.map((provider) => provider.providerId);
+  if (filter === "local") return providers.filter((provider) => provider.providerType === "Local").map((provider) => provider.providerId);
+  if (filter === "connected") return providers.filter((provider) => provider.connection.connected).map((provider) => provider.providerId);
+  if (filter === "disconnected") return providers.filter((provider) => !provider.connection.connected && provider.providerType !== "Local").map((provider) => provider.providerId);
+  if (filter === "metadata") return providers.filter((provider) => provider.capabilities.importMetadata.supported && !provider.capabilities.nativePlayback.supported).map((provider) => provider.providerId);
+  if (filter === "preview") return providers.filter((provider) => provider.capabilities.fetchPreview.supported).map((provider) => provider.providerId);
+  if (filter === "native") return providers.filter((provider) => provider.capabilities.nativePlayback.supported).map((provider) => provider.providerId);
+  if (filter === "link") return providers.filter((provider) => provider.capabilities.linkLocalAudio.supported).map((provider) => provider.providerId);
+  return providers.some((provider) => provider.providerId === filter) ? [filter] : [];
+}
+
+function providerConnectionLabel(provider) {
+  if (provider.providerId === "local-files") return sourceFiles.length ? `Available · ${sourceFiles.length} imported` : "Permission Required · import files";
+  return `${provider.connection.state} · ${provider.status}`;
+}
+
+function searchableProviderIdsForFilter(filter = providerBrowserState.filter) {
+  return providerIdsForFilter(filter).filter((providerId) => { const capabilities = ProviderRegistry.getProviderCapabilities(providerId); return capabilities?.searchCatalog?.supported || capabilities?.searchUserLibrary?.supported; });
+}
+
+function renderProviderSourceChips() {
+  const output = document.querySelector("#providerSourceChips"); if (!output) return;
+  const providers = ProviderRegistry.listProviders({ enabled: true });
+  const chips = [["all", "All Sources"], ["local", "Local"], ["connected", "Connected"], ["disconnected", "Disconnected"], ["metadata", "Metadata Only"], ["preview", "Preview Available"], ["native", "Native Playable"], ["link", "Local Link Required"], ...providers.map((provider) => [provider.providerId, provider.displayName])];
+  output.innerHTML = chips.map(([id, label]) => `<button type="button" data-provider-filter="${escapeHtml(id)}" class="${providerBrowserState.filter === id ? "is-active" : ""}" aria-pressed="${providerBrowserState.filter === id}">${escapeHtml(label)}</button>`).join("");
+}
+
+function renderProviderCards() {
+  const output = document.querySelector("#providerCards"); if (!output) return;
+  const visibleIds = new Set(providerIdsForFilter()); const providers = ProviderRegistry.listProviders({ enabled: true }).filter((provider) => providerBrowserState.filter === "all" || visibleIds.has(provider.providerId));
+  output.innerHTML = providers.map((provider) => { const supported = Object.entries(provider.capabilities).filter(([, item]) => item.supported).slice(0, 5); return `<article class="provider-card" data-provider-id="${escapeHtml(provider.providerId)}"><header><span aria-hidden="true">${escapeHtml(provider.iconReference)}</span><div><h4>${escapeHtml(provider.displayName)}</h4><p>${escapeHtml(provider.providerType)}</p></div></header><strong class="provider-connection" data-state="${escapeHtml(provider.connection.state)}">${escapeHtml(providerConnectionLabel(provider))}</strong><p>${escapeHtml(provider.description)}</p><div class="provider-capability-badges">${supported.map(([name, item]) => `<span title="${escapeHtml(item.explanation)}">${escapeHtml(name.replace(/([A-Z])/g, " $1"))}</span>`).join("") || "<span>No active capabilities</span>"}</div>${provider.limitations.length ? `<p class="provider-limitation">${escapeHtml(provider.limitations[0])}</p>` : ""}<button type="button" class="secondary-button" data-provider-settings="${escapeHtml(provider.providerId)}">Details</button></article>`; }).join("") || `<div class="provider-empty"><strong>No providers match this filter.</strong><span>Choose another source filter.</span></div>`;
+}
+
+function renderProviderSearchResults() {
+  const output = document.querySelector("#providerSearchResults"); if (!output) return;
+  const status = providerBrowserState.searchId ? ProviderSearch.getSearchStatus(providerBrowserState.searchId) : null; providerBrowserState.lastSearchStatus = status;
+  if (!status) { output.innerHTML = `<div class="provider-empty"><strong>No provider search yet.</strong><span>Import local files, then search the Local Files provider.</span></div>`; return; }
+  if (status.status === "Searching") { output.innerHTML = `<div class="provider-empty"><strong>Searching ${status.selectedProviderIds.length} source${status.selectedProviderIds.length === 1 ? "" : "s"}…</strong><span>Available results will be grouped by recording evidence.</span></div>`; return; }
+  if (!status.groups.length) { const message = status.status === "Cancelled" ? "Search cancelled. Late results will be ignored." : status.status === "Stale" ? "Results rejected because the active project changed." : status.errors[0]?.userMessage || "No matching results."; output.innerHTML = `<div class="provider-empty"><strong>${escapeHtml(status.status)}</strong><span>${escapeHtml(message)}</span></div>`; return; }
+  output.innerHTML = status.groups.map((group) => { const source = group.preferredSource; const local = source.providerId === "local-files"; const canExternal = source.playbackCapability === "External Playback" && source.providerUrl; const canPreview = local && source.playbackCapability === "Native Playable"; return `<article class="provider-result" data-provider-group="${escapeHtml(group.groupId)}"><span class="provider-result-artwork" aria-hidden="true">${escapeHtml(group.title.slice(0, 2).toUpperCase())}</span><div><h4>${escapeHtml(group.title)}</h4><p>${escapeHtml(group.artist)}${group.album ? ` · ${escapeHtml(group.album)}` : ""} · ${escapeHtml(group.version)}</p><div class="provider-availability-list">${group.availabilitySources.map((item) => `<span>${escapeHtml(ProviderRegistry.getProvider(item.providerId)?.definition.displayName || item.providerId)} · ${escapeHtml(item.playbackLabel)}</span>`).join("")}</div></div><span class="provider-playback-badge" data-playback="${escapeHtml(source.playbackCapability)}">${escapeHtml(source.playbackLabel)}</span><div class="provider-result-actions">${local ? `<button type="button" data-provider-result-action="locate">Open in DITC</button>` : `<button type="button" data-provider-result-action="import">Add to DITC</button>`}${canPreview ? `<button type="button" data-provider-result-action="preview">Preview</button>` : ""}${canExternal ? `<button type="button" data-provider-result-action="external">Open Externally</button>` : ""}${!local && !["Native Playable", "Local Audio Linked"].includes(source.playbackCapability) ? `<button type="button" data-provider-result-action="link">Link Local Audio</button>` : ""}</div></article>`; }).join("");
+}
+
+function renderProviderSettings(focusProviderId = null) {
+  const output = document.querySelector("#providerSettingsList"); if (!output) return;
+  const providers = ProviderRegistry.listProviders({ enabled: true });
+  output.innerHTML = providers.map((provider) => { const record = ProviderRegistry.getProvider(provider.providerId); const connection = provider.connection; const capabilities = Object.entries(provider.capabilities); const actions = [typeof record?.adapter.connect === "function" && !connection.connected ? `<button type="button" data-provider-connection-action="connect">Connect</button>` : "", typeof record?.adapter.disconnect === "function" && connection.connected ? `<button type="button" data-provider-connection-action="disconnect">Disconnect</button>` : "", typeof record?.adapter.testConnection === "function" ? `<button type="button" data-provider-connection-action="test">Test Connection</button>` : "", typeof record?.adapter.refreshConnection === "function" ? `<button type="button" data-provider-connection-action="refresh">Refresh</button>` : ""].filter(Boolean).join(""); return `<section class="provider-settings-card${focusProviderId === provider.providerId ? " is-focused" : ""}" data-provider-settings-card="${escapeHtml(provider.providerId)}"><header><div><h3>${escapeHtml(provider.displayName)}</h3><p>${escapeHtml(providerConnectionLabel(provider))}</p></div><span>${escapeHtml(provider.status)}</span></header><p>${escapeHtml(provider.privacySummary)}</p><div class="provider-settings-actions">${actions || `<span class="fine-print">No connection actions are implemented for this provider.</span>`}</div><details class="ditc-advanced-only"><summary>Capabilities, health, and setup</summary><dl><dt>Authentication</dt><dd>${escapeHtml(provider.authenticationType)}</dd><dt>Required configuration</dt><dd>${escapeHtml(provider.configurationState?.missingFields?.join(", ") || "None")}</dd><dt>Health</dt><dd>${escapeHtml(provider.health?.state || "Unknown")}</dd><dt>Rate limit</dt><dd>${escapeHtml(provider.connection.rateLimitState?.state || "Unknown")}</dd><dt>Last successful request</dt><dd>${provider.connection.lastSuccessfulRequestAt ? escapeHtml(projectDate(provider.connection.lastSuccessfulRequestAt)) : "Never"}</dd><dt>Last error</dt><dd>${escapeHtml(provider.connection.lastError?.userMessage || "None")}</dd><dt>Setup reference</dt><dd>${escapeHtml(provider.documentationReference || "Not available")}</dd></dl><ul class="provider-capability-matrix">${capabilities.map(([name, item]) => `<li><strong>${escapeHtml(name)}</strong><span>${item.supported ? "Supported" : "Unavailable"} · ${escapeHtml(item.explanation)}</span></li>`).join("")}</ul><ul>${provider.limitations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></details></section>`; }).join("");
+}
+
+function renderConnectedMusicBrowser() {
+  if (!document.querySelector("#connectedMusicBrowser")) return; renderProviderSourceChips(); renderProviderCards(); renderProviderSearchResults();
+  const status = document.querySelector("#providerBrowserStatus"); const current = providerBrowserState.lastSearchStatus; if (status && current) status.textContent = current.status === "Partial" ? `${current.groups.length} grouped result${current.groups.length === 1 ? "" : "s"}; ${current.failedRequests} provider request${current.failedRequests === 1 ? "" : "s"} failed.` : `${current.status}: ${current.groups.length} grouped result${current.groups.length === 1 ? "" : "s"}.`;
+  const diagnostics = document.querySelector("#providerDiagnosticsOutput"); if (diagnostics && DECKFORGE_DEVELOPMENT) diagnostics.textContent = JSON.stringify({ ...ProviderFoundation.diagnostics(), currentProjectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null }, null, 2);
+}
+
+async function runProviderSearch(force = false) {
+  const input = document.querySelector("#providerSearchInput"); const query = input?.value.trim(); if (!query) return;
+  providerBrowserState.query = query; providerBrowserState.lastError = null; providerBrowserState.selectedProviderIds = searchableProviderIdsForFilter();
+  document.querySelector("#providerCancelSearch").disabled = false; document.querySelector("#providerRefreshSearch").disabled = true;
+  try { const result = await ProviderSearch.searchProviders(query, { providerIds: providerBrowserState.selectedProviderIds, projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null, force, onStart: (searchId) => { providerBrowserState.searchId = searchId; renderProviderSearchResults(); } }); providerBrowserState.lastSearchStatus = result; }
+  catch (error) { providerBrowserState.lastError = error.userMessage || error.message; }
+  document.querySelector("#providerCancelSearch").disabled = true; document.querySelector("#providerRefreshSearch").disabled = false; renderConnectedMusicBrowser();
+}
+
+function importProviderResultToDitc(group, projectId) {
+  if (!ProjectRegistry.owns(projectId)) throw new Error("Provider result belongs to a different project context."); const source = group.preferredSource;
+  if (source.providerId === "local-files") { const track = sourceFiles.find((item) => item.id === source.providerTrackId); if (!track) throw new Error("The local file is no longer available."); ditcState.selectedTrackId = track.id; renderSources(); return { state: "Already in DITC", sourceId: track.id, playable: true }; }
+  const saved = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]"); const existing = saved.find((item) => item.providerId === source.providerId && item.providerTrackId === source.providerTrackId); if (existing) return { state: "Already in DITC", sourceId: existing.url || existing.providerTrackId, playable: existing.playbackCapability === "Local Audio Linked" };
+  const item = { projectId, providerId: source.providerId, providerTrackId: source.providerTrackId, resultId: source.resultId, name: group.title, title: group.title, artist: group.artist, album: group.album, version: group.version, duration: group.duration, isrc: group.isrc, explicit: group.explicit, url: source.providerUrl || `${source.providerId}:${source.providerTrackId}`, providerUrl: source.providerUrl, playbackCapability: source.playbackCapability === "Native Playable" ? "Native Playable" : source.playbackCapability, playbackLabel: source.playbackLabel, availability: source.availability, localLinkStatus: source.localLinkStatus, linkedAssetId: source.linkedAssetId || null, importedAt: new Date().toISOString(), providerMetadata: source.rawProviderMetadataReference || null };
+  saved.unshift(item); localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(saved.slice(0, 100)));
+  ProjectAssets.register({ projectId, owningDomain: "DITC", createdBy: "user", assetType: "Provider Metadata Reference", sourceType: item.linkedAssetId ? "Local Audio Linked" : item.playbackCapability === "External Playback" ? "External Source" : item.playbackCapability === "Authorization Required" ? "Authorization Required" : "Metadata Only", sourceId: item.providerUrl || `${item.providerId}:${item.providerTrackId}`, displayName: item.name, duration: item.duration, providerReference: { provider: item.providerId, externalId: item.providerTrackId, publicUrl: item.providerUrl || null }, linked: Boolean(item.linkedAssetId), references: [assetReference("DITC", item.resultId, item.name, "Provider metadata import", true)], metadataLink: item.linkedAssetId ? { linkedAssetId: item.linkedAssetId, matchMethod: "Provider result", userConfirmed: true, linkedAt: new Date().toISOString() } : null, metadata: { title: item.title, artist: item.artist, album: item.album, version: item.version, isrc: item.isrc, explicit: item.explicit, playbackCapability: item.playbackCapability, localLinkStatus: item.localLinkStatus, provider: item.providerId } });
+  renderSources(); return { state: item.linkedAssetId ? "Playable" : item.playbackCapability, sourceId: item.resultId, playable: Boolean(item.linkedAssetId) };
+}
+
+async function handleProviderResultAction(action, groupId) {
+  const status = ProviderSearch.getSearchStatus(providerBrowserState.searchId); const group = status?.groups.find((item) => item.groupId === groupId); if (!group) return; const source = group.preferredSource;
+  try {
+    if (action === "locate") { const track = sourceFiles.find((item) => item.id === source.providerTrackId); if (!track) throw new Error("Local source is no longer available."); ditcState.selectedTrackId = track.id; renderSources(); document.querySelector(`[data-track-id="${CSS.escape(track.id)}"]`)?.scrollIntoView({ block: "nearest" }); }
+    if (action === "import") { await ProviderSearch.importResult(providerBrowserState.searchId, groupId, ACTIVE_PROJECT_ID); setSourceStatus(`${group.title} added to DITC as ${source.playbackLabel}.`); }
+    if (action === "external" && source.providerUrl) window.open(source.providerUrl, "_blank", "noopener,noreferrer");
+    if (action === "preview") { if (source.providerId === "local-files") await handleSourceFileAction("preview", source.providerTrackId); else throw new Error("This provider does not expose a supported preview source."); }
+    if (action === "link") { await ProviderSearch.importResult(providerBrowserState.searchId, groupId, ACTIVE_PROJECT_ID); refreshProjectAssetIndex(); const asset = ProjectAssets.list(ACTIVE_PROJECT_ID).find((item) => item.providerReference?.externalId === source.providerTrackId && item.providerReference?.provider === source.providerId); if (!asset) throw new Error("Provider metadata asset could not be created."); assetManagerState.selectedAssetId = asset.assetId; await openProjectAssetManager(ACTIVE_PROJECT_ID); }
+  } catch (error) { providerBrowserState.lastError = error.userMessage || error.message; setSourceStatus(providerBrowserState.lastError); }
+  renderConnectedMusicBrowser();
+}
+
 function renderSources() {
   const list = document.querySelector("#sourceList");
   const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
@@ -12888,6 +12991,7 @@ function renderSources() {
   renderDitcCollections();
   renderDitcInspector();
   renderDitcDiagnostics();
+  renderConnectedMusicBrowser();
   updateSmartMixSourceOptions();
 }
 
@@ -12996,7 +13100,8 @@ function renderDitcTrackRow(source) {
 function renderDitcReferenceRow(source, index) {
   const row = document.createElement("article");
   row.className = "ditc-track-row";
-  row.innerHTML = `<label><input type="checkbox" data-crate-kind="saved" data-crate-id="${index}" ${crateSelection.saved.has(String(index)) ? "checked" : ""}></label><span class="ditc-artwork">↗</span><div><strong>${escapeHtml(source.name)}</strong><span class="ditc-track-subtitle">${escapeHtml(detectPlatform(source.url))} reference</span></div><span class="ditc-cell ditc-optional">Metadata reference</span><span class="ditc-cell">N/A BPM</span><span class="ditc-cell">N/A</span><span class="ditc-cell ditc-optional">Not Scored</span><div class="ditc-row-actions"><button data-source-action="deck-a" data-source-index="${index}" title="Try Deck A">A</button><button data-source-action="deck-b" data-source-index="${index}" title="Try Deck B">B</button><button data-source-action="delete" data-source-index="${index}" title="Delete">×</button></div>`;
+  const providerId = source.providerId || providerIdFromUrl(source.url); const provider = ProviderRegistry.getProvider(providerId)?.definition; const linked = Boolean(source.linkedAssetId); const playbackState = linked ? "Local Audio Linked" : source.playbackCapability || (/^https?:/i.test(source.providerUrl || source.url || "") ? "External Playback" : "Metadata Only"); const playbackLabel = ProviderFoundation.normalizeResult({ providerId, providerTrackId: source.providerTrackId || source.url, title: source.name, playbackCapability: playbackState }).playbackLabel; const external = /^https?:/i.test(source.providerUrl || source.url || "");
+  row.innerHTML = `<label><input type="checkbox" data-crate-kind="saved" data-crate-id="${index}" ${crateSelection.saved.has(String(index)) ? "checked" : ""}></label><span class="ditc-artwork" aria-hidden="true">↗</span><div><strong>${escapeHtml(source.title || source.name)}</strong><span class="ditc-track-subtitle">${escapeHtml(source.artist || provider?.displayName || detectPlatform(source.url))}${source.album ? ` · ${escapeHtml(source.album)}` : ""}</span></div><span class="ditc-cell ditc-optional">${escapeHtml(playbackLabel)}</span><span class="ditc-cell">${source.analysis?.bpm || "N/A"} BPM</span><span class="ditc-cell">${escapeHtml(source.analysis?.key || "N/A")}</span><span class="ditc-cell ditc-optional">${source.duration ? formatTime(source.duration) : "Unknown"}<br>${escapeHtml(provider?.displayName || detectPlatform(source.url))}</span><div class="ditc-row-actions">${linked ? `<button data-source-action="preview" data-source-index="${index}" title="Preview linked local audio">▶</button><button data-source-action="deck-a" data-source-index="${index}" title="Load linked audio to Deck A">A</button><button data-source-action="deck-b" data-source-index="${index}" title="Load linked audio to Deck B">B</button>` : `${external ? `<button data-source-action="external" data-source-index="${index}" title="Open on ${escapeHtml(provider?.displayName || "provider")}">↗</button>` : ""}<button data-source-action="link" data-source-index="${index}" title="Link a local audio asset">Link</button>`}<button data-source-action="delete" data-source-index="${index}" title="Delete reference">×</button></div>`;
   return row;
 }
 
@@ -13100,8 +13205,18 @@ function updateSmartMixSourceOptions() {
   }
 }
 
+function providerIdFromUrl(url) {
+  let host = ""; try { host = new URL(url).hostname.toLowerCase(); } catch { return "metadata-link"; }
+  if (host.includes("music.apple")) return "apple-music";
+  if (host.includes("open.spotify") || host.includes("spotify")) return "spotify";
+  if (host.includes("soundcloud")) return "soundcloud";
+  if (host.includes("music.youtube")) return "youtube-music";
+  if (host.includes("youtube") || host.includes("youtu.be")) return "youtube";
+  return "metadata-link";
+}
+
 function detectPlatform(url) {
-  const host = new URL(url).hostname;
+  let host = ""; try { host = new URL(url).hostname; } catch { return "Link"; }
   if (host.includes("youtube")) return "YouTube";
   if (host.includes("youtu.be")) return "YouTube";
   if (host.includes("soundcloud")) return "SoundCloud";
@@ -13124,11 +13239,18 @@ async function initializeProjectEntryFlow() {
 }
 
 projectRuntimeDefaults = captureProjectRuntimeDefaults();
+ProviderFoundation.configureRuntimeBridge({
+  listLocalTracks: () => sourceFiles.map((track) => { const asset = ACTIVE_PROJECT_ID ? ProjectAssets.list(ACTIVE_PROJECT_ID).find((item) => item.owningDomain === "DITC" && item.sourceId === track.id) : null; return { id: track.id, storageId: track.storageId, name: track.name, title: track.title, artist: track.artist, album: track.album, duration: track.buffer?.duration || track.analysis?.duration || null, buffer: track.buffer, file: track.file, analysis: track.analysis, tags: track.tags, artwork: track.artwork, assetId: asset?.assetId || null }; }),
+  importResult: (group, projectId) => importProviderResultToDitc(group, projectId),
+  ownsProject: (projectId, contextVersion) => ProjectRegistry.owns(projectId, contextVersion),
+  isOffline: () => navigator.onLine === false
+});
 initializePlaybackRegistry();
 setupProjectRegistryEvents();
 setupEvents();
 setupProducerStudioEvents();
 setupAssetManagerEvents();
+setupProviderEvents();
 renderGlobalTransport();
 initializeProjectEntryFlow().catch((error) => { updateProjectStorageBindings(null); switchView("projectLibrary", { route: false }); writeProjectRoute("projectLibrary"); renderProjectRegistry(); renderProjectLibrary(); setProjectLibraryStatus(`Project startup recovery: ${error.message}`, "error"); });
 animationLoop();

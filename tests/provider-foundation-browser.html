@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DeckForge Provider Foundation Browser Test</title>
+<script src="../src/project-registry.js"></script>
+<script src="../src/provider-foundation.js"></script>
+<pre id="result">Running…</pre>
+<script>
+(async () => {
+  const providers = DeckForgeProviders; const registry = providers.ProviderRegistry; const connections = providers.ProviderConnections; const search = providers.ProviderSearch; const checks = {};
+  const storageBackup = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(Boolean).map((key) => [key, localStorage.getItem(key)]);
+  const restoreStorage = () => { localStorage.clear(); storageBackup.forEach(([key, value]) => localStorage.setItem(key, value)); };
+  const check = (name, condition, detail = null) => { checks[name] = { pass: Boolean(condition), detail }; if (!condition) throw new Error(name); };
+  try {
+    localStorage.clear();
+    const alpha = DeckForgeProjectRegistry.createProject({ name: "Provider Test Alpha" }); let activeProjectId = alpha.projectId; let importCount = 0; let offline = false;
+    const localTracks = [{ id: "local-1", storageId: "tone.wav::100", name: "Artist - Tone.wav", title: "Tone", artist: "Artist", album: "Test Album", duration: 2, file: { name: "Artist - Tone.wav" }, analysis: { genre: "House" }, tags: ["Test"] }];
+    providers.configureRuntimeBridge({ listLocalTracks: () => localTracks, ownsProject: (projectId) => projectId === activeProjectId, isOffline: () => offline, importResult: (group, projectId) => { if (projectId !== activeProjectId) throw new Error("Wrong project"); importCount += 1; return { state: "Metadata Only", groupId: group.groupId }; } });
+
+    const builtIns = registry.listProviders();
+    check("built-in registration", ["local-files", "apple-music", "spotify", "soundcloud", "youtube", "youtube-music", "cloud-storage", "record-pools"].every((id) => builtIns.some((provider) => provider.providerId === id)), builtIns.map((provider) => provider.providerId));
+    check("capability model", registry.getProviderCapabilities("local-files").nativePlayback.supported && !registry.getProviderCapabilities("spotify").nativePlayback.supported, null);
+    check("honest provider status", ["apple-music", "spotify", "soundcloud", "youtube"].every((id) => registry.getProvider(id).definition.status === "Coming Later" && registry.getProvider(id).adapter.connect === undefined), null);
+    let unsupported = null; try { await connections.connectProvider("spotify"); } catch (error) { unsupported = error; }
+    check("unsupported method handling", unsupported?.category === "Unsupported Capability", unsupported);
+
+    const localStatus = await search.searchProvider("local-files", "tone", { projectId: alpha.projectId, contextVersion: DeckForgeProjectRegistry.getSession().contextVersion });
+    check("local search", localStatus.status === "Complete" && localStatus.groups.length === 1 && localStatus.groups[0].preferredSource.playbackCapability === "Native Playable", localStatus);
+    check("result normalization", localStatus.groups[0].preferredSource.providerTrackId === "local-1" && localStatus.groups[0].preferredSource.artist === "Artist", localStatus.groups[0]);
+
+    const metadataAdapter = providers.adapterFoundation({ providerId: "test-metadata", displayName: "Test Metadata", providerType: "Metadata Source", status: "Experimental", connectionStatus: "Connected", capabilities: { searchCatalog: true, readMetadata: true, importMetadata: true, addToDITC: true, linkLocalAudio: true } }, { search() { return [{ providerTrackId: "meta-1", title: "Tone", artist: "Artist", album: "Test Album", duration: 2, isrc: "US-TEST-00001", resultType: "Track", playbackCapability: "Metadata Only", providerUrl: "https://example.invalid/tone" }]; }, normalizeResult(raw) { return providers.normalizeResult(raw, "test-metadata"); }, getHealth() { return { state: "Operational" }; } });
+    const failingAdapter = providers.adapterFoundation({ providerId: "test-failure", displayName: "Test Failure", providerType: "Discovery Source", status: "Experimental", connectionStatus: "Connected", capabilities: { searchCatalog: true } }, { search() { throw Object.assign(new Error("Rate limit reached"), { status: 429, code: "RATE_LIMIT" }); } });
+    registry.registerProvider(metadataAdapter); registry.registerProvider(failingAdapter);
+    const partial = await search.searchProviders("tone", { providerIds: ["test-metadata", "test-failure"], projectId: alpha.projectId });
+    check("partial provider failure", partial.status === "Partial" && partial.groups.length === 1 && partial.errors[0].category === "Rate Limit", partial);
+
+    const grouped = providers.groupAvailability([providers.normalizeResult({ providerId: "local-files", providerTrackId: "a", title: "Same Song", artist: "Same Artist", duration: 200, isrc: "US-ABC-1", playbackCapability: "Native Playable" }), providers.normalizeResult({ providerId: "test-metadata", providerTrackId: "b", title: "Same Song", artist: "Same Artist", duration: 200, isrc: "US-ABC-1", playbackCapability: "Metadata Only" }), providers.normalizeResult({ providerId: "test-metadata", providerTrackId: "c", title: "Same Song (Live)", artist: "Same Artist", version: "Live", duration: 220, playbackCapability: "External Playback" })]);
+    check("grouped availability", grouped.length === 2 && grouped.find((group) => group.providerCount === 2)?.preferredSource.providerId === "local-files", grouped);
+    check("version-safe deduplication", grouped.some((group) => /live/i.test(`${group.title} ${group.version}`) && group.providerCount === 1), grouped);
+
+    const slowAdapter = providers.adapterFoundation({ providerId: "test-slow", displayName: "Test Slow", providerType: "Discovery Source", status: "Experimental", connectionStatus: "Connected", capabilities: { searchCatalog: true } }, { async search() { await new Promise((resolve) => setTimeout(resolve, 35)); return [{ providerTrackId: "slow-1", title: "Slow", artist: "Test", playbackCapability: "Metadata Only" }]; } });
+    registry.registerProvider(slowAdapter); let cancelId = null; const pendingCancel = search.searchProvider("test-slow", "slow", { projectId: alpha.projectId, onStart: (id) => { cancelId = id; } }); search.cancelSearch(cancelId); const cancelled = await pendingCancel;
+    check("search cancellation", cancelled.status === "Cancelled" && cancelled.groups.length === 0, cancelled);
+    let lateId = null; const pendingLate = search.searchProvider("test-slow", "late", { projectId: alpha.projectId, onStart: (id) => { lateId = id; } }); activeProjectId = "different-project"; const late = await pendingLate;
+    check("late-result rejection", late.status === "Stale" && late.groups.length === 0 && providers.diagnostics().lateResultCount > 0, { late, lateId }); activeProjectId = alpha.projectId;
+
+    const importSearch = await search.searchProvider("test-metadata", "tone", { projectId: alpha.projectId }); await search.importResult(importSearch.searchId, importSearch.groups[0].groupId, alpha.projectId);
+    check("project-scoped import", importCount === 1, importCount);
+    activeProjectId = "different-project"; let wrongProject = null; try { await search.importResult(importSearch.searchId, importSearch.groups[0].groupId, alpha.projectId); } catch (error) { wrongProject = error; }
+    check("wrong-project import blocked", Boolean(wrongProject), wrongProject); activeProjectId = alpha.projectId;
+
+    const sanitized = providers.normalizeResult({ providerId: "test-metadata", providerTrackId: "secret-test", title: "Safe", playbackCapability: "Metadata Only", providerUrl: "https://user:password@example.invalid/tone?item=public&access_token=never-store&signature=never-store#access_token=never-store", rawProviderMetadataReference: { publicId: "ok", note: "Authorization: Bearer never-store", accessToken: "never-store", nested: { client_secret: "never-store" } } });
+    check("secret sanitization", sanitized.rawProviderMetadataReference.publicId === "ok" && sanitized.providerUrl === "https://example.invalid/tone?item=public" && !JSON.stringify(sanitized).includes("never-store") && !JSON.stringify(sanitized).includes("password"), sanitized);
+    offline = true; const offlineLocal = await search.searchProvider("local-files", "tone", { projectId: alpha.projectId, force: true }); let offlineNetwork = null; try { offlineNetwork = await search.searchProvider("test-metadata", "tone", { projectId: alpha.projectId, force: true }); } catch (error) { offlineNetwork = error; }
+    check("offline local provider", offlineLocal.status === "Complete" && offlineLocal.groups.length === 1, offlineLocal);
+    check("offline connected provider", offlineNetwork.status === "Failed" && offlineNetwork.errors[0].category === "Network", offlineNetwork);
+
+    const connectionAdapter = providers.adapterFoundation({ providerId: "test-connect", displayName: "Test Connect", providerType: "User Library", status: "Experimental", connectionStatus: "Disconnected", capabilities: { accountConnection: true } }, { connect() { return { state: "Connected", accountSummary: { displayName: "Test User" } }; }, disconnect() { return true; }, testConnection() { return { success: true }; } }); registry.registerProvider(connectionAdapter);
+    const connected = await connections.connectProvider("test-connect"); const tested = await connections.testProviderConnection("test-connect"); const disconnected = await connections.disconnectProvider("test-connect");
+    check("connection transitions", connected.state === "Connected" && tested.success && disconnected.state === "Disconnected", { connected, tested, disconnected });
+    check("sanitized diagnostics", !/token|secret|never-store/i.test(JSON.stringify(providers.diagnostics())), providers.diagnostics());
+
+    result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2); restoreStorage();
+  } catch (error) { result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks }, null, 2); restoreStorage(); }
+})();
+</script>

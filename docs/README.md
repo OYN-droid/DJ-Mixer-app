@@ -62,6 +62,16 @@ This directory contains the DeckForge Design Bible and the recovery and implemen
 29. [Producer Studio regression checklist](28-producer-studio-regression-checklist.md)
 30. [Project asset audit](35-project-asset-audit.md)
 31. [Project Asset Manager regression checklist](36-project-asset-manager-regression-checklist.md)
+32. [Connected Provider Foundation audit](36-connected-provider-audit.md)
+33. [Connected Provider Foundation regression checklist](37-connected-provider-foundation-regression-checklist.md)
+
+## Architecture decisions
+
+1. [Project Registry](adr/ADR-001-project-registry.md)
+2. [Project Storage](adr/ADR-002-project-storage.md)
+3. [Project Switching](adr/ADR-003-project-switching.md)
+4. [Project Asset Ownership](adr/ADR-004-asset-ownership.md)
+5. [Connected Provider Foundation](adr/ADR-005-connected-provider-foundation.md)
 
 ## Recovery snapshot
 
