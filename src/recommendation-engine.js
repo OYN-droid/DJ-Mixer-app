@@ -35,12 +35,12 @@
   function storageKey() { return `${STORAGE_PREFIX}:${projectId}`; }
 
   function loadHistory() {
-    try { history = JSON.parse(localStorage.getItem(storageKey()) || "{}"); }
+    try { history = JSON.parse(localStorage.getItem(storageKey()) || "{}"); if (history.projectId && history.projectId !== projectId) throw new Error("Recommendation storage belongs to another project."); history.projectId = projectId; }
     catch (error) { history = {}; lastError = error.message || "Recommendation history restore failed"; }
   }
 
   function persistHistory() {
-    try { localStorage.setItem(storageKey(), JSON.stringify(history)); }
+    try { localStorage.setItem(storageKey(), JSON.stringify({ ...history, projectId })); }
     catch (error) { lastError = error.message || "Recommendation history save failed"; }
   }
 

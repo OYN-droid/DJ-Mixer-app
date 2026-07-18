@@ -13,9 +13,9 @@
     return ({ crate: "DITC Track", deck: "Deck Recording", stem: "Stem", pad: "Pad Recording", drums: "Beat Forge Pattern", keys: "Harmony Lab Pattern", performance: "Performance Events", marker: "Transition", buffer: "Imported Audio", file: "Imported Audio" })[kind] || (SOURCE_TYPES.has(kind) ? kind : "Generated Audio");
   }
 
-  function normalizeLane(lane = {}, order = 0) {
+  function normalizeLane(lane = {}, order = 0, projectId = null) {
     return {
-      laneId: lane.laneId || lane.id || id("lane"), type: lane.type || "Track", name: lane.name || `Lane ${order + 1}`, order,
+      laneId: lane.laneId || lane.id || id("lane"), projectId: lane.projectId || projectId, type: lane.type || "Track", name: lane.name || `Lane ${order + 1}`, order,
       muted: Boolean(lane.muted), soloed: Boolean(lane.soloed || lane.solo), armed: Boolean(lane.armed), volume: Number(lane.volume ?? 1),
       pan: Number(lane.pan || 0), colorRole: lane.colorRole || "track", outputBus: lane.outputBus || "Master", collapsed: Boolean(lane.collapsed),
       locked: Boolean(lane.locked), clipIds: Array.isArray(lane.clipIds) ? [...lane.clipIds] : [], automationLaneIds: Array.isArray(lane.automationLaneIds) ? [...lane.automationLaneIds] : [], role: lane.role || lane.type || "Track",
@@ -33,11 +33,11 @@
     };
   }
 
-  function normalizeClip(clip = {}, lanes = []) {
+  function normalizeClip(clip = {}, lanes = [], projectId = null) {
     const lane = lanes[Number(clip.trackIndex || 0)] || lanes.find((item) => item.laneId === clip.laneId);
     const duration = Math.max(.01, Number(clip.duration || 0));
     return {
-      clipId: clip.clipId || clip.id || id("clip"), projectId: clip.projectId || null, laneId: clip.laneId || lane?.laneId || null,
+      clipId: clip.clipId || clip.id || id("clip"), projectId: clip.projectId || projectId, laneId: clip.laneId || lane?.laneId || null,
       sourceType: sourceType(clip), sourceId: clip.sourceId || clip.source?.id || null, sourceName: clip.sourceName || clip.name || clip.source?.label || "Untitled clip",
       sourceReference: safeSourceReference(clip), startTime: Math.max(0, Number(clip.startTime ?? clip.start ?? 0)), sourceStart: Math.max(0, Number(clip.sourceStart || 0)),
       sourceEnd: Number(clip.sourceEnd || (Number(clip.sourceStart || 0) + duration)), duration, originalDuration: Number(clip.originalDuration || clip.source?.duration || duration),
@@ -50,15 +50,17 @@
   }
 
   function normalizeModel(input = {}, options = {}) {
-    const lanes = (input.lanes || input.tracks || []).map(normalizeLane);
-    const clips = (input.clips || []).map((clip) => normalizeClip(clip, lanes));
+    const projectId = options.projectId || input.projectId || "local-project";
+    const own = (items) => clone(items, []).map((item) => ({ ...item, projectId }));
+    const lanes = (input.lanes || input.tracks || []).map((lane, order) => normalizeLane(lane, order, projectId));
+    const clips = (input.clips || []).map((clip) => normalizeClip(clip, lanes, projectId));
     lanes.forEach((lane) => { lane.clipIds = clips.filter((clip) => clip.laneId === lane.laneId).map((clip) => clip.clipId); });
     const duration = clips.reduce((max, clip) => Math.max(max, clip.startTime + clip.duration), 0);
     return {
-      schemaVersion: SCHEMA_VERSION, arrangementId: input.arrangementId || id("arrangement"), projectId: options.projectId || input.projectId || "local-project", name: input.name || "Main Arrangement",
+      schemaVersion: SCHEMA_VERSION, arrangementId: input.arrangementId || id("arrangement"), projectId, name: input.name || "Main Arrangement",
       version: Number(input.version || 1), BPM: Number(input.BPM || options.BPM || 124), timeSignature: input.timeSignature || "4/4", duration,
       playhead: Number(input.playhead || 0), loopRegion: clone(input.loopRegion, { enabled: false, start: 0, end: 0 }), snapMode: input.snapMode || input.snap || "bar", zoom: Number(input.zoom || 8),
-      lanes, clips, markers: clone(input.markers, []), transitions: clone(input.transitions, []), automation: clone(input.automation, []), recordings: clone(input.recordings, []),
+      lanes, clips, markers: own(input.markers || []), transitions: own(input.transitions || []), automation: own(input.automation || []), recordings: own(input.recordings || []),
       tempoMap: clone(input.tempoMap, []), keyMap: clone(input.keyMap, []), selectedClipIds: clone(input.selectedClipIds, input.selectedClipId ? [input.selectedClipId] : []), selectedLaneIds: clone(input.selectedLaneIds, []),
       playbackState: "Idle", recordingState: "Idle", exportState: clone(input.exportState, { status: "Not checked", history: [] }), versions: clone(input.versions, []), activeVersionId: input.activeVersionId || null, workspaceMode: input.workspaceMode || "simple", createdAt: input.createdAt || now(), updatedAt: now(),
     };

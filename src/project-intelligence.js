@@ -28,7 +28,7 @@
       arrangement: {},
       mixtape: {},
       playback: {},
-      aiHistory: { decisions: [], recentSummary: null },
+      aiHistory: { projectId: id, decisions: [], recentSummary: null },
       creativePreferences: {},
       producerMemory: { projectId: id, count: 0, preferences: [] },
       systemStatus: {},
@@ -72,7 +72,9 @@
         return;
       }
       context.project = { ...context.project, ...(saved.project || {}), projectId: id };
-      context.aiHistory = { decisions: [], recentSummary: null, ...(saved.aiHistory || {}) };
+      context.aiHistory = { projectId: id, decisions: [], recentSummary: null, ...(saved.aiHistory || {}) };
+      context.aiHistory.projectId = id;
+      context.aiHistory.decisions = (context.aiHistory.decisions || []).filter((item) => !item.projectId || item.projectId === id).map((item) => ({ ...item, projectId: id }));
       context.creativePreferences = saved.creativePreferences || {};
       context.contextVersion = Number(saved.contextVersion) || 0;
       context.timestamps = { ...context.timestamps, ...(saved.timestamps || {}) };
@@ -119,6 +121,7 @@
     const timestamp = decision.timestamp || event.timestamp || new Date().toISOString();
     return {
       id: decision.id || (global.crypto?.randomUUID ? global.crypto.randomUUID() : `${Date.now()}-${Math.random()}`),
+      projectId,
       timestamp,
       domain: decision.domain || event.domain || "AI",
       action: decision.action || event.type || "Context updated",

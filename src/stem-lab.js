@@ -5,9 +5,12 @@
   function clone(value) { return JSON.parse(JSON.stringify(value)); }
   function id(prefix = "stem") { return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
 
+  function activeProjectId() { return global.DeckForgeProjectRegistry?.getSession()?.projectId || "local-project"; }
+  function storageKey(projectId = activeProjectId()) { return global.DeckForgeProjectRegistry?.storageKey("stem-lab", projectId) || `${STORAGE_KEY}:${projectId}`; }
+
   function normalizeJob(job = {}) {
     return {
-      jobId: job.jobId || id("job"), projectId: job.projectId || "local-project", sourceTrackId: job.sourceTrackId || null,
+      jobId: job.jobId || id("job"), projectId: job.projectId || activeProjectId(), contextVersion: Number(job.contextVersion || 0), originContextVersion: Number(job.originContextVersion ?? job.contextVersion ?? 0), creationTimestamp: job.creationTimestamp || new Date().toISOString(), sourceTrackId: job.sourceTrackId || null,
       sourceName: job.sourceName || "Untitled source", separationMode: job.separationMode || "four", model: job.model || "Unknown",
       quality: job.quality || "balanced", status: job.status || "Queued", progress: Number(job.progress || 0),
       progressEstimated: job.progressEstimated !== false, currentStage: job.currentStage || "Waiting",
@@ -16,40 +19,42 @@
     };
   }
 
-  function createState() {
+  function createState(projectId = activeProjectId()) {
     return {
-      version: 2, mode: "simple", separationMode: "four", quality: "balanced", jobs: [], favorites: [], recentPrompts: [],
-      graph: { graphId: id("graph"), name: "Untitled Stem Graph", nodes: [], routes: [], updatedAt: null },
-      mashup: { vocalStemId: null, instrumentalStemId: null, status: "Draft", warnings: [] },
+      version: 2, projectId, mode: "simple", separationMode: "four", quality: "balanced", jobs: [], favorites: [], recentPrompts: [],
+      graph: { graphId: id("graph"), projectId, name: "Untitled Stem Graph", nodes: [], routes: [], updatedAt: null },
+      mashup: { projectId, vocalStemId: null, instrumentalStemId: null, status: "Draft", warnings: [] },
       mixSettings: {}, exportHistory: [], selectedStemId: null, lastBackendError: null, lastPreviewError: null,
     };
   }
 
   function serializable(state) {
+    const projectId = state.projectId || activeProjectId(); const graph = clone(state.graph); graph.projectId = projectId; graph.nodes = (graph.nodes || []).map((node) => ({ ...node, projectId })); graph.routes = (graph.routes || []).map((route) => ({ ...route, projectId }));
     return {
-      version: 2, mode: state.mode, separationMode: state.separationMode, quality: state.quality,
+      version: 2, projectId, mode: state.mode, separationMode: state.separationMode, quality: state.quality,
       jobs: state.jobs.map(normalizeJob), favorites: [...state.favorites], recentPrompts: state.recentPrompts.slice(0, 20),
-      graph: clone(state.graph), mashup: clone(state.mashup), mixSettings: clone(state.mixSettings), exportHistory: state.exportHistory.slice(0, 30),
+      graph, mashup: { ...clone(state.mashup), projectId }, mixSettings: clone(state.mixSettings), exportHistory: state.exportHistory.slice(0, 30).map((item) => ({ ...item, projectId })),
     };
   }
 
   function save(state) {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable(state))); return true; }
+    try { const projectId = state.projectId || activeProjectId(); if (projectId !== activeProjectId()) return false; localStorage.setItem(storageKey(projectId), JSON.stringify(serializable({ ...state, projectId }))); return true; }
     catch { return false; }
   }
 
-  function restore() {
-    const state = createState();
+  function restore(projectId = activeProjectId()) {
+    const state = createState(projectId);
     try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-      if (!saved || saved.version !== 2) return state;
-      Object.assign(state, saved, { jobs: (saved.jobs || []).map((job) => ({ ...normalizeJob(job), restored: true })) });
+      const saved = JSON.parse(localStorage.getItem(storageKey(projectId)) || "null");
+      if (!saved || saved.version !== 2 || saved.projectId !== projectId) return state;
+      Object.assign(state, saved, { projectId, jobs: (saved.jobs || []).filter((job) => job.projectId === projectId).map((job) => ({ ...normalizeJob(job), restored: true })) });
       return state;
     } catch { return state; }
   }
 
   function upsertJob(state, incoming) {
-    const job = normalizeJob(incoming);
+    const job = normalizeJob({ ...incoming, projectId: incoming.projectId || state.projectId });
+    if (job.projectId !== state.projectId || job.projectId !== activeProjectId()) return null;
     const index = state.jobs.findIndex((item) => item.jobId === job.jobId);
     if (index >= 0) state.jobs[index] = { ...state.jobs[index], ...job };
     else state.jobs.unshift(job);
@@ -91,5 +96,5 @@
     return { prompt: text, nodes, routes, effects: [], gainChanges: [], destinations: [destination.name], warnings: missing.length ? ["Requested sources are missing; Apply is disabled."] : [], missing, confidence: missing.length ? 0.42 : selected.length ? 0.86 : 0.28 };
   }
 
-  global.StemLabEngine = { STORAGE_KEY, TERMINAL, createState, normalizeJob, upsertJob, save, restore, validateRoute, proposeGraph, id };
+  global.StemLabEngine = { STORAGE_KEY, storageKey, TERMINAL, createState, normalizeJob, upsertJob, save, restore, validateRoute, proposeGraph, id };
 })(window);

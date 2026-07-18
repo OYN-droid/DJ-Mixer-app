@@ -4148,3 +4148,11 @@ dialog::backdrop,
   .topbar .transport > .global-playback-summary,
   .topbar .transport > .global-playback-details { grid-column: 1 / -1; }
 }
+.project-menu { margin-top: .45rem; position: relative; width: min(26rem, 100%); }
+.project-menu > summary { cursor: pointer; color: var(--muted); font-size: .82rem; list-style: none; }
+.project-menu > summary::before { content: "Project: "; color: var(--text); font-weight: 700; }
+.project-menu-panel { position: absolute; z-index: 60; width: min(24rem, 85vw); padding: .85rem; border: 1px solid var(--line); border-radius: .75rem; background: var(--panel); box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, .38); }
+.project-menu-panel label { display: grid; gap: .35rem; }
+.project-menu-actions { display: flex; gap: .45rem; margin-top: .65rem; flex-wrap: wrap; }
+.project-menu-panel pre { max-height: 12rem; overflow: auto; font-size: .7rem; }
+body.project-closed .view, body.project-closed .transport, body.project-closed .rail-tabs { pointer-events: none; opacity: .45; }

@@ -1,0 +1,18 @@
+(function initializeProjectAssetRegistry(global) {
+  "use strict";
+  const SCHEMA_VERSION = 1; const PREFIX = `deckforge-project-assets:v${SCHEMA_VERSION}`;
+  const registry = global.DeckForgeProjectRegistry;
+  function now() { return new Date().toISOString(); }
+  function clone(value, fallback = null) { try { return JSON.parse(JSON.stringify(value)); } catch { return fallback; } }
+  function id() { return `asset-${global.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`}`; }
+  function key(projectId) { return `${PREFIX}:${projectId}`; }
+  function activeId() { const projectId = registry?.getSession()?.projectId; if (!projectId) throw new Error("No active project owns this asset."); return projectId; }
+  function load(projectId = activeId()) { try { const saved = JSON.parse(localStorage.getItem(key(projectId)) || "null"); return saved?.schemaVersion === SCHEMA_VERSION && saved.projectId === projectId && Array.isArray(saved.assets) ? saved.assets : []; } catch { return []; } }
+  function save(assets, projectId = activeId()) { localStorage.setItem(key(projectId), JSON.stringify({ schemaVersion: SCHEMA_VERSION, projectId, assets, updatedAt: now() })); }
+  function normalize(input = {}, projectId = activeId()) { if (input.projectId && input.projectId !== projectId) throw new Error("An asset cannot be reassigned to another project."); return { assetId: input.assetId || id(), projectId, owningDomain: input.owningDomain || "Unknown", createdBy: input.createdBy || "user", assetType: input.assetType || "Reference", shared: input.shared === true, references: Array.isArray(input.references) ? clone(input.references, []) : [], checksum: input.checksum || null, missing: input.missing === true, relinkRequired: input.relinkRequired === true, sourceId: input.sourceId || null, name: String(input.name || "Untitled asset").slice(0, 160), metadata: clone(input.metadata, {}) || {}, createdAt: input.createdAt || now(), updatedAt: now() }; }
+  function register(input = {}) { const projectId = input.projectId || activeId(); if (!registry.owns(projectId)) throw new Error("Asset ownership does not match the active project."); const assets = load(projectId); const existing = input.assetId ? assets.findIndex((item) => item.assetId === input.assetId) : input.sourceId ? assets.findIndex((item) => item.sourceId === input.sourceId && item.owningDomain === input.owningDomain) : -1; const asset = normalize(existing >= 0 ? { ...assets[existing], ...input } : input, projectId); if (existing >= 0) assets[existing] = asset; else assets.push(asset); save(assets, projectId); return clone(asset); }
+  function list(projectId = activeId(), options = {}) { if (!registry.owns(projectId) && !options.allowInactive) return []; return load(projectId).filter((asset) => options.includeShared || !asset.shared || asset.projectId === projectId).map((asset) => clone(asset)); }
+  function markMissing(assetId, missing = true, projectId = activeId()) { const assets = load(projectId); const asset = assets.find((item) => item.assetId === assetId); if (!asset) return null; asset.missing = missing; asset.relinkRequired = missing; asset.updatedAt = now(); save(assets, projectId); return clone(asset); }
+  function remove(assetId, projectId = activeId()) { const assets = load(projectId); const next = assets.filter((item) => item.assetId !== assetId); if (next.length === assets.length) return false; save(next, projectId); return true; }
+  global.DeckForgeProjectAssets = Object.freeze({ SCHEMA_VERSION, register, list, markMissing, remove, diagnostics: () => ({ projectId: registry.getSession()?.projectId || null, assetCount: registry.getSession() ? load().length : 0 }) });
+})(window);

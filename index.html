@@ -38,6 +38,15 @@
           <div>
             <h1>DeckForge</h1>
             <p>Mashup workstation for decks, cuts, pads, drums, loops, and live recording.</p>
+            <details id="projectMenu" class="project-menu">
+              <summary><span id="activeProjectName">DeckForge Session</span></summary>
+              <div class="project-menu-panel">
+                <label>Open Project <select id="projectSelector"></select></label>
+                <div class="project-menu-actions"><button id="openProject" class="primary-button" type="button">Open</button><button id="createProject" class="primary-button" type="button">New</button><button id="renameProject" class="secondary-button" type="button">Rename</button><button id="closeProject" class="secondary-button" type="button">Close</button></div>
+                <p id="projectMigrationStatus" class="fine-print"></p>
+                <details><summary>Project diagnostics</summary><pre id="projectDiagnostics"></pre></details>
+              </div>
+            </details>
           </div>
           <div class="transport">
             <button id="audioEnable" class="primary-button">Start Audio</button>
@@ -1172,6 +1181,8 @@
       </main>
     </div>
 
+    <script src="src/project-registry.js"></script>
+    <script src="src/project-assets.js"></script>
     <script src="src/audio/playback-registry.js"></script>
     <script src="src/project-intelligence.js"></script>
     <script src="src/producer-memory.js"></script>

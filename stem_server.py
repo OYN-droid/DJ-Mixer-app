@@ -113,6 +113,8 @@ class DeckForgeHandler(SimpleHTTPRequestHandler):
         job = {
             "jobId": job_id,
             "projectId": fields.get("projectId") or "local-project",
+            "contextVersion": int(fields.get("contextVersion") or 0),
+            "creationTimestamp": fields.get("creationTimestamp") or timestamp(),
             "sourceTrackId": fields.get("sourceTrackId") or None,
             "sourceName": Path(upload["filename"]).stem,
             "separationMode": mode,
@@ -257,6 +259,10 @@ def process_job(job_id):
                 stem_id = "instrumental" if raw_id == "no_vocals" else raw_id
                 outputs.append({
                     "id": stem_id,
+                    "projectId": job["projectId"],
+                    "jobId": job_id,
+                    "contextVersion": job.get("contextVersion", 0),
+                    "creationTimestamp": job.get("creationTimestamp"),
                     "name": stem_name(stem_id),
                     "fileName": public_path.name,
                     "url": f"/generated_stems/{job_id}/{public_path.name}",

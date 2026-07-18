@@ -39,8 +39,8 @@
   function id(prefix) { return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`; }
   function now() { return new Date().toISOString(); }
   function storageKey() { return `${STORAGE_PREFIX}:${projectId}`; }
-  function persist() { try { localStorage.setItem(storageKey(), JSON.stringify({ activeMissionId, missions: missions.slice(0, 20) })); } catch (error) { lastError = error.message; } }
-  function restore() { try { const saved = JSON.parse(localStorage.getItem(storageKey()) || "null"); missions = Array.isArray(saved?.missions) ? saved.missions : []; activeMissionId = saved?.activeMissionId || null; } catch (error) { lastError = error.message; missions = []; } }
+  function persist() { try { localStorage.setItem(storageKey(), JSON.stringify({ projectId, activeMissionId, missions: missions.slice(0, 20) })); } catch (error) { lastError = error.message; } }
+  function restore() { try { const saved = JSON.parse(localStorage.getItem(storageKey()) || "null"); if (saved?.projectId && saved.projectId !== projectId) throw new Error("Mission storage belongs to another project."); missions = Array.isArray(saved?.missions) ? saved.missions.filter((item) => item.projectId === projectId) : []; activeMissionId = saved?.activeMissionId || null; } catch (error) { lastError = error.message; missions = []; } }
   function notify(type, mission, detail = {}) { persist(); const snapshot = clone(mission); subscribers.forEach((fn) => { try { fn(snapshot, { type, ...detail }); } catch (error) { lastError = error.message; } }); }
   function emit(type, mission, summary, detail = {}) { try { onEvent({ type, mission: clone(mission), summary, ...detail }); } catch (error) { lastError = error.message; } if (mission) mission.contextVersion = getContext()?.contextVersion || mission.contextVersion; notify(type, mission, detail); }
   function contextEmpty(context) { return !context?.ditc?.totalTracks && !(context?.decks || []).some((deck) => deck.loadedTrack) && !context?.arrangement?.clipCount && !context?.beatForge?.activePattern && !context?.harmonyLab?.melody && !context?.pads?.assignedPadCount; }

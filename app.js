@@ -1,6 +1,12 @@
 const DECKFORGE_VERSION = "2.0.0-recovery";
 const DECKFORGE_DEVELOPMENT = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 const DECKFORGE_LOG_PREFIX = "[DeckForge]";
+const ProjectRegistry = window.DeckForgeProjectRegistry;
+const ProjectAssets = window.DeckForgeProjectAssets;
+const initialProject = ProjectRegistry.getActiveProject();
+const initialProjectSession = ProjectRegistry.getSession();
+const ACTIVE_PROJECT_ID = initialProject?.projectId || "deckforge-session";
+function projectStorageKey(domain, projectId = ACTIVE_PROJECT_ID) { return ProjectRegistry.storageKey(domain, projectId); }
 
 window.addEventListener("error", (event) => {
   console.error(DECKFORGE_LOG_PREFIX, "Unhandled application error", event.error || event.message);
@@ -101,7 +107,8 @@ const sourceFiles = [];
 const droppedFilePaths = new WeakMap();
 const supportedAudioExtensions = [".mp3", ".wav", ".wave", ".aif", ".aiff", ".flac", ".m4a", ".aac", ".alac"];
 const supportedImageExtensions = [".jpg", ".jpeg", ".png", ".webp"];
-const DITC_METADATA_KEY = "deckforge-ditc-metadata";
+const DITC_METADATA_KEY = projectStorageKey("ditc-metadata");
+const DITC_SOURCES_KEY = projectStorageKey("ditc-sources");
 const ditcState = {
   search: "",
   filter: "all",
@@ -119,7 +126,7 @@ const ditcState = {
 
 const editorState = {
   arrangementId: `arrangement-${Date.now().toString(36)}`,
-  projectId: "local-project",
+  projectId: ACTIVE_PROJECT_ID,
   name: "Main Arrangement",
   version: 1,
   workspaceMode: "simple",
@@ -193,7 +200,7 @@ const crateSelection = {
   saved: new Set()
 };
 
-const stemWorkspaceState = window.StemLabEngine?.restore() || { mode: "simple", separationMode: "four", quality: "balanced", jobs: [], graph: { nodes: [], routes: [] }, favorites: [], recentPrompts: [], mixSettings: {}, exportHistory: [] };
+const stemWorkspaceState = window.StemLabEngine?.restore(ACTIVE_PROJECT_ID) || { projectId: ACTIVE_PROJECT_ID, mode: "simple", separationMode: "four", quality: "balanced", jobs: [], graph: { nodes: [], routes: [] }, favorites: [], recentPrompts: [], mixSettings: {}, exportHistory: [] };
 const stemState = {
   file: null,
   sourceTrackId: null,
@@ -237,7 +244,7 @@ const mixtapeReferenceState = {
   artworkAnalysis: null
 };
 
-const PRODUCER_STUDIO_KEY = "deckforge-producer-studio";
+const PRODUCER_STUDIO_KEY = projectStorageKey("producer-studio");
 const ProjectIntelligenceEngine = window.ProjectIntelligence;
 const MemoryEngine = window.ProducerMemory;
 const RecommendationEngine = window.ContextualRecommendations;
@@ -250,9 +257,9 @@ window.DeckForgeProjectContext = projectContext;
 
 const producerStudioState = {
   mode: "simple",
-  projectId: "deckforge-session",
-  projectName: "DeckForge Session",
-  description: "",
+  projectId: ACTIVE_PROJECT_ID,
+  projectName: initialProject?.name || "DeckForge Session",
+  description: initialProject?.description || "",
   genre: null,
   subgenre: null,
   era: null,
@@ -260,7 +267,7 @@ const producerStudioState = {
   mood: null,
   energy: null,
   tags: [],
-  createdAt: new Date().toISOString(),
+  createdAt: initialProject?.createdAt || new Date().toISOString(),
   history: [],
   savedPrompts: [],
   undoActions: new Map(),
@@ -372,8 +379,8 @@ const autoMixState = {
   lastError: "None"
 };
 
-const SMART_PROMPT_HISTORY_KEY = "deckforge-smart-prompt-history";
-const SMART_PROMPT_RECIPES_KEY = "deckforge-smart-prompt-recipes";
+const SMART_PROMPT_HISTORY_KEY = projectStorageKey("smart-mix-history");
+const SMART_PROMPT_RECIPES_KEY = projectStorageKey("smart-mix-recipes");
 const smartPromptState = {
   rawPrompt: "",
   parsedIntent: null,
@@ -2275,13 +2282,15 @@ function switchPadScene(name) {
 
 function savePadWorkspace() {
   sampler.banks[sampler.bank] = capturePadBank();
-  const serializableBanks = Object.fromEntries(Object.entries(sampler.banks).map(([name, bank]) => [name, { ...bank, buffers: undefined, relink: bank.names.map((padName, index) => Boolean(bank.buffers[index]) || bank.relink[index]) }]));
-  localStorage.setItem("deckforge-pad-workspace", JSON.stringify({ bank: sampler.bank, scene: sampler.scene, workspaceMode: sampler.workspaceMode, quantize: sampler.quantize, banks: serializableBanks, scenes: sampler.scenes, promptHistory: sampler.promptHistory.slice(-20) }));
+  const serializableBanks = Object.fromEntries(Object.entries(sampler.banks).map(([name, bank]) => [name, { ...bank, projectId: ACTIVE_PROJECT_ID, buffers: undefined, relink: bank.names.map((padName, index) => Boolean(bank.buffers[index]) || bank.relink[index]) }]));
+  const scenes = Object.fromEntries(Object.entries(sampler.scenes).map(([name, scene]) => [name, { ...scene, projectId: ACTIVE_PROJECT_ID }]));
+  localStorage.setItem(projectStorageKey("pads"), JSON.stringify({ projectId: ACTIVE_PROJECT_ID, bank: sampler.bank, scene: sampler.scene, workspaceMode: sampler.workspaceMode, quantize: sampler.quantize, banks: serializableBanks, scenes, promptHistory: sampler.promptHistory.slice(-20).map((item) => item && typeof item === "object" ? { ...item, projectId: ACTIVE_PROJECT_ID } : item) }));
 }
 
 function restorePadWorkspace() {
   try {
-    const saved = JSON.parse(localStorage.getItem("deckforge-pad-workspace") || "null");
+    const saved = JSON.parse(localStorage.getItem(projectStorageKey("pads")) || "null");
+    if (saved?.projectId && saved.projectId !== ACTIVE_PROJECT_ID) return;
     sampler.banks.A = capturePadBank();
     ["B", "C", "D"].forEach((name) => { sampler.banks[name] = emptyPadBank(); });
     if (!saved) return;
@@ -2584,7 +2593,7 @@ function collectAiContext() {
       mode: sampler.modes[index]
     }))
     .filter((pad) => pad.loaded);
-  const savedSources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
+  const savedSources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
   const selected = selectedCrateItems();
   return {
     decks: ["a", "b"].map((id) => ({
@@ -3158,6 +3167,7 @@ async function addEditorClipFromSource(source, trackIndex, start) {
     groupId: source.alignmentJobId || source.metadata?.alignmentJobId || null
   };
   editorState.clips.push(clip);
+  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Arrangement", createdBy: "user", assetType: "Arrangement Clip", sourceId: clip.id, name: clip.name, references: [editorState.arrangementId, clip.sourceId], missing: clip.missingSource, relinkRequired: clip.relinkRequired, metadata: { sourceKind: clip.sourceKind, trackIndex: clip.trackIndex } });
   if (source.buffer) editorState.runtimeSourceCache.set(`${source.sourceKind}:${source.id}`, source.buffer);
   editorState.selectedClipId = clip.id;
   editorState.selectedClipIds = [clip.id];
@@ -5344,7 +5354,7 @@ async function preparePromptStemSplit() {
     return true;
   }
   const selectedSaved = selectedCrateItems().find((item) => item.kind === "saved");
-  const savedSources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
+  const savedSources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
   const savedCandidate = selectedSaved ? savedSources[selectedSaved.index] : savedSources[0];
   if (savedCandidate) {
     try {
@@ -5389,14 +5399,14 @@ async function loadSelectedCrateToDecks() {
 }
 
 function readSmartPromptStorage() {
-  try { smartPromptState.history = JSON.parse(localStorage.getItem(SMART_PROMPT_HISTORY_KEY) || "[]"); } catch { smartPromptState.history = []; }
-  try { smartPromptState.recipes = JSON.parse(localStorage.getItem(SMART_PROMPT_RECIPES_KEY) || "[]"); } catch { smartPromptState.recipes = []; }
+  try { smartPromptState.history = JSON.parse(localStorage.getItem(SMART_PROMPT_HISTORY_KEY) || "[]").filter((item) => !item.projectId || item.projectId === ACTIVE_PROJECT_ID).map((item) => ({ ...item, projectId: ACTIVE_PROJECT_ID })); } catch { smartPromptState.history = []; }
+  try { smartPromptState.recipes = JSON.parse(localStorage.getItem(SMART_PROMPT_RECIPES_KEY) || "[]").filter((item) => !item.projectId || item.projectId === ACTIVE_PROJECT_ID).map((item) => ({ ...item, projectId: ACTIVE_PROJECT_ID })); } catch { smartPromptState.recipes = []; }
   try { Object.assign(tempoSafetyPreferences, JSON.parse(localStorage.getItem(TEMPO_SAFETY_PREFERENCES_KEY) || "{}")); } catch { /* Use safe defaults. */ }
 }
 
 function writeSmartPromptStorage() {
-  localStorage.setItem(SMART_PROMPT_HISTORY_KEY, JSON.stringify(smartPromptState.history.slice(0, 12)));
-  localStorage.setItem(SMART_PROMPT_RECIPES_KEY, JSON.stringify(smartPromptState.recipes.slice(0, 12)));
+  localStorage.setItem(SMART_PROMPT_HISTORY_KEY, JSON.stringify(smartPromptState.history.slice(0, 12).map((item) => ({ ...item, projectId: ACTIVE_PROJECT_ID }))));
+  localStorage.setItem(SMART_PROMPT_RECIPES_KEY, JSON.stringify(smartPromptState.recipes.slice(0, 12).map((item) => ({ ...item, projectId: ACTIVE_PROJECT_ID }))));
 }
 
 function writeTempoSafetyPreferences() {
@@ -5720,7 +5730,7 @@ function planSmartPrompt() {
     smartPromptState.clarification = plan.clarification;
     smartPromptState.state = plan.clarification || plan.requiresSaferPlan ? "Plan Needs Clarification" : "Plan Ready";
     smartMixExecutionLog("plan parsed", { planId: plan.id, trigger: plan.transitionTrigger, style: plan.transitionStyle });
-    smartPromptState.history = [{ prompt, favorite: false, createdAt: Date.now() }, ...smartPromptState.history.filter((item) => item.prompt !== prompt)].slice(0, 12);
+    smartPromptState.history = [{ projectId: ACTIVE_PROJECT_ID, prompt, favorite: false, createdAt: Date.now() }, ...smartPromptState.history.filter((item) => item.prompt !== prompt)].slice(0, 12);
     writeSmartPromptStorage();
     if (plan.requiresSaferPlan && tempoSafetyPreferences.automaticallySuggest) {
       const saferPlans = generateSaferTransitionPlans(plan);
@@ -5937,7 +5947,7 @@ function validateSmartMixExecutionPlan(plan) {
   const incomingDeck = activeDeck === "a" ? "b" : "a";
   const sourceMode = document.querySelector("#smartMixSource")?.value || "both";
   const hasLocalCandidate = sourceFiles.some((source) => source.file || source.buffer);
-  const hasSavedCandidate = (() => { try { return JSON.parse(localStorage.getItem("deckforge-sources") || "[]").length > 0; } catch { return false; } })();
+  const hasSavedCandidate = (() => { try { return JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]").length > 0; } catch { return false; } })();
   if (!deckState[incomingDeck].buffer && sourceMode === "decks" && !plan.forceTrackSelection) throw new Error(`Deck ${incomingDeck.toUpperCase()} is empty and the Smart Mix source is limited to loaded decks.`);
   if (!deckState[incomingDeck].buffer && !hasLocalCandidate && !hasSavedCandidate) throw new Error(`Deck ${incomingDeck.toUpperCase()} is empty and no playable Smart Mix source is available.`);
   if (!deckState[incomingDeck].buffer && Number(plan.estimatedTimeUntilTransition || 0) < 5) throw new Error(`Deck ${incomingDeck.toUpperCase()} is empty and more preparation time is required before this deadline.`);
@@ -6052,7 +6062,7 @@ function saveSmartPromptRecipe() {
   const plan = smartPromptState.plan;
   if (!plan) return;
   const name = `${plan.transitionStyleLabel} · ${plan.barsUntilTransition} bars`;
-  smartPromptState.recipes = [{ name, prompt: plan.rawPrompt, plan: { transitionStyle: plan.transitionStyle, blendLengthBars: plan.blendLengthBars, bpmRecoveryDurationBars: plan.bpmRecoveryDurationBars, bpmRecoveryCurve: plan.bpmRecoveryCurve, avoidVocalOverlap: plan.avoidVocalOverlap }, createdAt: Date.now() }, ...smartPromptState.recipes].slice(0, 12);
+  smartPromptState.recipes = [{ projectId: ACTIVE_PROJECT_ID, name, prompt: plan.rawPrompt, plan: { transitionStyle: plan.transitionStyle, blendLengthBars: plan.blendLengthBars, bpmRecoveryDurationBars: plan.bpmRecoveryDurationBars, bpmRecoveryCurve: plan.bpmRecoveryCurve, avoidVocalOverlap: plan.avoidVocalOverlap }, createdAt: Date.now() }, ...smartPromptState.recipes].slice(0, 12);
   writeSmartPromptStorage();
   renderSmartPromptLibrary();
 }
@@ -6347,7 +6357,7 @@ async function collectAutoMixItems(mode = "club", sourceMode = "both") {
         items.push({ id: source.id, source: "Crate", name: source.name, buffer, analysis: source.analysis, notes: source.notes || "" });
       }
     }
-    const savedSources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
+    const savedSources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
     for (const source of savedSources) {
       try {
         const buffer = await loadAudioFromUrl(source.url);
@@ -7701,8 +7711,8 @@ async function enableHarmonyMidi() { if (!navigator.requestMIDIAccess) { instrum
 
 function updateHarmonyVoiceModulation() { instrument.activeVoices.forEach((voice) => { const now = AudioEngine.context.currentTime; const bent = voice.baseFrequency * 2 ** (instrument.pitchBend / 12); voice.oscA.frequency.setTargetAtTime(bent, now, .01); voice.oscB.frequency.setTargetAtTime(bent, now, .01); voice.subOsc.frequency.setTargetAtTime(bent * .5, now, .01); voice.filter.frequency.setTargetAtTime(Math.min(18000, voice.preset.filter * (1 + instrument.modulation * .8)), now, .02); }); }
 
-function saveHarmonyState() { localStorage.setItem("deckforge-harmony-lab", JSON.stringify({ preset: instrument.preset, machine: instrument.machine, workspaceMode: instrument.workspaceMode, key: instrument.key, scale: instrument.scale, chordMode: instrument.chordMode, pattern: instrument.pattern, patterns: instrument.patterns.slice(-30), promptHistory: instrument.promptHistory.slice(-30), favorites: instrument.favorites, arpeggiator: instrument.arpeggiator })); }
-function restoreHarmonyState() { try { const saved = JSON.parse(localStorage.getItem("deckforge-harmony-lab") || "null"); if (!saved) return; Object.assign(instrument, saved, { activeVoices: [], patternPlaying: false, patternPaused: false, patternTimer: null, undoStack: [], pendingPlan: null }); } catch (error) { instrument.lastError = error.message; } }
+function saveHarmonyState() { localStorage.setItem(projectStorageKey("harmony-lab"), JSON.stringify({ projectId: ACTIVE_PROJECT_ID, preset: instrument.preset, machine: instrument.machine, workspaceMode: instrument.workspaceMode, key: instrument.key, scale: instrument.scale, chordMode: instrument.chordMode, pattern: { ...instrument.pattern, projectId: ACTIVE_PROJECT_ID }, patterns: instrument.patterns.slice(-30).map((item) => ({ ...item, projectId: ACTIVE_PROJECT_ID })), promptHistory: instrument.promptHistory.slice(-30).map((item) => item && typeof item === "object" ? { ...item, projectId: ACTIVE_PROJECT_ID } : item), favorites: instrument.favorites, arpeggiator: { ...instrument.arpeggiator, projectId: ACTIVE_PROJECT_ID } })); }
+function restoreHarmonyState() { try { const saved = JSON.parse(localStorage.getItem(projectStorageKey("harmony-lab")) || "null"); if (!saved || (saved.projectId && saved.projectId !== ACTIVE_PROJECT_ID)) return; Object.assign(instrument, saved, { activeVoices: [], patternPlaying: false, patternPaused: false, patternTimer: null, undoStack: [], pendingPlan: null }); } catch (error) { instrument.lastError = error.message; } }
 function renderHarmonyDiagnostics() { const details = document.querySelector("#harmonyDiagnostics"); if (details) details.hidden = !DECKFORGE_DEVELOPMENT; const output = document.querySelector("#harmonyDiagnosticsOutput"); if (!output || !DECKFORGE_DEVELOPMENT) return; output.textContent = JSON.stringify({ instrument: getInstrumentPreset().name, engine: getSynthMachine().name, key: instrument.key, scale: instrument.scale, activeVoices: instrument.activeVoices.length, sustain: instrument.sustain, pitchBend: instrument.pitchBend, modulation: instrument.modulation, pattern: instrument.pattern.name, patternVersion: instrument.pattern.version, notes: instrument.pattern.notes.length, playing: instrument.patternPlaying, recording: instrument.recording, loop: instrument.patternLoop, midiEnabled: instrument.midiEnabled, midiInputs: instrument.midiInputs, pendingPlan: instrument.pendingPlan?.name || null, lastError: instrument.lastError }, null, 2); }
 
 async function loadStemFile(file) {
@@ -7727,6 +7737,8 @@ async function loadStemFile(file) {
 
 async function splitCurrentStemFile() {
   if (!stemState.sourceBuffer) return;
+  const owner = ProjectRegistry.getSession();
+  if (!owner || owner.projectId !== ACTIVE_PROJECT_ID) return;
   stopStemPreview();
   const button = document.querySelector("#splitStems");
   button.disabled = true;
@@ -7741,19 +7753,24 @@ async function splitCurrentStemFile() {
   formData.append("separationMode", mode);
   formData.append("quality", "balanced");
   formData.append("projectId", producerStudioState.projectId || "local-project");
+  formData.append("contextVersion", String(owner.contextVersion));
+  formData.append("creationTimestamp", new Date().toISOString());
   if (stemState.sourceTrackId) formData.append("sourceTrackId", stemState.sourceTrackId);
   emitProjectContextChange("stems", "separation-started", { summary: `Started ${mode}-stem separation for ${stemState.sourceName}` });
   try {
     const response = await fetch("/api/stem-jobs", { method: "POST", body: formData });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Stem server returned ${response.status}.`);
-    const job = window.StemLabEngine.upsertJob(stemState.workspace, payload);
+    if (!ProjectRegistry.owns(owner.projectId, owner.contextVersion)) return;
+    const job = window.StemLabEngine.upsertJob(stemState.workspace, { ...payload, projectId: owner.projectId, contextVersion: owner.contextVersion, creationTimestamp: payload.creationTimestamp || new Date().toISOString() });
+    if (!job) return;
     stemState.activeJobId = job.jobId;
     setStemStatus(`${job.status}: ${job.currentStage}. Progress is stage-based and estimated.`);
-    pollStemJob(job.jobId);
+    pollStemJob(job.jobId, job.projectId, job.contextVersion);
   } catch (error) {
     stemState.lastBackendError = error.message;
-    const failed = window.StemLabEngine.upsertJob(stemState.workspace, { jobId: `local-${Date.now()}`, sourceName: stemState.sourceName, separationMode: mode, status: "Failed", currentStage: "Backend unavailable", error: error.message });
+    if (!ProjectRegistry.owns(owner.projectId, owner.contextVersion)) return;
+    const failed = window.StemLabEngine.upsertJob(stemState.workspace, { jobId: `local-${Date.now()}`, projectId: owner.projectId, contextVersion: owner.contextVersion, creationTimestamp: new Date().toISOString(), sourceName: stemState.sourceName, separationMode: mode, status: "Failed", currentStage: "Backend unavailable", error: error.message });
     stemState.activeJobId = failed.jobId;
     setStemStatus(`AI separation unavailable: ${error.message} Choose Browser Preview in the failed job for clearly labelled rough filters.`, true);
     emitProjectContextChange("stems", "separation-failed", { summary: `Stem separation failed for ${stemState.sourceName}: ${error.message}` });
@@ -7763,13 +7780,17 @@ async function splitCurrentStemFile() {
   }
 }
 
-async function pollStemJob(jobId) {
+async function pollStemJob(jobId, projectId = ACTIVE_PROJECT_ID, contextVersion = ProjectRegistry.getSession()?.contextVersion) {
+  if (!ProjectRegistry.owns(projectId, contextVersion)) return;
   clearTimeout(stemState.pollTimers.get(jobId));
   try {
     const response = await fetch(`/api/stem-jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || "Stem job status is unavailable.");
-    const job = window.StemLabEngine.upsertJob(stemState.workspace, payload);
+    if (!ProjectRegistry.owns(projectId, contextVersion)) return;
+    const existing = stemState.workspace.jobs.find((item) => item.jobId === jobId);
+    const job = window.StemLabEngine.upsertJob(stemState.workspace, { ...payload, projectId, contextVersion, originContextVersion: existing?.originContextVersion ?? payload.contextVersion ?? contextVersion });
+    if (!job) return;
     setStemStatus(`${job.status}: ${job.currentStage}${job.progressEstimated ? " (estimated)" : ""} · ${job.progress}%`);
     renderStemLab();
     if (job.status === "Complete") { await loadCompletedStemJob(job); return; }
@@ -7779,7 +7800,7 @@ async function pollStemJob(jobId) {
       return;
     }
     if (job.status === "Cancelled") return;
-    stemState.pollTimers.set(jobId, setTimeout(() => pollStemJob(jobId), 750));
+    stemState.pollTimers.set(jobId, setTimeout(() => pollStemJob(jobId, projectId, contextVersion), 750));
   } catch (error) {
     stemState.lastBackendError = error.message;
     setStemStatus(`Job status failed: ${error.message}. Retry status when the server returns.`, true);
@@ -7787,7 +7808,16 @@ async function pollStemJob(jobId) {
   }
 }
 
+function resumeOwnedStemJobs() {
+  const session = ProjectRegistry.getSession(); if (!session) return;
+  stemState.workspace.jobs.filter((job) => job.projectId === session.projectId && !window.StemLabEngine.TERMINAL.has(job.status) && !job.jobId.startsWith("local-")).forEach((job) => {
+    const attached = window.StemLabEngine.upsertJob(stemState.workspace, { ...job, originContextVersion: job.originContextVersion ?? job.contextVersion, contextVersion: session.contextVersion, creationTimestamp: job.creationTimestamp || job.startedAt || new Date().toISOString() });
+    if (attached) pollStemJob(attached.jobId, attached.projectId, attached.contextVersion);
+  });
+}
+
 async function loadCompletedStemJob(job) {
+  if (!ProjectRegistry.owns(job.projectId, job.contextVersion)) return;
   await AudioEngine.init();
   setStemStatus("Finalizing: decoding all generated stems before synchronized playback…");
   try {
@@ -7797,12 +7827,14 @@ async function loadCompletedStemJob(job) {
       const buffer = await AudioEngine.context.decodeAudioData(await response.arrayBuffer());
       return normalizeStem({ ...output, buffer, quality: "AI isolated", jobId: job.jobId });
     }));
+    if (!ProjectRegistry.owns(job.projectId, job.contextVersion)) return;
     const durations = decoded.map((stem) => stem.buffer.duration);
     if (Math.max(...durations) - Math.min(...durations) > 0.05) throw new Error("Generated stems are not sample-aligned; synchronized playback was disabled.");
     stemState.stems = decoded;
     stemState.sourceName = job.sourceName;
     stemState.duration = Math.min(...durations);
     stemState.activeJobId = job.jobId;
+    decoded.forEach((stem) => ProjectAssets.register({ projectId: job.projectId, owningDomain: "Stem Lab", createdBy: "stem-engine", assetType: "Generated Stem", sourceId: stem.id, name: stem.name, references: [job.jobId, stem.fileName || stem.id], checksum: stem.checksum || null, missing: false, relinkRequired: false, metadata: { contextVersion: job.contextVersion, sourceName: job.sourceName } }));
     setStemStatus(`Created ${decoded.length} aligned AI stems from ${job.sourceName}. Preview before routing or export.`);
     renderStemLab();
     renderAiContext();
@@ -9001,13 +9033,13 @@ function sendBeatToPads(laneOnly = null) {
   const buffer = renderBeatPatternBuffer(laneOnly); if (!buffer) return; const label = laneOnly === null ? drums.name : `${drums.name} ${drums.rows[laneOnly]}`; setPadBuffer(empty, buffer, label, { mode: "loop", category: "Loops", source: "Rendered from Beat Forge" }); setPadEditorStatus(`Sent ${label} to Pad ${empty + 1} without changing occupied pads.`);
 }
 
-function serializeBeatPattern() { return { patternId: drums.patternId, name: drums.name, bars: drums.bars, stepsPerBar: drums.stepsPerBar, rows: drums.rows, pattern: drums.pattern, velocities: drums.velocities, probabilities: drums.probabilities, timingOffsets: drums.timingOffsets, automation: drums.automation, groove: drums.groove, grooveIntensity: drums.grooveIntensity, grooveLocks: drums.grooveLocks, kit: drums.machine, preset: drums.preset, section: drums.section, seed: drums.seed, version: drums.version, source: drums.source, lanes: drums.lanes }; }
+function serializeBeatPattern() { return { projectId: ACTIVE_PROJECT_ID, patternId: drums.patternId, name: drums.name, bars: drums.bars, stepsPerBar: drums.stepsPerBar, rows: drums.rows, pattern: drums.pattern, velocities: drums.velocities, probabilities: drums.probabilities, timingOffsets: drums.timingOffsets, automation: drums.automation, groove: drums.groove, grooveIntensity: drums.grooveIntensity, grooveLocks: drums.grooveLocks, kit: drums.machine, preset: drums.preset, section: drums.section, seed: drums.seed, version: drums.version, source: drums.source, lanes: drums.lanes }; }
 
 function saveBeatPattern() { const saved = { ...serializeBeatPattern(), savedAt: new Date().toISOString() }; drums.patterns = [...drums.patterns.filter((pattern) => pattern.name !== saved.name), saved]; saveBeatForgeState(); document.querySelector("#aiBeatProducerMessage").textContent = `Saved ${saved.name} locally.`; }
 
-function saveBeatForgeState() { try { localStorage.setItem("deckforge-beat-forge", JSON.stringify({ active: serializeBeatPattern(), patterns: drums.patterns.slice(-30), promptHistory: drums.promptHistory.slice(-30), workspaceMode: drums.workspaceMode || "simple" })); } catch (error) { drums.lastError = `Persistence: ${error.message}`; } }
+function saveBeatForgeState() { try { localStorage.setItem(projectStorageKey("beat-forge"), JSON.stringify({ projectId: ACTIVE_PROJECT_ID, active: serializeBeatPattern(), patterns: drums.patterns.slice(-30), promptHistory: drums.promptHistory.slice(-30), workspaceMode: drums.workspaceMode || "simple" })); } catch (error) { drums.lastError = `Persistence: ${error.message}`; } }
 
-function restoreBeatForgeState() { try { const saved = JSON.parse(localStorage.getItem("deckforge-beat-forge") || "null"); if (!saved?.active) return; const active = saved.active; Object.assign(drums, active, { patterns: saved.patterns || [], promptHistory: saved.promptHistory || [], workspaceMode: saved.workspaceMode || "simple", playing: false, paused: false, timer: null, voices: [], undoStack: [], previewing: false, restored: true }); const machine = drumMachines.find((item) => item.id === drums.machine); if (machine) drums.kit = { ...drums.kit, ...machine.kit }; normalizeDrumPatternModel(); } catch (error) { drums.lastError = `Restore: ${error.message}`; } }
+function restoreBeatForgeState() { try { const saved = JSON.parse(localStorage.getItem(projectStorageKey("beat-forge")) || "null"); if (!saved?.active || (saved.projectId && saved.projectId !== ACTIVE_PROJECT_ID)) return; const active = saved.active; Object.assign(drums, active, { patterns: saved.patterns || [], promptHistory: saved.promptHistory || [], workspaceMode: saved.workspaceMode || "simple", playing: false, paused: false, timer: null, voices: [], undoStack: [], previewing: false, restored: true }); const machine = drumMachines.find((item) => item.id === drums.machine); if (machine) drums.kit = { ...drums.kit, ...machine.kit }; normalizeDrumPatternModel(); } catch (error) { drums.lastError = `Restore: ${error.message}`; } }
 
 function exportBeatPattern() { const blob = new Blob([JSON.stringify(serializeBeatPattern(), null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = `${drums.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.beatforge.json`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 
@@ -9111,20 +9143,23 @@ function finishingExportAdapters() {
 function initializeFinishingServices() {
   RecordingService.configure({ projectId: producerStudioState.projectId, onEvent: handleRecordingServiceEvent, addToArrangement: addMasterRecordingToArrangement });
   ExportService.configure({ projectId: producerStudioState.projectId, adapters: finishingExportAdapters(), onEvent: handleExportServiceEvent });
+  RecordingService.listRecordings(producerStudioState.projectId, { includeCancelled: true, includeMissing: true }).forEach((record) => ProjectAssets.register({ projectId: record.projectId, owningDomain: "Recording", createdBy: "user", assetType: "Master Recording", sourceId: record.recordingId, name: record.name, references: [record.recordingId], missing: record.status === "Missing", relinkRequired: record.status === "Missing", metadata: { status: record.status, mimeType: record.mimeType } }));
+  ExportService.listExports(producerStudioState.projectId, { includeMissing: true }).forEach((job) => ProjectAssets.register({ projectId: job.projectId, owningDomain: "Export", createdBy: "export-service", assetType: job.outputType, sourceId: job.exportId, name: job.name, references: [job.sourceId].filter(Boolean), missing: job.status === "Missing", relinkRequired: job.status === "Missing", metadata: { status: job.status, format: job.format } }));
   renderFinishingStudio();
   window.addEventListener("beforeunload", () => { RecordingService.cleanup(); ExportService.cleanup(); });
 }
 
 function handleRecordingServiceEvent(event) {
   const record = event.recording;
+  if (record && !ProjectRegistry.owns(record.projectId, record.contextVersion || null)) return;
   if (event.type === "recording-started") { finishingState.activeRecordingId = record.recordingId; finishingState.recordingStartedAt = Date.now(); finishingState.peak = 0; AudioEngine.recorder = RecordingService.getRuntime(record.recordingId)?.recorder || null; startFinishingRecordingMeter(); emitProjectContextChange("recording", "recording-started", { summary: `Started ${record.sourceType} recording` }); }
-  if (["recording-complete", "recording-failed", "recording-cancelled"].includes(event.type)) { clearInterval(finishingState.recordingTimer); finishingState.recordingTimer = null; finishingState.activeRecordingId = null; if (record) { finishingState.selectedRecordingId = record.recordingId; RecordingService.updateRecording(record.recordingId, { metadata: { peak: finishingState.peak, clippingRisk: finishingState.peak >= .999, loudnessAnalysis: "Unavailable" }, tracklistReference: realArrangementTracklist() }); } AudioEngine.recorder = null; if (event.type === "recording-complete") { const preview = RecordingService.previewRecording(record.recordingId); AudioEngine.mixUrl = preview.url; document.querySelector("#downloadMix").disabled = false; emitProjectContextChange("recording", "recording-stopped", { summary: `Completed ${record.name}`, decision: { domain: "Recording", action: "Master recording completed", summary: `${record.name}: ${formatTime(record.duration)}, ${formatFileSize(record.sizeBytes)}`, initiatedBy: "user" } }); } else if (event.type === "recording-failed") { finishingState.lastRecordingError = record.error; emitProjectContextChange("recording", "recording-failed", { summary: record.error || "Recording failed" }); } }
+  if (["recording-complete", "recording-failed", "recording-cancelled"].includes(event.type)) { clearInterval(finishingState.recordingTimer); finishingState.recordingTimer = null; finishingState.activeRecordingId = null; if (record) { finishingState.selectedRecordingId = record.recordingId; RecordingService.updateRecording(record.recordingId, { metadata: { peak: finishingState.peak, clippingRisk: finishingState.peak >= .999, loudnessAnalysis: "Unavailable" }, tracklistReference: realArrangementTracklist() }); } AudioEngine.recorder = null; if (event.type === "recording-complete") { const preview = RecordingService.previewRecording(record.recordingId); AudioEngine.mixUrl = preview.url; document.querySelector("#downloadMix").disabled = false; ProjectAssets.register({ projectId: record.projectId, owningDomain: "Recording", createdBy: "user", assetType: "Master Recording", sourceId: record.recordingId, name: record.name, references: [record.recordingId], missing: false, relinkRequired: false, metadata: { mimeType: record.mimeType, sizeBytes: record.sizeBytes, contextVersion: record.contextVersion } }); emitProjectContextChange("recording", "recording-stopped", { summary: `Completed ${record.name}`, decision: { domain: "Recording", action: "Master recording completed", summary: `${record.name}: ${formatTime(record.duration)}, ${formatFileSize(record.sizeBytes)}`, initiatedBy: "user" } }); } else if (event.type === "recording-failed") { finishingState.lastRecordingError = record.error; emitProjectContextChange("recording", "recording-failed", { summary: record.error || "Recording failed" }); } }
   renderFinishingStudio(); renderGlobalTransport();
 }
 
 function handleExportServiceEvent(event) {
-  const job = event.export; if (job) finishingState.activeExportId = job.exportId;
-  if (event.type === "export-complete") emitProjectContextChange("export", "export-completed", { summary: `Created ${job.name}`, decision: { domain: "Export", action: "Export completed", summary: `${job.name}: ${job.outputType}, ${job.format}, ${formatFileSize(job.sizeBytes)}`, initiatedBy: "user" } });
+  const job = event.export; if (job && !ProjectRegistry.owns(job.projectId, job.contextVersion || null)) return; if (job) finishingState.activeExportId = job.exportId;
+  if (event.type === "export-complete") { ProjectAssets.register({ projectId: job.projectId, owningDomain: "Export", createdBy: "export-service", assetType: job.outputType, sourceId: job.exportId, name: job.name, references: [job.sourceId].filter(Boolean), missing: false, relinkRequired: false, metadata: { format: job.format, sizeBytes: job.sizeBytes, contextVersion: job.contextVersion } }); emitProjectContextChange("export", "export-completed", { summary: `Created ${job.name}`, decision: { domain: "Export", action: "Export completed", summary: `${job.name}: ${job.outputType}, ${job.format}, ${formatFileSize(job.sizeBytes)}`, initiatedBy: "user" } }); }
   if (event.type === "export-failed") { finishingState.lastExportError = job.error; emitProjectContextChange("export", "export-failed", { summary: job.error || "Export failed" }); }
   if (event.type === "export-validated") emitProjectContextChange("export", "export-validated", { summary: `${job.name}: ${event.validation.status}` });
   renderFinishingStudio();
@@ -9136,7 +9171,7 @@ function startFinishingRecordingMeter() {
 }
 
 async function startMasterRecording() {
-  try { await AudioEngine.init(); if (!AudioEngine.destination?.stream) throw new Error("Master recording destination is unavailable."); if (Number(document.querySelector("#masterVolume")?.value || 0) <= 0) throw new Error("Master output is muted. Raise Master before recording."); const sourceType = currentMasterRecordingSource(); const record = await RecordingService.startRecording({ stream: AudioEngine.destination.stream, audioContext: AudioEngine.context, name: document.querySelector("#recordingName")?.value || `${sourceType} Recording`, sourceType, sourceIds: window.AudioPlaybackRegistry?.active().map((item) => item.id) || [], recordingMode: "Master Output", metadata: { projectName: producerStudioState.projectName, BPM: Number(document.querySelector("#globalBpm")?.value || 124), capturePoint: "post-master-gain", sourceWarning: window.AudioPlaybackRegistry?.active().length ? null : "No playback source was active when recording started." } }); finishingState.activeRecordingId = record.recordingId; }
+  try { await AudioEngine.init(); if (!AudioEngine.destination?.stream) throw new Error("Master recording destination is unavailable."); if (Number(document.querySelector("#masterVolume")?.value || 0) <= 0) throw new Error("Master output is muted. Raise Master before recording."); const sourceType = currentMasterRecordingSource(); const record = await RecordingService.startRecording({ stream: AudioEngine.destination.stream, audioContext: AudioEngine.context, contextVersion: ProjectRegistry.getSession()?.contextVersion || 0, name: document.querySelector("#recordingName")?.value || `${sourceType} Recording`, sourceType, sourceIds: window.AudioPlaybackRegistry?.active().map((item) => item.id) || [], recordingMode: "Master Output", metadata: { projectName: producerStudioState.projectName, BPM: Number(document.querySelector("#globalBpm")?.value || 124), capturePoint: "post-master-gain", sourceWarning: window.AudioPlaybackRegistry?.active().length ? null : "No playback source was active when recording started." } }); finishingState.activeRecordingId = record.recordingId; }
   catch (error) { finishingState.lastRecordingError = error.message; const output = document.querySelector("#recordingStatus"); if (output) output.textContent = `Failed: ${error.message}`; renderFinishingDiagnostics(); }
 }
 
@@ -9164,7 +9199,7 @@ function syncFinishExportFormats() { const select = document.querySelector("#exp
 
 function createFinishExportJob() {
   const outputType = document.querySelector("#exportOutputType").value; const recordings = RecordingService.listRecordings(producerStudioState.projectId); const selected = RecordingService.getRecording(finishingState.selectedRecordingId) || recordings.find((record) => record.status === "Complete"); const sourceId = outputType === "Recording" ? selected?.recordingId || null : outputType === "Individual Stem" ? stemState.selectedStemId : editorState.arrangementId; const filename = document.querySelector("#exportFilename").value.trim() || `${producerStudioState.projectName}_${outputType}_${new Date().toISOString().slice(0, 10)}`;
-  return ExportService.createExportJob({ projectId: producerStudioState.projectId, sourceType: outputType === "Recording" ? "Recording" : outputType.includes("Stem") || ["Acapella", "Instrumental"].includes(outputType) ? "Stem Lab" : "Arrangement", sourceId, name: filename, format: document.querySelector("#exportFormat").value, outputType, quality: "Standard", metadata: finishingMetadata(), contextVersion: projectContext.contextVersion });
+  return ExportService.createExportJob({ projectId: producerStudioState.projectId, sourceType: outputType === "Recording" ? "Recording" : outputType.includes("Stem") || ["Acapella", "Instrumental"].includes(outputType) ? "Stem Lab" : "Arrangement", sourceId, name: filename, format: document.querySelector("#exportFormat").value, outputType, quality: "Standard", metadata: finishingMetadata(), contextVersion: ProjectRegistry.getSession()?.contextVersion || 0 });
 }
 
 async function validateFinishExport() { const job = createFinishExportJob(); finishingState.activeExportId = job.exportId; await ExportService.validateExport(job.exportId); renderFinishingStudio(); }
@@ -9202,9 +9237,10 @@ function readProducerStudioStorage() {
     const saved = JSON.parse(localStorage.getItem(PRODUCER_STUDIO_KEY) || "null");
     if (!saved) return;
     producerStudioState.mode = saved.mode === "advanced" ? "advanced" : "simple";
-    producerStudioState.projectId = saved.projectId || producerStudioState.projectId;
-    producerStudioState.projectName = saved.projectName || producerStudioState.projectName;
-    producerStudioState.description = saved.description || "";
+    if (saved.projectId && saved.projectId !== ACTIVE_PROJECT_ID) throw new Error("Producer Studio storage belongs to another project.");
+    producerStudioState.projectId = ACTIVE_PROJECT_ID;
+    producerStudioState.projectName = initialProject?.name || saved.projectName || producerStudioState.projectName;
+    producerStudioState.description = initialProject?.description || saved.description || "";
     producerStudioState.genre = saved.genre && saved.genre !== "Open Format" ? saved.genre : null;
     producerStudioState.subgenre = saved.subgenre && saved.subgenre !== "Live Remix" ? saved.subgenre : null;
     producerStudioState.era = saved.era || null;
@@ -9213,8 +9249,9 @@ function readProducerStudioStorage() {
     producerStudioState.energy = saved.energy || null;
     producerStudioState.tags = Array.isArray(saved.tags) ? saved.tags : producerStudioState.tags;
     producerStudioState.createdAt = saved.createdAt || producerStudioState.createdAt;
-    producerStudioState.history = Array.isArray(saved.history) ? saved.history : [];
-    producerStudioState.savedPrompts = Array.isArray(saved.savedPrompts) ? saved.savedPrompts : [];
+    producerStudioState.history = Array.isArray(saved.history) ? saved.history.filter((item) => !item.projectId || item.projectId === ACTIVE_PROJECT_ID).map((item) => ({ ...item, projectId: ACTIVE_PROJECT_ID })) : [];
+    producerStudioState.savedPrompts = Array.isArray(saved.savedPrompts) ? saved.savedPrompts.filter((item) => !item.projectId || item.projectId === ACTIVE_PROJECT_ID).map((item) => ({ ...item, projectId: ACTIVE_PROJECT_ID })) : [];
+    const bpm = Number(saved.globalBpm); if (bpm >= 60 && bpm <= 180) document.querySelector("#globalBpm").value = bpm;
   } catch {
     // Producer Studio stays usable with default in-memory UI state.
   }
@@ -9222,6 +9259,7 @@ function readProducerStudioStorage() {
 
 function writeProducerStudioStorage() {
   try {
+    if (!ProjectRegistry.owns(producerStudioState.projectId)) throw new Error("Producer Studio cannot write outside the active project.");
     localStorage.setItem(PRODUCER_STUDIO_KEY, JSON.stringify({
       mode: producerStudioState.mode,
       projectId: producerStudioState.projectId,
@@ -9233,11 +9271,13 @@ function writeProducerStudioStorage() {
       region: producerStudioState.region,
       mood: producerStudioState.mood,
       energy: producerStudioState.energy,
+      globalBpm: Number(document.querySelector("#globalBpm")?.value || 124),
       tags: producerStudioState.tags,
       createdAt: producerStudioState.createdAt,
-      history: producerStudioState.history.slice(0, 20),
-      savedPrompts: producerStudioState.savedPrompts.slice(0, 20)
+      history: producerStudioState.history.slice(0, 20).map((item) => ({ ...item, projectId: ACTIVE_PROJECT_ID })),
+      savedPrompts: producerStudioState.savedPrompts.slice(0, 20).map((item) => ({ ...item, projectId: ACTIVE_PROJECT_ID }))
     }));
+    ProjectRegistry.updateProject(ACTIVE_PROJECT_ID, { name: producerStudioState.projectName, description: producerStudioState.description, metadata: { genre: producerStudioState.genre, mood: producerStudioState.mood, energy: producerStudioState.energy, tags: producerStudioState.tags } });
   } catch {
     // Producer Studio stays usable when local persistence is unavailable.
   }
@@ -9373,7 +9413,7 @@ function projectIdentityModel() {
 }
 
 function safeSavedSources() {
-  try { return JSON.parse(localStorage.getItem("deckforge-sources") || "[]"); } catch { return []; }
+  try { return JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]").filter((item) => !item.projectId || item.projectId === ACTIVE_PROJECT_ID); } catch { return []; }
 }
 
 function buildProjectIntelligenceSnapshot() {
@@ -10038,7 +10078,7 @@ function rememberProducerPrompt(prompt, options = {}) {
   const value = String(prompt || "").trim();
   if (!value) return;
   const existing = producerStudioState.history.find((item) => item.prompt === value);
-  const item = { prompt: value, favorite: existing?.favorite || false, createdAt: Date.now() };
+  const item = { projectId: ACTIVE_PROJECT_ID, prompt: value, favorite: existing?.favorite || false, createdAt: Date.now() };
   producerStudioState.history = [item, ...producerStudioState.history.filter((entry) => entry.prompt !== value)].slice(0, 20);
   if (options.saved && !producerStudioState.savedPrompts.some((entry) => entry.prompt === value)) producerStudioState.savedPrompts.unshift(item);
   writeProducerStudioStorage();
@@ -10452,6 +10492,78 @@ function switchView(target) {
   if (target === "finishing") renderFinishingStudio();
 }
 
+function persistActiveProjectDomains() {
+  if (!ProjectRegistry.owns(ACTIVE_PROJECT_ID)) return false;
+  savePadWorkspace();
+  saveBeatForgeState();
+  saveHarmonyState();
+  saveArrangementProject({ automatic: true });
+  saveDeckProjectState();
+  window.StemLabEngine?.save(stemWorkspaceState);
+  writeProducerStudioStorage();
+  return true;
+}
+
+function saveDeckProjectState() {
+  const decks = ["a", "b"].map((id) => ({ projectId: ACTIVE_PROJECT_ID, deckId: id, trackName: deckState[id].trackName || null, analysis: deckState[id].analysis || null, sourceReference: deckState[id].trackName || null, missing: Boolean(deckState[id].trackName), relinkRequired: Boolean(deckState[id].trackName), updatedAt: new Date().toISOString() }));
+  ProjectRegistry.write("decks", { schemaVersion: 1, projectId: ACTIVE_PROJECT_ID, decks });
+  decks.filter((deck) => deck.trackName).forEach((deck) => ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Decks", createdBy: "user", assetType: "Deck State", sourceId: `deck-${deck.deckId}`, name: deck.trackName, references: [deck.sourceReference], missing: true, relinkRequired: true, metadata: { deckId: deck.deckId, analysis: deck.analysis } }));
+}
+
+function restoreDeckProjectState() {
+  const saved = ProjectRegistry.read("decks", null); if (!saved || saved.projectId !== ACTIVE_PROJECT_ID) return;
+  (saved.decks || []).forEach((entry) => { const deck = deckState[entry.deckId]; if (!deck || !entry.trackName) return; deck.trackName = entry.trackName; deck.analysis = entry.analysis || null; deck.buffer = null; setDeckStatus(entry.deckId, "empty", { error: "Audio relink required after project restore" }); document.querySelector(`#title-${entry.deckId}`).textContent = `${entry.trackName} · Relink Required`; });
+}
+
+function renderProjectRegistry() {
+  const active = ProjectRegistry.getActiveProject(); const session = ProjectRegistry.getSession(); const projects = ProjectRegistry.listProjects();
+  const name = document.querySelector("#activeProjectName"); if (name) name.textContent = active?.name || "No project open";
+  const selector = document.querySelector("#projectSelector"); if (selector) { selector.innerHTML = projects.map((item) => `<option value="${escapeHtml(item.projectId)}" ${item.projectId === active?.projectId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join(""); selector.disabled = !projects.length; }
+  const migration = document.querySelector("#projectMigrationStatus"); if (migration) migration.textContent = active?.migration ? `Migration: ${active.migration.status}${active.migration.copiedDomains?.length ? ` · copied ${active.migration.copiedDomains.join(", ")}` : " · no legacy data copied"}. Legacy backup preserved.` : "No migration record.";
+  const diagnostics = document.querySelector("#projectDiagnostics"); if (diagnostics) diagnostics.textContent = JSON.stringify({ ...ProjectRegistry.diagnostics(), ...ProjectAssets.diagnostics(), activeSession: session, storageIsolation: "Project Registry authoritative", switchBoundary: "Global Stop → persist → open → reload" }, null, 2);
+  document.body.classList.toggle("project-closed", !active);
+}
+
+async function openRegisteredProject(projectId) {
+  if (!projectId) return;
+  if (projectId === ProjectRegistry.getSession()?.projectId && ProjectRegistry.getActiveProject()) return;
+  if (!ProjectRegistry.getActiveProject()) { ProjectRegistry.openProject(projectId, { reason: "user-open" }); window.location.reload(); return; }
+  await stopAllAudio();
+  persistActiveProjectDomains();
+  ProjectRegistry.beginSwitch(projectId);
+  RecordingService.cleanup(); ExportService.cleanup();
+  ProjectRegistry.openProject(projectId, { reason: "user-switch" });
+  window.location.reload();
+}
+
+async function createRegisteredProject() {
+  const name = window.prompt("New project name", "Untitled Project"); if (!name?.trim()) return;
+  const created = ProjectRegistry.createProject({ name }, { open: false });
+  await openRegisteredProject(created.projectId);
+}
+
+function renameActiveProject() {
+  const active = ProjectRegistry.getActiveProject(); if (!active) return;
+  const name = window.prompt("Rename project", active.name); if (!name?.trim()) return;
+  const renamed = ProjectRegistry.renameProject(active.projectId, name); producerStudioState.projectName = renamed.name; writeProducerStudioStorage(); renderProjectRegistry(); renderProducerStudio();
+}
+
+async function closeActiveProject() {
+  const active = ProjectRegistry.getActiveProject(); if (!active || !window.confirm(`Close ${active.name}? Playback will stop and the project will be saved.`)) return;
+  await stopAllAudio(); persistActiveProjectDomains(); RecordingService.cleanup(); ExportService.cleanup(); ProjectRegistry.closeProject(active.projectId); if (AudioEngine.context?.state === "running") await AudioEngine.context.suspend(); renderProjectRegistry();
+}
+
+function setupProjectRegistryEvents() {
+  document.querySelector("#projectSelector")?.addEventListener("change", (event) => openRegisteredProject(event.target.value));
+  document.querySelector("#openProject")?.addEventListener("click", () => openRegisteredProject(document.querySelector("#projectSelector")?.value));
+  document.querySelector("#createProject")?.addEventListener("click", createRegisteredProject);
+  document.querySelector("#renameProject")?.addEventListener("click", renameActiveProject);
+  document.querySelector("#closeProject")?.addEventListener("click", closeActiveProject);
+  window.addEventListener("keydown", (event) => { if (document.body.classList.contains("project-closed")) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+  window.addEventListener("beforeunload", persistActiveProjectDomains);
+  renderProjectRegistry();
+}
+
 function hasSupportedExtension(file, extensions) {
   const name = (file?.name || "").toLowerCase();
   return extensions.some((extension) => name.endsWith(extension));
@@ -10596,12 +10708,14 @@ function setupDropZone(element, onFileDrop) {
 function addDroppedSourceUrl(url) {
   try {
     const parsed = new URL(url);
-    const sources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
+    const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
     sources.unshift({
+      projectId: ACTIVE_PROJECT_ID,
       url: parsed.href,
       name: parsed.hostname.replace("www.", "")
     });
-    localStorage.setItem("deckforge-sources", JSON.stringify(sources.slice(0, 20)));
+    localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources.slice(0, 20)));
+    ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Track Reference", sourceId: parsed.href, name: parsed.hostname, references: [parsed.href], missing: false, relinkRequired: false });
     renderSources();
   } catch {
     /* Ignore non-url text drops. */
@@ -11476,7 +11590,7 @@ function setupEvents() {
       if (action === "rename") { const record = RecordingService.getRecording(recordingId); const name = window.prompt("Recording name", record?.name || "Recording"); if (name?.trim()) RecordingService.renameRecording(recordingId, name); }
       if (action === "arrangement") await RecordingService.addRecordingToArrangement(recordingId);
       if (action === "export") { finishingState.selectedRecordingId = recordingId; document.querySelector("#exportOutputType").value = "Recording"; syncFinishExportFormats(); renderFinishingStudio(); document.querySelector("#exportFilename").focus(); }
-      if (action === "delete" && window.confirm("Delete this recording from the current session? Its object URL will be revoked.")) { const runtime = RecordingService.getRuntime(recordingId); const preview = document.querySelector("#recordingPreview"); if (runtime?.url && preview.src === runtime.url) { preview.pause(); preview.removeAttribute("src"); preview.load(); preview.hidden = true; } if (AudioEngine.mixUrl === runtime?.url) AudioEngine.mixUrl = null; RecordingService.deleteRecording(recordingId); if (finishingState.selectedRecordingId === recordingId) finishingState.selectedRecordingId = null; }
+      if (action === "delete" && window.confirm("Delete this recording from the current session? Its object URL will be revoked.")) { const runtime = RecordingService.getRuntime(recordingId); const preview = document.querySelector("#recordingPreview"); if (runtime?.url && preview.src === runtime.url) { preview.pause(); preview.removeAttribute("src"); preview.load(); preview.hidden = true; } if (AudioEngine.mixUrl === runtime?.url) AudioEngine.mixUrl = null; RecordingService.deleteRecording(recordingId); ProjectAssets.list(ACTIVE_PROJECT_ID).filter((asset) => asset.sourceId === recordingId).forEach((asset) => ProjectAssets.remove(asset.assetId, ACTIVE_PROJECT_ID)); if (finishingState.selectedRecordingId === recordingId) finishingState.selectedRecordingId = null; }
     } catch (error) { finishingState.lastRecordingError = error.message; }
     renderFinishingStudio();
   });
@@ -11487,7 +11601,7 @@ function setupEvents() {
       if (action === "download") ExportService.downloadExport(exportId);
       if (action === "retry") await ExportService.retryExport(exportId);
       if (action === "duplicate") { const copy = ExportService.duplicateSettings(exportId); finishingState.activeExportId = copy.exportId; }
-      if (action === "delete" && window.confirm("Delete this export result? Its object URL will be revoked.")) { ExportService.deleteExport(exportId); if (finishingState.activeExportId === exportId) finishingState.activeExportId = null; }
+      if (action === "delete" && window.confirm("Delete this export result? Its object URL will be revoked.")) { ExportService.deleteExport(exportId); ProjectAssets.list(ACTIVE_PROJECT_ID).filter((asset) => asset.sourceId === exportId).forEach((asset) => ProjectAssets.remove(asset.assetId, ACTIVE_PROJECT_ID)); if (finishingState.activeExportId === exportId) finishingState.activeExportId = null; }
     } catch (error) { finishingState.lastExportError = error.message; }
     renderFinishingStudio();
   });
@@ -11756,12 +11870,14 @@ function addSource(event) {
   const urlInput = document.querySelector("#sourceUrl");
   const nameInput = document.querySelector("#sourceName");
   const item = {
+    projectId: ACTIVE_PROJECT_ID,
     url: urlInput.value,
     name: nameInput.value || new URL(urlInput.value).hostname.replace("www.", "")
   };
-  const sources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
+  const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
   sources.unshift(item);
-  localStorage.setItem("deckforge-sources", JSON.stringify(sources.slice(0, 20)));
+  localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources.slice(0, 20)));
+  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Track Reference", sourceId: item.url, name: item.name, references: [item.url] });
   event.target.reset();
   renderSources();
 }
@@ -11783,6 +11899,7 @@ function persistDitcTrack(track) {
   try {
     const metadata = readDitcMetadata();
     metadata[track.storageId] = {
+      projectId: ACTIVE_PROJECT_ID,
       favorite: Boolean(track.favorite),
       tags: track.tags || [],
       notes: track.notes || "",
@@ -11826,6 +11943,7 @@ function addLocalSourceFile(file, options = {}) {
   const saved = readDitcMetadata()[storageId] || {};
   sourceFiles.unshift({
     id: createId(),
+    projectId: ACTIVE_PROJECT_ID,
     storageId,
     name: file.name,
     title: saved.title || inferred.title,
@@ -11843,6 +11961,8 @@ function addLocalSourceFile(file, options = {}) {
     padReady: false,
     stemReady: false
   });
+  const registered = sourceFiles[0];
+  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Local Audio Reference", sourceId: registered.id, name: registered.name, references: [registered.storageId], checksum: registered.storageId, missing: false, relinkRequired: false, metadata: { folderPath: registered.folderPath, size: file.size, lastModified: file.lastModified } });
   ditcState.lastImportResult = `Imported ${file.name}`;
   if (!options.silent) {
     setSourceStatus(`Added ${file.name} to DITC.`);
@@ -12002,10 +12122,10 @@ function inferGenreFromNameAndTempo(name, bpm, zcr) {
 }
 
 function saveSourceAnalysis(index, analysis) {
-  const sources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
+  const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
   if (!sources[Number(index)]) return;
   sources[Number(index)].analysis = analysis;
-  localStorage.setItem("deckforge-sources", JSON.stringify(sources));
+  localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources));
 }
 
 async function handleSourceFileAction(action, id) {
@@ -12107,7 +12227,7 @@ async function handleSourceFileAction(action, id) {
 }
 
 async function handleSavedSourceAction(action, index) {
-  const sources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
+  const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
   const item = sources[Number(index)];
   if (!item) return;
   if (action === "delete") {
@@ -12165,6 +12285,7 @@ function deleteLocalSourceFile(id) {
   if (ditcState.selectedTrackId === id) ditcState.selectedTrackId = null;
   crateSelection.local.delete(id);
   ditcState.smartMixIds.delete(id);
+  ProjectAssets.list(ACTIVE_PROJECT_ID).filter((asset) => asset.sourceId === id).forEach((asset) => ProjectAssets.remove(asset.assetId, ACTIVE_PROJECT_ID));
   setSourceStatus(`Removed ${removed.name} from this DITC session.`);
   renderSources();
   renderAiContext();
@@ -12172,16 +12293,17 @@ function deleteLocalSourceFile(id) {
 }
 
 function deleteSavedSource(index) {
-  const sources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
+  const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
   const [removed] = sources.splice(Number(index), 1);
-  localStorage.setItem("deckforge-sources", JSON.stringify(sources));
+  localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources));
+  if (removed?.url) ProjectAssets.list(ACTIVE_PROJECT_ID).filter((asset) => asset.sourceId === removed.url).forEach((asset) => ProjectAssets.remove(asset.assetId, ACTIVE_PROJECT_ID));
   setSourceStatus(removed ? `Deleted ${removed.name} from the crate.` : "Crate item deleted.");
   renderSources();
   renderAiContext();
 }
 
 function selectedCrateItems() {
-  const savedSources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
+  const savedSources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
   return [
     ...sourceFiles
       .filter((source) => crateSelection.local.has(source.id))
@@ -12206,10 +12328,10 @@ function saveCrateNotes(kind, id, value) {
       persistDitcTrack(source);
     }
   } else {
-    const sources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
+    const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
     if (sources[Number(id)]) {
       sources[Number(id)].notes = value;
-      localStorage.setItem("deckforge-sources", JSON.stringify(sources));
+      localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources));
     }
   }
   renderAiContext();
@@ -12380,7 +12502,7 @@ function handleAiSearchAction(action, id) {
 
 function renderSources() {
   const list = document.querySelector("#sourceList");
-  const sources = JSON.parse(localStorage.getItem("deckforge-sources") || "[]");
+  const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
   const visible = sortedDitcTracks(sourceFiles.filter(matchesDitcFilter));
   list.innerHTML = "";
   if (!sourceFiles.length && !sources.length) {
@@ -12585,7 +12707,7 @@ function renderDitcDiagnostics() {
   const details = document.querySelector("#ditcDiagnostics");
   if (details) details.hidden = !DECKFORGE_DEVELOPMENT;
   const output = document.querySelector("#ditcDiagnosticsOutput");
-  if (output && DECKFORGE_DEVELOPMENT) output.textContent = JSON.stringify({ totalTrackCount: sourceFiles.length + JSON.parse(localStorage.getItem("deckforge-sources") || "[]").length, playableTrackCount: sourceFiles.length, selectedTrack: ditcState.selectedTrackId, activePreview: ditcState.previewTrackId, objectUrlCount: 0, currentFilter: ditcState.filter, currentSort: ditcState.sort, currentSearch: ditcState.search, dragTarget: ditcState.dragTarget, lastImportResult: ditcState.lastImportResult, lastError: ditcState.lastError }, null, 2);
+  if (output && DECKFORGE_DEVELOPMENT) output.textContent = JSON.stringify({ projectId: ACTIVE_PROJECT_ID, totalTrackCount: sourceFiles.length + JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]").length, playableTrackCount: sourceFiles.length, selectedTrack: ditcState.selectedTrackId, activePreview: ditcState.previewTrackId, objectUrlCount: 0, currentFilter: ditcState.filter, currentSort: ditcState.sort, currentSearch: ditcState.search, dragTarget: ditcState.dragTarget, lastImportResult: ditcState.lastImportResult, lastError: ditcState.lastError }, null, 2);
 }
 
 function updateSmartMixSourceOptions() {
@@ -12630,10 +12752,12 @@ editorState.name = producerStudioState.projectName ? `${producerStudioState.proj
 restoreArrangementProject();
 initializePlaybackRegistry();
 readSmartPromptStorage();
+setupProjectRegistryEvents();
 setupEvents();
 setupProducerStudioEvents();
 renderStemLab();
 initializeStemCapabilities();
+resumeOwnedStemJobs();
 renderPads();
 renderPadEditor();
 renderPadWorkspaceControls();
@@ -12655,6 +12779,7 @@ drawWaveform("a");
 drawWaveform("b");
 setDeckStatus("a", "empty");
 setDeckStatus("b", "empty");
+restoreDeckProjectState();
 renderSmartMixPanel();
 renderSmartPromptPlan();
 renderSmartPromptLibrary();

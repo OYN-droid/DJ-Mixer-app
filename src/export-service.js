@@ -19,7 +19,7 @@
   function configure(options = {}) { projectId = options.projectId || projectId; adapters = options.adapters || adapters; onEvent = typeof options.onEvent === "function" ? options.onEvent : onEvent; return restore(); }
 
   function createExportJob(options = {}) {
-    const exportId = id(); const createdAt = now(); const job = { exportId, projectId, sourceType: options.sourceType || "Project", sourceId: options.sourceId || null, name: safeName(options.name || "DeckForge Export"), format: options.format || "JSON", outputType: options.outputType || "Project Metadata", quality: options.quality || "Standard", status: "Draft", progress: 0, stage: "Draft", startedAt: null, completedAt: null, cancelledAt: null, outputReference: null, sizeBytes: 0, duration: Number(options.duration || 0) || null, warnings: clone(options.warnings, []), validationResults: null, metadata: clone(options.metadata, {}), settings: clone(options.settings, {}), error: null, retryCount: Number(options.retryCount || 0), contextVersion: options.contextVersion || null, createdAt, updatedAt: createdAt };
+    const exportId = id(); const createdAt = now(); const job = { exportId, projectId, sourceType: options.sourceType || "Project", sourceId: options.sourceId || null, name: safeName(options.name || "DeckForge Export"), format: options.format || "JSON", outputType: options.outputType || "Project Metadata", quality: options.quality || "Standard", status: "Draft", progress: 0, stage: "Draft", startedAt: null, completedAt: null, cancelledAt: null, outputReference: null, sizeBytes: 0, duration: Number(options.duration || 0) || null, warnings: clone(options.warnings, []), validationResults: null, metadata: clone(options.metadata, {}), settings: clone(options.settings, {}), error: null, retryCount: Number(options.retryCount || 0), contextVersion: Number(options.contextVersion || 0), creationTimestamp: createdAt, createdAt, updatedAt: createdAt };
     jobs.set(exportId, job); runtime.set(exportId, { adapterInput: options.adapterInput || null, cancelRequested: false, blob: null, url: null, filename: null, lastResult: null }); persist(); onEvent({ type: "export-created", export: publicJob(job) }); return publicJob(job);
   }
 
@@ -36,10 +36,12 @@
 
   async function startExport(exportId) {
     const job = jobs.get(exportId); const state = runtime.get(exportId); if (!job || !state) throw new Error("Export job not found.");
+    const registry = global.DeckForgeProjectRegistry; if (registry && !registry.owns(job.projectId, job.contextVersion || null)) throw new Error("Export ownership no longer matches the active project session.");
     const validation = await validateExport(exportId); if (validation.status === "Blocked") return publicJob(job);
     const adapter = adapterFor(job); state.cancelRequested = false; job.status = "Rendering"; job.stage = adapter?.method === "realtime" ? "Real-time capture" : "Generating output"; job.progress = 10; job.startedAt = now(); job.error = null; job.updatedAt = now(); persist(); onEvent({ type: "export-started", export: publicJob(job) });
     try {
       const result = await adapter.generate(publicJob(job), state.adapterInput, { isCancelled: () => state.cancelRequested, progress: (progress, stage) => { job.progress = Math.max(10, Math.min(95, Number(progress || 0))); job.stage = stage || job.stage; job.updatedAt = now(); onEvent({ type: "export-progress", export: publicJob(job) }); } });
+      if (registry && !registry.owns(job.projectId, job.contextVersion || null)) throw new Error("Export completed after its project session closed; the result was discarded.");
       if (state.cancelRequested) { job.status = "Cancelled"; job.cancelledAt = now(); job.stage = "Cancelled"; job.progress = 0; job.updatedAt = now(); persist(); onEvent({ type: "export-cancelled", export: publicJob(job) }); return publicJob(job); }
       let blob = result?.blob || null; if (!blob && result?.text != null) blob = new Blob([result.text], { type: result.mimeType || "text/plain" }); if (!blob?.size) throw new Error("The exporter produced a zero-byte output.");
       if (state.url) URL.revokeObjectURL(state.url); state.blob = blob; state.url = URL.createObjectURL(blob); state.filename = safeName(result.filename || `${job.name}.${result.extension || "bin"}`); state.lastResult = result;
