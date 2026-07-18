@@ -60,6 +60,8 @@ This directory contains the DeckForge Design Bible and the recovery and implemen
 27. [Working Beat Forge baseline](26-working-beat-forge-baseline.md)
 28. [Beat Forge regression checklist](27-beat-forge-regression-checklist.md)
 29. [Producer Studio regression checklist](28-producer-studio-regression-checklist.md)
+30. [Project asset audit](35-project-asset-audit.md)
+31. [Project Asset Manager regression checklist](36-project-asset-manager-regression-checklist.md)
 
 ## Recovery snapshot
 

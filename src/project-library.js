@@ -15,7 +15,8 @@
     const arrangement = readJson(`deckforge-arrangement-studio:${projectId}`, null);
     const recordings = readJson(`deckforge-recordings:${projectId}`, { records: [] })?.records || [];
     const exports = readJson(`deckforge-exports:${projectId}`, { jobs: [] })?.jobs || [];
-    const assets = readJson(`${ASSET_PREFIX}:${projectId}`, { assets: [] })?.assets || [];
+    const assetService = global.DeckForgeProjectAssets;
+    const assets = assetService?.list(projectId, { allowInactive: true, includeTrash: true }) || readJson(`${ASSET_PREFIX}:${projectId}`, { assets: [] })?.assets || [];
     const intelligence = readJson(`deckforge-project-intelligence:${projectId}`, null);
     const clips = Array.isArray(arrangement?.clips) ? arrangement.clips : [];
     const durationSeconds = clips.reduce((max, clip) => Math.max(max, Number(clip.startTime ?? clip.start ?? 0) + Number(clip.duration || 0)), 0);
@@ -25,6 +26,8 @@
     const visibleRecordings = recordings.filter((record) => !["Deleted", "Cancelled"].includes(record.status));
     const visibleExports = exports.filter((job) => job.status !== "Deleted").sort((a, b) => safeDate(b.completedAt || b.createdAt) - safeDate(a.completedAt || a.createdAt));
     const missingAssetCount = assets.filter((asset) => asset.missing || asset.relinkRequired).length;
+    const unusedAssetCount = assetService ? assets.filter((asset) => !asset.trash?.trashed && assetService.usageStatus(asset) === "Unused").length : 0;
+    const assetStorage = assetService?.storageSummary(projectId, { allowInactive: true }) || { totalKnownBytes: 0, unknownSizeCount: assets.filter((asset) => asset.sizeBytes == null).length };
     const validation = registry.validateProject(projectId, { persist: false });
     return {
       ...project,
@@ -42,6 +45,9 @@
       recordingCount: visibleRecordings.length,
       latestExport: visibleExports[0] ? { name: visibleExports[0].name, status: visibleExports[0].status, format: visibleExports[0].format, createdAt: visibleExports[0].completedAt || visibleExports[0].createdAt } : null,
       missingAssetCount,
+      unusedAssetCount,
+      assetStorage,
+      consolidationStatus: "Unavailable in browser build",
       needsRepair: !validation.valid,
       validation
     };

@@ -90,6 +90,7 @@ const sampler = {
   chokes: Array(16).fill(0),
   sources: Array(16).fill("Memory audio"),
   relink: Array(16).fill(false),
+  assetIds: Array(16).fill(null),
   held: new Set(),
   lastTrigger: "None",
   lastStop: "None",
@@ -195,6 +196,9 @@ const finishingState = {
   lastDownloadError: null,
   lastEncodingError: null
 };
+
+const assetManagerState = { search: "", filter: "All", sort: "Name", mode: "simple", selectedAssetId: null, pendingRelinkAssetId: null, lastError: null };
+const assetPreviewState = { assetId: null, buffer: null, source: null, gain: null, startedAt: 0, playing: false };
 
 const crateSelection = {
   local: new Set(),
@@ -1456,11 +1460,17 @@ function setPadBuffer(index, buffer, name, options = {}) {
   sampler.categories[index] = options.category || (buffer.duration > 8 ? "Loops" : "User-created");
   sampler.sources[index] = options.source || "Local or in-memory audio";
   sampler.relink[index] = false;
+  sampler.assetIds[index] = options.assetId || null;
   sampler.selected = index;
   renderPads();
   renderPadEditor();
   renderEditorSourceBin();
   savePadWorkspace();
+  if (ACTIVE_PROJECT_ID && ProjectRegistry.owns(ACTIVE_PROJECT_ID)) {
+    const padAsset = ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Pads", createdBy: options.createdBy || "user", assetType: "Pad Sample", sourceType: options.sourceType || "Runtime AudioBuffer", sourceId: `pad:${sampler.bank}:${index}`, displayName: sampler.names[index], originalFilename: options.originalFilename || null, mimeType: options.mimeType || null, sizeBytes: options.sizeBytes ?? null, duration: sampler.ends[index] - sampler.starts[index], generated: options.generated === true, linked: true, missing: false, relinkRequired: false, references: [assetReference("Pads", `${sampler.bank}:${index}`, `Bank ${sampler.bank}, Pad ${index + 1}`, "Pad assignment", true)], lineage: options.assetId ? [{ assetId: options.assetId, relationship: "Assigned from" }] : [], metadata: { bank: sampler.bank, padIndex: index, mode: sampler.modes[index], category: sampler.categories[index], sourceLabel: sampler.sources[index] } });
+    sampler.assetIds[index] = padAsset.assetId;
+    if (options.assetId && ProjectAssets.get(options.assetId, ACTIVE_PROJECT_ID)) ProjectAssets.addReference(options.assetId, assetReference("Pads", `${sampler.bank}:${index}`, `Bank ${sampler.bank}, Pad ${index + 1}`, "Pad source", true, false, new Date().toISOString()), ACTIVE_PROJECT_ID);
+  }
   emitProjectContextChange("pads", "pad-assigned", { summary: `Assigned ${sampler.names[index]} to Pad ${index + 1}`, decision: { domain: "Pads", action: "Pad assigned", summary: `Assigned ${sampler.names[index]} to Pad ${index + 1} in Bank ${sampler.bank}`, after: { bank: sampler.bank, pad: index + 1, name: sampler.names[index] }, initiatedBy: options.source?.includes("AI") ? "AI" : "user" } });
 }
 
@@ -2222,7 +2232,7 @@ async function handlePadDrop(event, index) {
       await AudioEngine.init();
       const buffer = await loadAudioFile(file);
       if (sampler.buffers[index] && !window.confirm(`Replace ${sampler.names[index]} on Pad ${index + 1}?`)) return;
-      setPadBuffer(index, buffer, file.name, { source: `Local file: ${file.name}` });
+      setPadBuffer(index, buffer, file.name, { source: `Local file: ${file.name}`, sourceType: "Local File", originalFilename: file.name, mimeType: file.type, sizeBytes: file.size });
       setPadEditorStatus(`Assigned ${file.name} to Pad ${index + 1}.`);
     } catch (error) {
       sampler.lastError = error.message;
@@ -2234,7 +2244,8 @@ async function handlePadDrop(event, index) {
   const source = sourceFiles.find((item) => item.id === trackId);
   if (source?.buffer) {
     if (sampler.buffers[index] && !window.confirm(`Replace ${sampler.names[index]} on Pad ${index + 1}?`)) return;
-    setPadBuffer(index, source.buffer, source.name, { source: "DITC local library" });
+    const sourceAsset = ProjectAssets.list(ACTIVE_PROJECT_ID).find((asset) => asset.owningDomain === "DITC" && asset.sourceId === source.id);
+    setPadBuffer(index, source.buffer, source.name, { source: "DITC local library", assetId: sourceAsset?.assetId || null });
     setPadEditorStatus(`Assigned ${source.name} from DITC to Pad ${index + 1}.`);
     return;
   }
@@ -2245,17 +2256,17 @@ function capturePadBank() {
   return {
     names: [...sampler.names], starts: [...sampler.starts], ends: [...sampler.ends], modes: [...sampler.modes],
     gains: [...sampler.gains], pans: [...sampler.pans], pitches: [...sampler.pitches], filters: [...sampler.filters],
-    categories: [...sampler.categories], chokes: [...sampler.chokes], sources: [...sampler.sources], relink: [...sampler.relink],
+    categories: [...sampler.categories], chokes: [...sampler.chokes], sources: [...sampler.sources], relink: [...sampler.relink], assetIds: [...sampler.assetIds],
     buffers: [...sampler.buffers]
   };
 }
 
 function emptyPadBank() {
-  return { names: Array.from({ length: 16 }, (_, index) => `Pad ${index + 1}`), starts: Array(16).fill(0), ends: Array(16).fill(null), modes: Array(16).fill("trigger"), gains: Array(16).fill(0.9), pans: Array(16).fill(0), pitches: Array(16).fill(0), filters: Array(16).fill(20000), categories: Array(16).fill("User-created"), chokes: Array(16).fill(0), sources: Array(16).fill("Unassigned"), relink: Array(16).fill(false), buffers: Array(16).fill(null) };
+  return { names: Array.from({ length: 16 }, (_, index) => `Pad ${index + 1}`), starts: Array(16).fill(0), ends: Array(16).fill(null), modes: Array(16).fill("trigger"), gains: Array(16).fill(0.9), pans: Array(16).fill(0), pitches: Array(16).fill(0), filters: Array(16).fill(20000), categories: Array(16).fill("User-created"), chokes: Array(16).fill(0), sources: Array(16).fill("Unassigned"), relink: Array(16).fill(false), assetIds: Array(16).fill(null), buffers: Array(16).fill(null) };
 }
 
 function applyPadBank(bank) {
-  ["names", "starts", "ends", "modes", "gains", "pans", "pitches", "filters", "categories", "chokes", "sources", "relink", "buffers"].forEach((key) => { sampler[key] = [...bank[key]]; });
+  ["names", "starts", "ends", "modes", "gains", "pans", "pitches", "filters", "categories", "chokes", "sources", "relink", "assetIds", "buffers"].forEach((key) => { sampler[key] = [...bank[key]]; });
   sampler.active = Array(16).fill(null);
   sampler.selected = 0;
 }
@@ -3172,7 +3183,7 @@ async function addEditorClipFromSource(source, trackIndex, start) {
     groupId: source.alignmentJobId || source.metadata?.alignmentJobId || null
   };
   editorState.clips.push(clip);
-  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Arrangement", createdBy: "user", assetType: "Arrangement Clip", sourceId: clip.id, name: clip.name, references: [editorState.arrangementId, clip.sourceId], missing: clip.missingSource, relinkRequired: clip.relinkRequired, metadata: { sourceKind: clip.sourceKind, trackIndex: clip.trackIndex } });
+  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Arrangement", createdBy: "user", assetType: "Arrangement Clip", sourceType: clip.sourceKind, sourceId: clip.id, displayName: clip.name, duration: clip.duration, linked: true, references: [assetReference("Arrangement", clip.id, `${editorState.name}: ${clip.name}`, "Timeline clip", true)], lineage: clip.sourceId ? [{ sourceId: clip.sourceId, relationship: "Uses source" }] : [], missing: clip.missingSource, relinkRequired: clip.relinkRequired, metadata: { arrangementId: editorState.arrangementId, clipId: clip.id, sourceId: clip.sourceId, sourceKind: clip.sourceKind, trackIndex: clip.trackIndex, startTime: clip.start } });
   if (source.buffer) editorState.runtimeSourceCache.set(`${source.sourceKind}:${source.id}`, source.buffer);
   editorState.selectedClipId = clip.id;
   editorState.selectedClipIds = [clip.id];
@@ -7358,6 +7369,7 @@ function initializePlaybackRegistry() {
   registry.register({ id: "arrangement", type: "timeline", displayName: "Arrangement Studio", stop: stopEditorArrangement, pause: pauseEditorArrangement, resume: playEditorArrangement, restart: () => { stopEditorArrangement(); editorState.playhead = 0; playEditorArrangement(); }, getState: () => ({ playing: editorState.playing, paused: editorState.paused, looping: editorState.loopRegion.enabled, recording: Boolean(editorState.recording), metadata: { name: editorState.name, elapsed: currentArrangementPlayhead(), duration: arrangementDuration(), arrangementId: editorState.arrangementId, version: editorState.version, activeClipIds: [...editorState.activeClipIds], activeLaneIds: [...new Set(editorState.activeClipIds.map((clipId) => editorState.tracks[editorState.clips.find((clip) => clip.id === clipId)?.trackIndex]?.id).filter(Boolean))] } }) });
   registry.register({ id: "smart-mix", type: "automation", displayName: "Smart Mix", stop: () => stopAiMix({ keepDecks: true }), getState: () => ({ playing: autoMixState.running, automated: autoMixState.running, metadata: { name: autoMixState.state, elapsed: 0 } }) });
   registry.register({ id: "mix-recording", type: "recording", displayName: "Mix Recording", stop: () => finishingState.activeRecordingId ? RecordingService.stopRecording(finishingState.activeRecordingId) : undefined, getState: () => { const record = finishingState.activeRecordingId ? RecordingService.getRecording(finishingState.activeRecordingId) : null; return { playing: record?.status === "Recording", paused: record?.status === "Paused", recording: ["Recording", "Paused", "Finalizing"].includes(record?.status), metadata: { name: record?.name || "Mix recording", elapsed: RecordingService.diagnostics().recordingDuration } }; } });
+  registry.register({ id: "asset-preview", type: "preview", displayName: "Asset Manager Preview", preview: true, stop: stopAssetPreview, restart: restartAssetPreview, getState: () => ({ playing: assetPreviewState.playing, preview: true, metadata: { name: ProjectAssets.get(assetPreviewState.assetId, ACTIVE_PROJECT_ID)?.displayName || "Asset preview", elapsed: assetPreviewState.playing && AudioEngine.context ? Math.max(0, AudioEngine.context.currentTime - assetPreviewState.startedAt) : 0, assetId: assetPreviewState.assetId } }) });
 }
 
 async function stopAllAudio() {
@@ -7839,7 +7851,7 @@ async function loadCompletedStemJob(job) {
     stemState.sourceName = job.sourceName;
     stemState.duration = Math.min(...durations);
     stemState.activeJobId = job.jobId;
-    decoded.forEach((stem) => ProjectAssets.register({ projectId: job.projectId, owningDomain: "Stem Lab", createdBy: "stem-engine", assetType: "Generated Stem", sourceId: stem.id, name: stem.name, references: [job.jobId, stem.fileName || stem.id], checksum: stem.checksum || null, missing: false, relinkRequired: false, metadata: { contextVersion: job.contextVersion, sourceName: job.sourceName } }));
+    decoded.forEach((stem) => ProjectAssets.register({ projectId: job.projectId, owningDomain: "Stem Lab", createdBy: "stem-engine", assetType: "Stem", sourceType: "Backend Output", sourceId: `${job.jobId}:${stem.id}`, displayName: `${job.sourceName} — ${stem.name}`, originalFilename: stem.fileName || null, mimeType: "audio/wav", duration: stem.buffer.duration, backendReference: { outputId: `${job.jobId}:${stem.id}`, jobId: job.jobId, url: stem.url }, generated: true, linked: true, references: [assetReference("Stem Lab", job.jobId, job.sourceName, "Stem job output", true)], checksum: stem.checksum || null, missing: false, relinkRequired: false, lineage: [{ sourceId: job.sourceTrackId || null, jobId: job.jobId, relationship: "Separated from source" }], metadata: { stemId: stem.id, jobId: job.jobId, contextVersion: job.contextVersion, sourceName: job.sourceName } }));
     setStemStatus(`Created ${decoded.length} aligned AI stems from ${job.sourceName}. Preview before routing or export.`);
     renderStemLab();
     renderAiContext();
@@ -7965,7 +7977,8 @@ async function handleStemAction(action, stemId) {
   if (action === "pad") {
     const empty = sampler.buffers.findIndex((buffer) => !buffer);
     if (empty < 0) { setStemStatus("The current Pad bank is full. Switch banks or clear a pad; Stem Lab will not overwrite an assignment.", true); return; }
-    setPadBuffer(empty, stem.buffer, `${stemState.sourceName} ${stem.name}`, { source: `Generated Stem Lab output · ${stem.jobId || stemState.activeJobId}` });
+    const stemAsset = ProjectAssets.list(ACTIVE_PROJECT_ID).find((asset) => asset.owningDomain === "Stem Lab" && asset.sourceId === `${stem.jobId || stemState.activeJobId}:${stem.id}`);
+    setPadBuffer(empty, stem.buffer, `${stemState.sourceName} ${stem.name}`, { source: `Generated Stem Lab output · ${stem.jobId || stemState.activeJobId}`, assetId: stemAsset?.assetId || null, generated: true, createdBy: "stem-engine" });
     emitProjectContextChange("stems", "stem-sent-pads", { summary: `Sent ${stem.name} to Pad ${empty + 1}` });
   }
   if (action === "arrangement") {
@@ -9035,7 +9048,7 @@ function renderBeatPatternBuffer(laneOnly = null) {
 
 function sendBeatToPads(laneOnly = null) {
   const empty = sampler.buffers.findIndex((buffer) => !buffer); if (empty < 0) { setPadEditorStatus("All pads in the current bank are occupied. Switch banks or clear a pad first; Beat Forge will not overwrite them silently."); return; }
-  const buffer = renderBeatPatternBuffer(laneOnly); if (!buffer) return; const label = laneOnly === null ? drums.name : `${drums.name} ${drums.rows[laneOnly]}`; setPadBuffer(empty, buffer, label, { mode: "loop", category: "Loops", source: "Rendered from Beat Forge" }); setPadEditorStatus(`Sent ${label} to Pad ${empty + 1} without changing occupied pads.`);
+  const buffer = renderBeatPatternBuffer(laneOnly); if (!buffer) return; const label = laneOnly === null ? drums.name : `${drums.name} ${drums.rows[laneOnly]}`; const beatAsset = ProjectAssets.list(ACTIVE_PROJECT_ID).find((asset) => asset.owningDomain === "Beat Forge" && asset.sourceId === drums.patternId); setPadBuffer(empty, buffer, label, { mode: "loop", category: "Loops", source: "Rendered from Beat Forge", assetId: beatAsset?.assetId || null, generated: true }); setPadEditorStatus(`Sent ${label} to Pad ${empty + 1} without changing occupied pads.`);
 }
 
 function serializeBeatPattern() { return { projectId: ACTIVE_PROJECT_ID, patternId: drums.patternId, name: drums.name, bars: drums.bars, stepsPerBar: drums.stepsPerBar, rows: drums.rows, pattern: drums.pattern, velocities: drums.velocities, probabilities: drums.probabilities, timingOffsets: drums.timingOffsets, automation: drums.automation, groove: drums.groove, grooveIntensity: drums.grooveIntensity, grooveLocks: drums.grooveLocks, kit: drums.machine, preset: drums.preset, section: drums.section, seed: drums.seed, version: drums.version, source: drums.source, lanes: drums.lanes }; }
@@ -9148,8 +9161,8 @@ function finishingExportAdapters() {
 function initializeFinishingServices() {
   RecordingService.configure({ projectId: producerStudioState.projectId, onEvent: handleRecordingServiceEvent, addToArrangement: addMasterRecordingToArrangement });
   ExportService.configure({ projectId: producerStudioState.projectId, adapters: finishingExportAdapters(), onEvent: handleExportServiceEvent });
-  RecordingService.listRecordings(producerStudioState.projectId, { includeCancelled: true, includeMissing: true }).forEach((record) => ProjectAssets.register({ projectId: record.projectId, owningDomain: "Recording", createdBy: "user", assetType: "Master Recording", sourceId: record.recordingId, name: record.name, references: [record.recordingId], missing: record.status === "Missing", relinkRequired: record.status === "Missing", metadata: { status: record.status, mimeType: record.mimeType } }));
-  ExportService.listExports(producerStudioState.projectId, { includeMissing: true }).forEach((job) => ProjectAssets.register({ projectId: job.projectId, owningDomain: "Export", createdBy: "export-service", assetType: job.outputType, sourceId: job.exportId, name: job.name, references: [job.sourceId].filter(Boolean), missing: job.status === "Missing", relinkRequired: job.status === "Missing", metadata: { status: job.status, format: job.format } }));
+  RecordingService.listRecordings(producerStudioState.projectId, { includeCancelled: true, includeMissing: true }).forEach((record) => ProjectAssets.register({ projectId: record.projectId, owningDomain: "Recording", createdBy: "user", assetType: "Recording", sourceType: record.status === "Complete" ? "Runtime Blob" : "Expired Runtime Blob", sourceId: record.recordingId, displayName: record.name, mimeType: record.mimeType, sizeBytes: record.sizeBytes, duration: record.duration, generated: true, linked: record.status === "Complete", references: [assetReference("Recording", record.recordingId, record.name, "Recording library output", true)], missing: record.status === "Missing", relinkRequired: record.status === "Missing", metadata: { status: record.status, contextVersion: record.contextVersion } }));
+  ExportService.listExports(producerStudioState.projectId, { includeMissing: true }).forEach((job) => ProjectAssets.register({ projectId: job.projectId, owningDomain: "Export", createdBy: "export-service", assetType: "Export", sourceType: job.status === "Complete" ? "Runtime Output" : "Expired Runtime Output", sourceId: job.exportId, displayName: job.name, sizeBytes: job.sizeBytes, duration: job.duration, generated: true, linked: job.status === "Complete", references: [assetReference("Export", job.exportId, job.name, "Export history output", true)], lineage: job.sourceId ? [{ sourceId: job.sourceId, relationship: "Exported from" }] : [], missing: job.status === "Missing", relinkRequired: job.status === "Missing", metadata: { status: job.status, format: job.format, outputType: job.outputType, contextVersion: job.contextVersion } }));
   renderFinishingStudio();
   window.addEventListener("beforeunload", () => { RecordingService.cleanup(); ExportService.cleanup(); });
 }
@@ -9158,13 +9171,13 @@ function handleRecordingServiceEvent(event) {
   const record = event.recording;
   if (record && !ProjectRegistry.owns(record.projectId, record.contextVersion || null)) return;
   if (event.type === "recording-started") { finishingState.activeRecordingId = record.recordingId; finishingState.recordingStartedAt = Date.now(); finishingState.peak = 0; AudioEngine.recorder = RecordingService.getRuntime(record.recordingId)?.recorder || null; startFinishingRecordingMeter(); emitProjectContextChange("recording", "recording-started", { summary: `Started ${record.sourceType} recording` }); }
-  if (["recording-complete", "recording-failed", "recording-cancelled"].includes(event.type)) { clearInterval(finishingState.recordingTimer); finishingState.recordingTimer = null; finishingState.activeRecordingId = null; if (record) { finishingState.selectedRecordingId = record.recordingId; RecordingService.updateRecording(record.recordingId, { metadata: { peak: finishingState.peak, clippingRisk: finishingState.peak >= .999, loudnessAnalysis: "Unavailable" }, tracklistReference: realArrangementTracklist() }); } AudioEngine.recorder = null; if (event.type === "recording-complete") { const preview = RecordingService.previewRecording(record.recordingId); AudioEngine.mixUrl = preview.url; document.querySelector("#downloadMix").disabled = false; ProjectAssets.register({ projectId: record.projectId, owningDomain: "Recording", createdBy: "user", assetType: "Master Recording", sourceId: record.recordingId, name: record.name, references: [record.recordingId], missing: false, relinkRequired: false, metadata: { mimeType: record.mimeType, sizeBytes: record.sizeBytes, contextVersion: record.contextVersion } }); emitProjectContextChange("recording", "recording-stopped", { summary: `Completed ${record.name}`, decision: { domain: "Recording", action: "Master recording completed", summary: `${record.name}: ${formatTime(record.duration)}, ${formatFileSize(record.sizeBytes)}`, initiatedBy: "user" } }); } else if (event.type === "recording-failed") { finishingState.lastRecordingError = record.error; emitProjectContextChange("recording", "recording-failed", { summary: record.error || "Recording failed" }); } }
+  if (["recording-complete", "recording-failed", "recording-cancelled"].includes(event.type)) { clearInterval(finishingState.recordingTimer); finishingState.recordingTimer = null; finishingState.activeRecordingId = null; if (record) { finishingState.selectedRecordingId = record.recordingId; RecordingService.updateRecording(record.recordingId, { metadata: { peak: finishingState.peak, clippingRisk: finishingState.peak >= .999, loudnessAnalysis: "Unavailable" }, tracklistReference: realArrangementTracklist() }); } AudioEngine.recorder = null; if (event.type === "recording-complete") { const preview = RecordingService.previewRecording(record.recordingId); AudioEngine.mixUrl = preview.url; document.querySelector("#downloadMix").disabled = false; ProjectAssets.register({ projectId: record.projectId, owningDomain: "Recording", createdBy: "user", assetType: "Recording", sourceType: "Runtime Blob", sourceId: record.recordingId, displayName: record.name, mimeType: record.mimeType, sizeBytes: record.sizeBytes, duration: record.duration, generated: true, linked: true, references: [assetReference("Recording", record.recordingId, record.name, "Recording library output", true)], missing: false, relinkRequired: false, metadata: { contextVersion: record.contextVersion } }); emitProjectContextChange("recording", "recording-stopped", { summary: `Completed ${record.name}`, decision: { domain: "Recording", action: "Master recording completed", summary: `${record.name}: ${formatTime(record.duration)}, ${formatFileSize(record.sizeBytes)}`, initiatedBy: "user" } }); } else if (event.type === "recording-failed") { finishingState.lastRecordingError = record.error; emitProjectContextChange("recording", "recording-failed", { summary: record.error || "Recording failed" }); } }
   renderFinishingStudio(); renderGlobalTransport();
 }
 
 function handleExportServiceEvent(event) {
   const job = event.export; if (job && !ProjectRegistry.owns(job.projectId, job.contextVersion || null)) return; if (job) finishingState.activeExportId = job.exportId;
-  if (event.type === "export-complete") { ProjectAssets.register({ projectId: job.projectId, owningDomain: "Export", createdBy: "export-service", assetType: job.outputType, sourceId: job.exportId, name: job.name, references: [job.sourceId].filter(Boolean), missing: false, relinkRequired: false, metadata: { format: job.format, sizeBytes: job.sizeBytes, contextVersion: job.contextVersion } }); emitProjectContextChange("export", "export-completed", { summary: `Created ${job.name}`, decision: { domain: "Export", action: "Export completed", summary: `${job.name}: ${job.outputType}, ${job.format}, ${formatFileSize(job.sizeBytes)}`, initiatedBy: "user" } }); }
+  if (event.type === "export-complete") { const result = ExportService.getExportResult(job.exportId); ProjectAssets.register({ projectId: job.projectId, owningDomain: "Export", createdBy: "export-service", assetType: "Export", sourceType: "Runtime Output", sourceId: job.exportId, displayName: job.name, originalFilename: result?.filename || null, mimeType: result?.blob?.type || null, sizeBytes: job.sizeBytes, duration: job.duration, generated: true, linked: true, references: [assetReference("Export", job.exportId, job.name, "Export history output", true)], lineage: job.sourceId ? [{ sourceId: job.sourceId, relationship: "Exported from" }] : [], missing: false, relinkRequired: false, metadata: { format: job.format, outputType: job.outputType, contextVersion: job.contextVersion } }); emitProjectContextChange("export", "export-completed", { summary: `Created ${job.name}`, decision: { domain: "Export", action: "Export completed", summary: `${job.name}: ${job.outputType}, ${job.format}, ${formatFileSize(job.sizeBytes)}`, initiatedBy: "user" } }); }
   if (event.type === "export-failed") { finishingState.lastExportError = job.error; emitProjectContextChange("export", "export-failed", { summary: job.error || "Export failed" }); }
   if (event.type === "export-validated") emitProjectContextChange("export", "export-validated", { summary: `${job.name}: ${event.validation.status}` });
   renderFinishingStudio();
@@ -9440,13 +9453,15 @@ function buildProjectIntelligenceSnapshot() {
   const primarySource = registry?.primary();
   const activeLoops = sampler.active.map((active, index) => active?.source?.loop ? index + 1 : null).filter(Boolean);
   const assignedPads = sampler.buffers.map((buffer, index) => buffer ? ({ index: index + 1, name: sampler.names[index], mode: sampler.modes[index], category: sampler.categories[index], duration: getPadRegion(index).end - getPadRegion(index).start }) : null).filter(Boolean);
+  const assetDiagnostics = ACTIVE_PROJECT_ID ? ProjectAssets.diagnostics(ACTIVE_PROJECT_ID) : { totalAssets: 0, missingAssets: 0, duplicateCandidates: 0, unusedAssets: 0, temporaryAssets: 0 }; const assetStorage = ACTIVE_PROJECT_ID ? ProjectAssets.storageSummary(ACTIVE_PROJECT_ID) : { totalKnownBytes: 0, unknownSizeCount: 0, categories: {} };
   const genreConflicts = identity.genre.conflictingEvidence || [];
   const missingContext = [!identity.genre.value && "Genre", !identity.keyCenter.value && "Key", !sourceFiles.length && "DITC tracks", !deckState.a.buffer && !deckState.b.buffer && "Loaded deck", !instrument.pattern.notes.length && "Harmony material", !arrangement.clipCount && "Arrangement"].filter(Boolean);
   const risks = [];
   if (arrangement.clipCount && arrangement.outroStatus === "Not planned") risks.push({ id: "missing-outro", domain: "Arrangement", severity: "Medium", summary: "No outro is planned in the arrangement." });
   if (arrangement.unresolvedGaps.length) risks.push({ id: "arrangement-gaps", domain: "Arrangement", severity: "Medium", summary: `${arrangement.unresolvedGaps.length} empty arrangement region${arrangement.unresolvedGaps.length === 1 ? "" : "s"} detected.` });
   if (activeLoops.length && deckState.b.playing && deckState.b.analysis?.vocalDensity === "High") risks.push({ id: "pad-vocal-clash", domain: "Pads", severity: "Medium", summary: "An active pad loop may compete with Deck B's high vocal density." });
-  const priorities = [arrangement.clipCount && arrangement.outroStatus === "Not planned" ? "Finish the outro" : null, !arrangement.clipCount ? "Start the arrangement" : null, !sourceFiles.length ? "Collect tracks in DITC" : null, !instrument.pattern.notes.length ? "Create a harmony idea" : null].filter(Boolean).slice(0, 3);
+  if (assetDiagnostics.missingAssets) risks.push({ id: "missing-project-assets", domain: "Assets", severity: "High", summary: `${assetDiagnostics.missingAssets} project asset${assetDiagnostics.missingAssets === 1 ? " is" : "s are"} missing or need relinking.` });
+  const priorities = [assetDiagnostics.missingAssets ? "Relink missing project assets" : null, arrangement.clipCount && arrangement.outroStatus === "Not planned" ? "Finish the outro" : null, !arrangement.clipCount ? "Start the arrangement" : null, !sourceFiles.length ? "Collect tracks in DITC" : null, !instrument.pattern.notes.length ? "Create a harmony idea" : null].filter(Boolean).slice(0, 3);
   const previousHistory = ProjectIntelligenceEngine.getProjectContext().aiHistory || { decisions: [], recentSummary: null };
   const recentDecisions = previousHistory.decisions || [];
   const recentSummary = { generatedAt: now, events: recentDecisions.slice(0, 5).map((decision) => decision.summary), suggestedNextStep: priorities[0] || "Review today's suggestions" };
@@ -9586,6 +9601,7 @@ function buildProjectIntelligenceSnapshot() {
       serverAvailable: Boolean(stemState.capabilities?.available)
     },
     arrangement,
+    assets: { totalAssets: assetDiagnostics.totalAssets, projectOwnedAssets: assetDiagnostics.projectOwnedAssets, sharedAssets: assetDiagnostics.sharedAssets, missingAssets: assetDiagnostics.missingAssets, duplicateCandidates: assetDiagnostics.duplicateCandidates, unusedAssets: assetDiagnostics.unusedAssets, temporaryAssets: assetDiagnostics.temporaryAssets, totalKnownBytes: assetStorage.totalKnownBytes, unknownSizeCount: assetStorage.unknownSizeCount, storageCategories: assetStorage.categories, consolidationStatus: "Unavailable in browser build", manifestAvailable: true },
     mixtape: {
       referenceAnalysis: mixtapeInspirationState?.structure ? { name: mixtapeInspirationState.structure.name, genre: mixtapeInspirationState.structure.genre, mood: mixtapeInspirationState.structure.mood, bpmRange: mixtapeInspirationState.structure.bpmRange || null } : null,
       verifiedTracklist: (mixtapeInspirationState?.structure?.detectedTracklist || []).filter((track) => /verified|confirmed/i.test(track.status || "")).map((track) => ({ artist: track.artist, title: track.title, confidence: track.confidence })),
@@ -9684,6 +9700,7 @@ async function executeContextualRecommendationAction(actionId, recommendation, o
   if (actionId === "open-pads") { switchView("sampler"); return { success: true, message: "Opened Pads." }; }
   if (actionId === "open-smart-mix") { switchView("decks"); document.querySelector("#smartMixPrompt")?.focus(); return { success: true, message: "Opened Smart Mix transition planning." }; }
   if (actionId === "open-arrangement") { switchView("editor"); return { success: true, message: "Opened Arrangement." }; }
+  if (actionId === "open-assets") { refreshProjectAssetIndex(); switchView("assets"); return { success: true, message: "Opened Project Asset Manager." }; }
   if (actionId === "open-project-intelligence") { producerStudioState.mode = "advanced"; switchView("ai"); document.querySelector("#projectIntelligenceTitle")?.scrollIntoView({ block: "start" }); return { success: true, message: "Opened Project Intelligence." }; }
   if (actionId === "open-mixtape-analysis") { producerStudioState.mode = "advanced"; switchView("ai"); document.querySelector("#mixtapeInspirationNotes")?.closest("details")?.setAttribute("open", ""); return { success: true, message: "Opened the reference mixtape blueprint." }; }
   if (actionId === "smart-safe-transition") {
@@ -9799,6 +9816,8 @@ function producerOverviewItems(context) {
     ["Harmony Lab", context.harmonyLab.melody?.name || "No harmony material", "harmony"],
     ["Active Pad Bank", `Bank ${context.pads.activeBank || "Not set"} · ${context.pads.activeScene || "No scene"}`, "pads"],
     ["Arrangement Length", context.arrangement.timelineLength ? formatTime(context.arrangement.timelineLength) : "Not started", "arrangement"],
+    ["Asset Health", context.assets?.missingAssets ? `${context.assets.missingAssets} missing · ${context.assets.duplicateCandidates || 0} duplicate candidates` : `${context.assets?.totalAssets || 0} managed · no missing files`, "assets"],
+    ["Known Project Storage", context.assets?.totalKnownBytes ? formatFileSize(context.assets.totalKnownBytes) : context.assets?.unknownSizeCount ? "Size partly unknown" : "No known bytes", "assets"],
     ["Project Progress", `${context.project.projectProgress || 0}%`, "progress"],
     ["Last Meaningful Update", context.timestamps.lastMeaningfulUpdate ? new Date(context.timestamps.lastMeaningfulUpdate).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "No updates yet", "ai"]
   ];
@@ -10493,7 +10512,7 @@ function setupProducerStudioEvents() {
   document.querySelector("#cancelRejectRecommendation").addEventListener("click", () => { producerStudioState.pendingRecommendationRejectionId = null; document.querySelector("#rejectRecommendationDialog")?.close(); });
 }
 
-const PROJECT_WORKSPACE_VIEWS = new Set(["ai", "decks", "sources", "sampler", "drums", "keys", "stems", "editor", "finishing"]);
+const PROJECT_WORKSPACE_VIEWS = new Set(["ai", "assets", "decks", "sources", "sampler", "drums", "keys", "stems", "editor", "finishing"]);
 function readProjectRoute() {
   const value = String(window.location.hash || ""); const match = value.match(/^#\/project\/([^/]+)\/([^/]+)/);
   if (!match) return { kind: value.startsWith("#/project") ? "invalid-project" : "library", projectId: null, view: null };
@@ -10516,6 +10535,7 @@ function switchView(target, options = {}) {
   if (target === "ai") renderProducerStudio();
   if (target === "editor") renderEditor();
   if (target === "finishing") renderFinishingStudio();
+  if (target === "assets") { refreshProjectAssetIndex(); renderAssetManager(); }
   document.body.classList.toggle("project-library-landing", target === "projectLibrary");
   if (options.route !== false) writeProjectRoute(target);
 }
@@ -10593,7 +10613,7 @@ async function restoreProjectRuntime(projectId) {
 function saveDeckProjectState() {
   const decks = ["a", "b"].map((id) => ({ projectId: ACTIVE_PROJECT_ID, deckId: id, trackName: deckState[id].trackName || null, analysis: deckState[id].analysis || null, sourceReference: deckState[id].trackName || null, missing: Boolean(deckState[id].trackName), relinkRequired: Boolean(deckState[id].trackName), updatedAt: new Date().toISOString() }));
   ProjectRegistry.write("decks", { schemaVersion: 1, projectId: ACTIVE_PROJECT_ID, decks });
-  decks.filter((deck) => deck.trackName).forEach((deck) => ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Decks", createdBy: "user", assetType: "Deck State", sourceId: `deck-${deck.deckId}`, name: deck.trackName, references: [deck.sourceReference], missing: true, relinkRequired: true, metadata: { deckId: deck.deckId, analysis: deck.analysis } }));
+  decks.filter((deck) => deck.trackName).forEach((deck) => ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Decks", createdBy: "user", assetType: "Deck State", sourceType: "Runtime Deck Reference", sourceId: `deck-${deck.deckId}`, displayName: deck.trackName, linked: false, references: [assetReference("Decks", deck.deckId, `Deck ${deck.deckId.toUpperCase()}`, "Loaded deck source", false)], missing: true, relinkRequired: true, metadata: { deckId: deck.deckId, analysis: deck.analysis } }));
 }
 
 function restoreDeckProjectState() {
@@ -10664,6 +10684,169 @@ async function returnToProjectLibrary() {
   return true;
 }
 
+function assetReference(domain, itemId, itemLabel, usageType, active = true, historical = false, lastUsedAt = null) {
+  return { referenceId: `reference:${domain}:${itemId}:${usageType}`, domain, itemId: String(itemId), itemLabel, usageType, active, historical, lastUsedAt };
+}
+
+function arrangementReferencesForSource(sourceId) {
+  return editorState.clips.filter((clip) => clip.sourceId === sourceId).map((clip) => assetReference("Arrangement", clip.id, `${editorState.name}: ${clip.name}`, "Arrangement clip source", true, false, clip.updatedAt || null));
+}
+
+function refreshProjectAssetIndex() {
+  if (!ACTIVE_PROJECT_ID || !ProjectRegistry.owns(ACTIVE_PROJECT_ID)) return { indexed: 0, missing: 0 };
+  let indexed = 0;
+  try {
+    sourceFiles.forEach((track) => {
+      ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Audio Track", sourceType: "Local File", sourceId: track.id, displayName: track.name, originalFilename: track.file?.name || track.name, mimeType: track.file?.type || null, sizeBytes: track.file?.size ?? null, duration: track.buffer?.duration || track.analysis?.duration || null, persistentReference: { kind: "browser-file-metadata", key: track.storageId }, shared: false, generated: false, linked: true, missing: !track.file, relinkRequired: !track.file, references: [assetReference("DITC", track.id, track.title || track.name, "Crate audio", true, false, track.addedAt ? new Date(track.addedAt).toISOString() : null), ...arrangementReferencesForSource(track.id)], metadata: { title: track.title, artist: track.artist, album: track.album, tags: track.tags || [], BPM: track.analysis?.bpm || null, key: track.analysis?.key || null, lastModified: track.file?.lastModified || null } }); indexed += 1;
+    });
+    const savedSources = (() => { try { return JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]"); } catch { return []; } })();
+    savedSources.forEach((source) => { ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Provider Metadata Reference", sourceType: "Metadata Only", sourceId: source.url, displayName: source.name, providerReference: { provider: detectPlatform(source.url), referenceId: source.url }, linked: Boolean(source.linkedAssetId), missing: false, relinkRequired: false, references: [assetReference("DITC", source.url, source.name, "Crate metadata", true)], metadataLink: source.linkedAssetId ? { metadataReferenceId: source.url, linkedAssetId: source.linkedAssetId, matchMethod: source.matchMethod || "Manual", matchConfidence: source.matchConfidence ?? null, userConfirmed: true, linkedAt: source.linkedAt || null, originalProvider: detectPlatform(source.url) } : null, metadata: { title: source.title || source.name, artist: source.artist || null, album: source.album || null, tags: source.tags || [], provider: detectPlatform(source.url) } }); indexed += 1; });
+    ["a", "b"].forEach((deckId) => { const deck = deckState[deckId]; if (!deck.trackName) return; ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Decks", createdBy: "user", assetType: "Deck State", sourceType: "Runtime Deck Reference", sourceId: `deck-${deckId}`, displayName: deck.trackName, duration: deck.buffer?.duration || null, linked: Boolean(deck.buffer), missing: !deck.buffer, relinkRequired: !deck.buffer, references: [assetReference("Decks", deckId, `Deck ${deckId.toUpperCase()}`, "Loaded deck source", Boolean(deck.buffer))], metadata: { deckId, analysis: deck.analysis || null } }); indexed += 1; });
+    sampler.names.forEach((name, index) => { const buffer = sampler.buffers[index]; if (!buffer && !sampler.relink[index]) return; const sourceId = `pad:${sampler.bank}:${index}`; const linkedAssetId = sampler.assetIds?.[index] || null; ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Pads", createdBy: "user", assetType: "Pad Sample", sourceType: buffer ? "Runtime AudioBuffer" : "Missing Runtime Audio", sourceId, displayName: name, duration: buffer ? getPadRegion(index).end - getPadRegion(index).start : null, linked: Boolean(buffer), missing: !buffer, relinkRequired: !buffer, references: [assetReference("Pads", `${sampler.bank}:${index}`, `Bank ${sampler.bank}, Pad ${index + 1}`, "Pad assignment", Boolean(buffer)), ...arrangementReferencesForSource(String(index))], lineage: linkedAssetId ? [{ assetId: linkedAssetId, relationship: "Assigned from" }] : [], metadata: { bank: sampler.bank, padIndex: index, mode: sampler.modes[index], category: sampler.categories[index], sourceLabel: sampler.sources[index] } }); indexed += 1; });
+    if (drums.source !== "Preset" || drums.patterns.length || drums.version > 1) { ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Beat Forge", createdBy: drums.source?.includes("AI") ? "AI" : "user", assetType: "Beat Sample", sourceType: "Project Pattern", sourceId: drums.patternId, displayName: drums.name, generated: drums.source !== "Manual", linked: true, missing: false, references: [assetReference("Beat Forge", drums.patternId, drums.name, "Canonical beat pattern", true), ...arrangementReferencesForSource(drums.patternId)], metadata: { version: drums.version, machine: drums.machine, bars: drums.bars, BPM: Number(document.querySelector("#globalBpm")?.value || 124) } }); indexed += 1; }
+    if (instrument.pattern?.notes?.length) { ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Harmony Lab", createdBy: instrument.pattern.source?.includes("AI") ? "AI" : "user", assetType: "Harmony Lab Render", sourceType: "Project Pattern", sourceId: instrument.pattern.id, displayName: instrument.pattern.name, generated: instrument.pattern.source !== "Manual", linked: true, missing: false, references: [assetReference("Harmony Lab", instrument.pattern.id, instrument.pattern.name, "Canonical harmony pattern", true), ...arrangementReferencesForSource(instrument.pattern.id)], metadata: { version: instrument.pattern.version, key: instrument.key, scale: instrument.scale, noteCount: instrument.pattern.notes.length } }); indexed += 1; }
+    editorState.clips.forEach((clip) => { ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Arrangement", createdBy: "user", assetType: "Arrangement Clip", sourceType: clip.sourceKind || "Project Reference", sourceId: clip.id, displayName: clip.name, duration: clip.duration, linked: !clip.missingSource, missing: Boolean(clip.missingSource), relinkRequired: Boolean(clip.relinkRequired), references: [assetReference("Arrangement", clip.id, `${editorState.name}: ${clip.name}`, "Timeline clip", true)], lineage: clip.sourceId ? [{ sourceId: clip.sourceId, relationship: "Uses source" }] : [], metadata: { arrangementId: editorState.arrangementId, clipId: clip.id, sourceId: clip.sourceId, sourceKind: clip.sourceKind, trackIndex: clip.trackIndex, startTime: clip.start, originalDuration: clip.originalDuration || clip.duration } }); indexed += 1; });
+    (stemState.workspace.jobs || []).forEach((job) => {
+      if (!window.StemLabEngine.TERMINAL.has(job.status)) { ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Stem Lab", createdBy: "stem-engine", assetType: "Temporary Processing File", sourceType: "Server Temporary Input", sourceId: `stem-input:${job.jobId}`, displayName: `${job.sourceName} processing input`, temporary: true, generated: false, activeJobId: job.jobId, missing: false, references: [assetReference("Stem Lab", job.jobId, job.sourceName, "Active separation input", true)], metadata: { status: job.status, stage: job.currentStage } }); indexed += 1; }
+      (job.outputs || []).forEach((output) => { const runtimeStem = stemState.stems.find((stem) => stem.jobId === job.jobId && stem.id === output.id); ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Stem Lab", createdBy: "stem-engine", assetType: "Stem", sourceType: "Backend Output", sourceId: `${job.jobId}:${output.id}`, displayName: `${job.sourceName} — ${output.name}`, originalFilename: output.fileName || null, mimeType: "audio/wav", duration: runtimeStem?.buffer?.duration || null, checksum: output.checksum || null, backendReference: { outputId: `${job.jobId}:${output.id}`, jobId: job.jobId, url: output.url }, generated: true, linked: Boolean(runtimeStem), missing: job.status !== "Complete", relinkRequired: job.status !== "Complete", references: [assetReference("Stem Lab", job.jobId, job.sourceName, "Stem job output", true), ...arrangementReferencesForSource(output.id)], lineage: [{ sourceId: job.sourceTrackId || null, jobId: job.jobId, relationship: "Separated from source" }], metadata: { stemId: output.id, jobId: job.jobId, sourceName: job.sourceName, status: job.status } }); indexed += 1; });
+    });
+    RecordingService.listRecordings(ACTIVE_PROJECT_ID, { includeCancelled: true, includeMissing: true }).forEach((record) => { ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Recording", createdBy: "user", assetType: "Recording", sourceType: record.status === "Complete" ? "Runtime Blob" : "Expired Runtime Blob", sourceId: record.recordingId, displayName: record.name, originalFilename: `${record.name}.${RecordingService.extensionForMime(record.mimeType)}`, mimeType: record.mimeType, sizeBytes: record.sizeBytes, duration: record.duration, generated: true, linked: record.status === "Complete", missing: record.status === "Missing", relinkRequired: record.status === "Missing", references: [assetReference("Recording", record.recordingId, record.name, "Recording library output", !["Deleted", "Cancelled"].includes(record.status)), ...arrangementReferencesForSource(record.recordingId)], metadata: { status: record.status, sourceType: record.sourceType, contextVersion: record.contextVersion } }); indexed += 1; });
+    ExportService.listExports(ACTIVE_PROJECT_ID, { includeMissing: true }).forEach((job) => { ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Export", createdBy: "export-service", assetType: "Export", sourceType: job.status === "Complete" ? "Runtime Output" : "Expired Runtime Output", sourceId: job.exportId, displayName: job.name, originalFilename: ExportService.getExportResult(job.exportId)?.filename || null, mimeType: ExportService.getExportResult(job.exportId)?.blob?.type || null, sizeBytes: job.sizeBytes, duration: job.duration, generated: true, linked: job.status === "Complete", missing: job.status === "Missing", relinkRequired: job.status === "Missing", activeJobId: ["Rendering", "Encoding", "Finalizing"].includes(job.status) ? job.exportId : null, references: [assetReference("Export", job.exportId, job.name, "Export history output", job.status !== "Deleted")], lineage: job.sourceId ? [{ sourceId: job.sourceId, relationship: "Exported from" }] : [], metadata: { status: job.status, format: job.format, outputType: job.outputType, contextVersion: job.contextVersion } }); indexed += 1; });
+    const runtimeLocalIds = new Set(sourceFiles.map((track) => track.id)); const jobsById = new Map((stemState.workspace.jobs || []).map((job) => [job.jobId, job]));
+    ProjectAssets.list(ACTIVE_PROJECT_ID).filter((asset) => asset.owningDomain === "DITC" && asset.assetType === "Audio Track" && !runtimeLocalIds.has(asset.sourceId) && !asset.missing).forEach((asset) => ProjectAssets.markMissing(asset.assetId, true, ACTIVE_PROJECT_ID, "The browser File is unavailable after reload. Relink local audio."));
+    ProjectAssets.list(ACTIVE_PROJECT_ID).filter((asset) => asset.temporary && asset.sourceId?.startsWith("stem-input:")).forEach((asset) => { const job = jobsById.get(asset.sourceId.slice("stem-input:".length)); if ((!job || window.StemLabEngine.TERMINAL.has(job.status)) && (asset.activeJobId || asset.references.some((reference) => reference.active))) ProjectAssets.update(asset.assetId, { activeJobId: null, references: asset.references.map((reference) => ({ ...reference, active: false, historical: true })), metadata: { ...asset.metadata, status: job?.status || "Orphaned" } }, ACTIVE_PROJECT_ID); });
+    return { indexed, missing: ProjectAssets.list(ACTIVE_PROJECT_ID).filter((asset) => asset.missing).length };
+  } catch (error) { assetManagerState.lastError = error.message; return { indexed, missing: 0, error: error.message }; }
+}
+
+async function openProjectAssetManager(projectId = ACTIVE_PROJECT_ID) {
+  if (!projectId) return setProjectLibraryStatus("Open or create a project to manage its assets.", "error");
+  if (projectId !== ACTIVE_PROJECT_ID || !ProjectRegistry.owns(projectId)) await openRegisteredProject(projectId);
+  if (!ProjectRegistry.owns(projectId)) return;
+  refreshProjectAssetIndex(); switchView("assets"); renderAssetManager(); document.querySelector("#projectMenu")?.removeAttribute("open");
+}
+
+function assetDisplayStatus(asset) { if (asset.trash?.trashed) return "Trash"; if (asset.missing) return asset.relinkRequired ? "Needs Relink" : "Missing"; if (asset.activeJobId) return "Processing"; if (asset.sourceType === "Metadata Only" && !asset.linked) return "Metadata Only"; return asset.validationStatus === "Not Validated" ? "Available" : asset.validationStatus; }
+function assetLocationLabel(asset) { if (asset.backendReference) return "Backend output"; if (asset.persistentReference) return "Browser file reference"; if (asset.providerReference) return "Provider metadata"; if (/Runtime/.test(asset.sourceType)) return "Runtime only"; return asset.sourceType || "Project"; }
+function assetKnownSize(bytes) { return bytes == null ? "Unknown" : formatFileSize(bytes); }
+
+function renderAssetManager() {
+  const section = document.querySelector("#assets"); if (!section || !ACTIVE_PROJECT_ID) return;
+  section.dataset.assetMode = assetManagerState.mode; const project = ProjectRegistry.getActiveProject(); document.querySelector("#assetManagerProjectName").textContent = project?.name || "No project open";
+  const assets = ProjectAssets.query({ search: assetManagerState.search, filter: assetManagerState.filter, sort: assetManagerState.sort }); const all = ProjectAssets.list(ACTIVE_PROJECT_ID, { includeTrash: true }); const storage = ProjectAssets.storageSummary(ACTIVE_PROJECT_ID); const duplicates = ProjectAssets.findDuplicates(ACTIVE_PROJECT_ID);
+  const filterList = document.querySelector("#assetFilterList"); if (filterList) filterList.innerHTML = ProjectAssets.FILTERS.map((filter) => { const count = filter === "All" ? all.filter((asset) => !asset.trash?.trashed).length : ProjectAssets.query({ filter }).length; return `<button type="button" data-asset-filter="${escapeHtml(filter)}" class="${filter === assetManagerState.filter ? "is-active" : ""}" aria-pressed="${filter === assetManagerState.filter}"><span>${escapeHtml(filter)}</span><strong>${count}</strong></button>`; }).join("");
+  document.querySelector("#assetStorageSummary").innerHTML = `<div><small>Known project storage</small><strong>${assetKnownSize(storage.totalKnownBytes)}</strong>${storage.unknownSizeCount ? `<span>${storage.unknownSizeCount} unknown-size asset${storage.unknownSizeCount === 1 ? "" : "s"}</span>` : ""}</div><div><small>Project owned</small><strong>${assetKnownSize(storage.projectOwnedBytes)}</strong></div><div><small>Shared, counted once</small><strong>${assetKnownSize(storage.sharedBytes)}</strong></div><div><small>Missing files</small><strong>${all.filter((asset) => asset.missing).length}</strong></div><div><small>Duplicate candidates</small><strong>${duplicates.length}</strong></div><div><small>Temporary</small><strong>${assetKnownSize(storage.categories.temporary)}</strong></div>`;
+  const output = document.querySelector("#assetList"); if (output) output.innerHTML = assets.map((asset) => `<button type="button" role="option" aria-selected="${asset.assetId === assetManagerState.selectedAssetId}" class="asset-row${asset.assetId === assetManagerState.selectedAssetId ? " is-selected" : ""}" data-asset-id="${escapeHtml(asset.assetId)}"><span><strong>${escapeHtml(asset.displayName)}</strong><small>${escapeHtml(assetLocationLabel(asset))}</small></span><span>${escapeHtml(asset.assetType)}</span><span class="asset-status" data-status="${escapeHtml(assetDisplayStatus(asset))}">${escapeHtml(assetDisplayStatus(asset))}</span><span>${escapeHtml(assetKnownSize(asset.sizeBytes))}</span><span>${escapeHtml(asset.owningDomain)}</span><span>${asset.referenceCount}</span><span>${asset.lastUsedAt ? escapeHtml(projectDate(asset.lastUsedAt)) : "Never"}</span></button>`).join("");
+  const empty = document.querySelector("#assetManagerEmpty"); if (empty) empty.hidden = all.length > 0 || assetManagerState.filter === "Trash";
+  if (assetManagerState.selectedAssetId && !ProjectAssets.get(assetManagerState.selectedAssetId, ACTIVE_PROJECT_ID, { includeTrash: true })) assetManagerState.selectedAssetId = null;
+  renderAssetInspector();
+  const status = document.querySelector("#assetManagerStatus"); if (status && assetManagerState.lastError) { status.textContent = assetManagerState.lastError; status.dataset.state = "error"; }
+  const details = document.querySelector("#assetManagerDiagnostics"); if (details) details.hidden = !DECKFORGE_DEVELOPMENT; const diagnostics = document.querySelector("#assetManagerDiagnosticsOutput"); if (diagnostics && DECKFORGE_DEVELOPMENT) diagnostics.textContent = JSON.stringify({ ...ProjectAssets.diagnostics(ACTIVE_PROJECT_ID), activeObjectUrls: RecordingService.diagnostics().activeObjectUrlCount + ExportService.diagnostics().activeObjectUrlCount, activeJobs: { stems: stemState.workspace.jobs.filter((job) => !window.StemLabEngine.TERMINAL.has(job.status)).map((job) => job.jobId), recording: RecordingService.diagnostics().activeRecordingId, export: ExportService.diagnostics().activeExportId }, selectedAssetId: assetManagerState.selectedAssetId }, null, 2);
+}
+
+function assetPreviewSupported(asset) { return !asset.missing && !asset.sharedOwnerProjectId && ["Audio Track", "Stem", "Recording", "Export", "Pad Sample", "Arrangement Clip"].includes(asset.assetType) && asset.sourceType !== "Metadata Only"; }
+
+function renderAssetInspector() {
+  const output = document.querySelector("#assetInspector"); if (!output) return; const asset = assetManagerState.selectedAssetId ? ProjectAssets.get(assetManagerState.selectedAssetId, ACTIVE_PROJECT_ID, { includeTrash: true }) : null;
+  if (!asset) { output.innerHTML = `<h3>Asset Inspector</h3><p>Select an asset to inspect ownership, usage, validation, and available actions.</p>`; return; }
+  const validation = ProjectAssets.validateAsset(asset, { projectId: ACTIVE_PROJECT_ID }); const plan = ProjectAssets.removalPlan(asset.assetId, ACTIVE_PROJECT_ID); const duplicates = ProjectAssets.findDuplicates(ACTIVE_PROJECT_ID).filter((item) => item.assetA === asset.assetId || item.assetB === asset.assetId); const preview = assetPreviewSupported(asset);
+  const references = asset.references.length ? `<ul class="asset-usage-list">${asset.references.map((reference) => `<li><strong>${escapeHtml(reference.domain)}</strong><span>${escapeHtml(reference.itemLabel)} · ${escapeHtml(reference.usageType)}</span><small>${reference.active ? "Active" : reference.historical ? "Historical" : "Inactive"}${reference.lastUsedAt ? ` · ${escapeHtml(projectDate(reference.lastUsedAt))}` : ""}</small></li>`).join("")}</ul>` : `<p>No registered domain references.</p>`;
+  const duplicateRows = duplicates.length ? `<section><h4>Duplicates</h4>${duplicates.map((item) => { const otherId = item.assetA === asset.assetId ? item.assetB : item.assetA; const other = ProjectAssets.get(otherId, ACTIVE_PROJECT_ID); return `<div class="asset-duplicate"><span>${escapeHtml(item.classification)} · ${escapeHtml(other?.displayName || otherId)}</span><button type="button" data-asset-action="resolve-duplicate" data-other-asset="${escapeHtml(otherId)}">Use this asset</button><button type="button" data-asset-action="different-version" data-other-asset="${escapeHtml(otherId)}">Different versions</button></div>`; }).join("")}</section>` : "";
+  output.innerHTML = `<header><div><p class="eyebrow">${escapeHtml(asset.assetType)}</p><h3>${escapeHtml(asset.displayName)}</h3></div><span class="asset-status" data-status="${escapeHtml(assetDisplayStatus(asset))}">${escapeHtml(assetDisplayStatus(asset))}</span></header><dl class="asset-inspector-facts"><div><dt>Owner</dt><dd>${escapeHtml(asset.owningDomain)}</dd></div><div><dt>Location</dt><dd>${escapeHtml(assetLocationLabel(asset))}</dd></div><div><dt>Size</dt><dd>${escapeHtml(assetKnownSize(asset.sizeBytes))}</dd></div><div><dt>Duration</dt><dd>${asset.duration ? escapeHtml(formatTime(asset.duration)) : "Unknown"}</dd></div><div><dt>Usage</dt><dd>${escapeHtml(ProjectAssets.usageStatus(asset))}</dd></div><div><dt>Validation</dt><dd>${escapeHtml(validation.status)}</dd></div></dl><section><h4>Usage and references</h4>${references}</section>${validation.warnings.length || validation.errors.length ? `<section><h4>Validation details</h4><ul>${[...validation.errors, ...validation.warnings].map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>` : ""}${duplicateRows}<div class="asset-inspector-actions">${asset.trash?.trashed ? `<button type="button" data-asset-action="restore">Restore</button><button type="button" class="danger-button" data-asset-action="delete-permanently" ${plan.safeToRemove ? "" : `disabled title="${escapeHtml(plan.blockers.join(", "))}"`}>Delete Permanently</button>` : `<button type="button" data-asset-action="preview" ${preview ? "" : "disabled title=\"No playable runtime audio is available for this asset.\""}>Preview</button><button type="button" data-asset-action="stop-preview" ${assetPreviewState.playing && assetPreviewState.assetId === asset.assetId ? "" : "disabled"}>Stop Preview</button><button type="button" data-asset-action="relink" ${["Audio Track", "Stem", "Recording", "Export", "Arrangement Clip", "Provider Metadata Reference"].includes(asset.assetType) ? "" : "disabled"}>${asset.assetType === "Provider Metadata Reference" ? "Link Local Audio" : "Relink"}</button><button type="button" data-asset-action="open-domain">Open ${escapeHtml(asset.owningDomain)}</button><button type="button" disabled title="Browser file handles are not available.">Reveal</button><button type="button" data-asset-action="share" ${asset.generated ? "disabled title=\"Generated assets cannot be shared automatically.\"" : ""}>${asset.shared ? "Project Owned" : "Make Shared"}</button><button type="button" class="danger-button" data-asset-action="trash" ${plan.safeToRemove ? "" : `disabled title="${escapeHtml(plan.blockers.join(", "))}"`}>Remove Safely</button>`}</div><details class="asset-advanced-only"><summary>Technical details</summary><pre>${escapeHtml(JSON.stringify({ assetId: asset.assetId, projectId: asset.projectId, sourceType: asset.sourceType, sourceId: asset.sourceId, shared: asset.shared, sharedAssetId: asset.sharedAssetId, projectReferences: asset.projectReferences, checksum: asset.checksum, checksumKind: asset.checksumKind, backendReference: asset.backendReference ? { available: true, outputId: asset.backendReference.outputId || null, jobId: asset.backendReference.jobId || null } : null, persistentReference: asset.persistentReference ? { kind: asset.persistentReference.kind, available: true } : null, objectUrlState: asset.sourceType.includes("Runtime") ? "Owned by source service; never persisted" : "None", lineage: asset.lineage, metadata: asset.metadata }, null, 2))}</pre></details>`;
+}
+
+async function resolveAssetPreviewBuffer(asset, seen = new Set()) {
+  if (!asset || seen.has(asset.assetId)) return null; seen.add(asset.assetId); const linkedId = asset.metadataLink?.linkedAssetId || asset.metadata?.relink?.linkedAssetId; if (linkedId) return resolveAssetPreviewBuffer(ProjectAssets.get(linkedId, ACTIVE_PROJECT_ID), seen);
+  if (asset.owningDomain === "DITC") { const source = sourceFiles.find((item) => item.id === asset.sourceId); return source ? getSourceFileBuffer(source.id) : null; }
+  if (asset.owningDomain === "Pads") return sampler.buffers[Number(asset.metadata?.padIndex)] || null;
+  if (asset.owningDomain === "Stem Lab") { const [jobId, stemId] = String(asset.sourceId || "").split(":"); const stem = stemState.stems.find((item) => item.jobId === jobId && item.id === stemId); if (stem?.buffer) return stem.buffer; if (asset.backendReference?.url) { await AudioEngine.init(); const response = await fetch(asset.backendReference.url, { cache: "no-store" }); if (!response.ok) throw new Error("Stem backend output is unavailable."); return AudioEngine.context.decodeAudioData(await response.arrayBuffer()); } }
+  if (asset.owningDomain === "Recording") { const runtime = RecordingService.getRuntime(asset.sourceId); if (runtime?.blob) { await AudioEngine.init(); return AudioEngine.context.decodeAudioData(await runtime.blob.arrayBuffer()); } }
+  if (asset.owningDomain === "Export") { const result = ExportService.getExportResult(asset.sourceId); if (result?.blob?.type?.startsWith("audio/")) { await AudioEngine.init(); return AudioEngine.context.decodeAudioData(await result.blob.arrayBuffer()); } }
+  if (asset.owningDomain === "Arrangement") { const clip = editorState.clips.find((item) => item.id === asset.sourceId); return clip ? resolveEditorClipBuffer(clip) : null; }
+  return null;
+}
+
+function stopAssetPreview() { if (assetPreviewState.source) { try { assetPreviewState.source.stop(); } catch { /* Already stopped. */ } try { assetPreviewState.source.disconnect(); } catch { /* Already disconnected. */ } } if (assetPreviewState.gain) { try { assetPreviewState.gain.disconnect(); } catch { /* Already disconnected. */ } } Object.assign(assetPreviewState, { source: null, gain: null, startedAt: 0, playing: false }); renderAssetManager(); }
+async function playAssetPreview(assetId = assetManagerState.selectedAssetId) { const asset = ProjectAssets.get(assetId, ACTIVE_PROJECT_ID); if (!assetPreviewSupported(asset)) throw new Error(asset?.sharedOwnerProjectId ? "Shared audio is not available in this browser session. Open the owner project and relink it." : "No playable runtime audio is available for this asset."); stopAssetPreview(); const buffer = await resolveAssetPreviewBuffer(asset); if (!buffer) { if (!asset.sharedOwnerProjectId) ProjectAssets.markMissing(asset.assetId, true, ACTIVE_PROJECT_ID, "Runtime audio is unavailable."); throw new Error(asset.sharedOwnerProjectId ? "Shared audio is not available in this browser session. Open the owner project and relink it." : "The asset audio is unavailable. Relink or regenerate it first."); } await AudioEngine.init(); const source = AudioEngine.context.createBufferSource(); const gain = AudioEngine.context.createGain(); source.buffer = buffer; source.connect(gain); gain.connect(AudioEngine.masterAnalyser); source.onended = () => { if (assetPreviewState.source === source) { assetPreviewState.source = null; assetPreviewState.gain = null; assetPreviewState.playing = false; renderAssetManager(); } }; Object.assign(assetPreviewState, { assetId, buffer, source, gain, startedAt: AudioEngine.context.currentTime, playing: true }); source.start(); ProjectAssets.addReference(assetId, assetReference("Asset Manager", assetId, asset.displayName, "Preview", true, false, new Date().toISOString()), ACTIVE_PROJECT_ID); renderAssetManager(); }
+async function restartAssetPreview() { if (!assetPreviewState.assetId || !assetPreviewState.buffer) return false; return playAssetPreview(assetPreviewState.assetId); }
+
+function repointAssetDomainReferences(duplicate, retained) {
+  if (!duplicate || !retained) return;
+  sampler.assetIds = sampler.assetIds.map((assetId) => assetId === duplicate.assetId ? retained.assetId : assetId);
+  const replacementSource = sourceFiles.find((item) => item.id === retained.sourceId);
+  let arrangementChangedByResolution = false;
+  editorState.clips.forEach((clip) => {
+    if (clip.sourceId !== duplicate.sourceId || !replacementSource) return;
+    clip.sourceId = replacementSource.id;
+    clip.source = { ...clip.source, id: replacementSource.id, label: replacementSource.name, fileName: replacementSource.name, duration: replacementSource.buffer?.duration || replacementSource.duration || clip.source?.duration, buffer: replacementSource.buffer || clip.source?.buffer, playable: Boolean(replacementSource.buffer) };
+    clip.missingSource = !replacementSource.buffer;
+    clip.relinkRequired = !replacementSource.buffer;
+    arrangementChangedByResolution = true;
+  });
+  if (arrangementChangedByResolution) {
+    saveArrangementProject({ automatic: true });
+    renderEditor();
+  }
+  const savedSources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
+  let savedSourcesChanged = false;
+  savedSources.forEach((source) => {
+    if (source.linkedAssetId === duplicate.assetId) {
+      source.linkedAssetId = retained.assetId;
+      source.linkedAt = new Date().toISOString();
+      savedSourcesChanged = true;
+    }
+  });
+  if (savedSourcesChanged) localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(savedSources));
+  savePadWorkspace();
+}
+
+async function handleAssetRelinkFile(file) {
+  const target = ProjectAssets.get(assetManagerState.pendingRelinkAssetId, ACTIVE_PROJECT_ID); assetManagerState.pendingRelinkAssetId = null; if (!target || !file) return; if (!isSupportedAudioFile(file)) throw new Error("Choose a supported audio file for relinking."); const buffer = await loadAudioFile(file); const mismatch = target.duration && Math.abs(buffer.duration - target.duration) / Math.max(.01, target.duration) > .25; if (mismatch && !window.confirm(`The replacement is ${formatTime(buffer.duration)}, which differs substantially from the expected ${formatTime(target.duration)}. Keep existing timing and continue?`)) return;
+  addLocalSourceFile(file, { buffer, silent: true }); const local = sourceFiles[0]; const localAsset = ProjectAssets.list(ACTIVE_PROJECT_ID).find((asset) => asset.owningDomain === "DITC" && asset.sourceId === local.id); if (!localAsset) throw new Error("The replacement file could not be registered.");
+  if (target.assetType === "Provider Metadata Reference") { ProjectAssets.linkMetadata(target.assetId, localAsset.assetId, { matchMethod: "Manual", userConfirmed: true, originalProvider: target.providerReference?.provider, title: target.metadata?.title, artist: target.metadata?.artist, album: target.metadata?.album }, ACTIVE_PROJECT_ID); const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]"); const source = sources.find((item) => item.url === target.sourceId); if (source) { Object.assign(source, { linkedAssetId: localAsset.assetId, matchMethod: "Manual", matchConfidence: null, linkedAt: new Date().toISOString() }); localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources)); } }
+  else { const result = ProjectAssets.relink(target.assetId, { linkedAssetId: localAsset.assetId, matchMethod: "Manual", userConfirmed: true, keepExistingTiming: true, localReference: { kind: "linked-project-asset", assetId: localAsset.assetId }, originalFilename: file.name, mimeType: file.type, sizeBytes: file.size, duration: buffer.duration }, ACTIVE_PROJECT_ID); const impactedClips = editorState.clips.filter((clip) => clip.id === target.sourceId || clip.sourceId === target.sourceId); if (impactedClips.length) { pushArrangementHistory(`Relink ${target.displayName}`); impactedClips.forEach((clip) => { clip.source = { id: local.id, label: file.name, detail: "Relinked through Asset Manager", duration: buffer.duration, sourceKind: "crate", fileName: file.name, buffer, playable: true }; clip.sourceKind = "crate"; clip.sourceId = local.id; clip.missingSource = false; clip.relinkRequired = false; }); editorState.runtimeSourceCache.set(`crate:${local.id}`, buffer); arrangementChanged(`Relinked ${impactedClips.length} arrangement reference${impactedClips.length === 1 ? "" : "s"} through Asset Manager`, { type: "arrangement-source-relinked" }); renderEditor(); } if (result.warnings.length) assetManagerState.lastError = `Relinked with warning: ${result.warnings.join(" ")}`; }
+  setSourceStatus(`Linked ${file.name} through Project Asset Manager.`); refreshProjectAssetIndex(); renderSources(); renderAssetManager();
+}
+
+function openAssetOwningDomain(asset) { const target = ({ DITC: "sources", Decks: "decks", Pads: "sampler", "Beat Forge": "drums", "Harmony Lab": "keys", "Stem Lab": "stems", Arrangement: "editor", Recording: "finishing", Export: "finishing" })[asset.owningDomain]; if (target) switchView(target); else assetManagerState.lastError = `${asset.owningDomain} does not expose a direct destination.`; }
+
+async function handleAssetInspectorAction(action, button) {
+  const asset = ProjectAssets.get(assetManagerState.selectedAssetId, ACTIVE_PROJECT_ID, { includeTrash: true }); if (!asset) return;
+  try {
+    if (asset.sharedOwnerProjectId && !["open-domain"].includes(action)) throw new Error("This is a read-only shared reference. Open its owner project to modify or relink it.");
+    if (action === "preview") await playAssetPreview(asset.assetId); if (action === "stop-preview") stopAssetPreview();
+    if (action === "relink") { assetManagerState.pendingRelinkAssetId = asset.assetId; const input = document.querySelector("#assetRelinkInput"); input.value = ""; input.click(); }
+    if (action === "open-domain") openAssetOwningDomain(asset);
+    if (action === "share") ProjectAssets.markShared(asset.assetId, !asset.shared, ACTIVE_PROJECT_ID);
+    if (action === "trash" && window.confirm(`Move ${asset.displayName} to Project Trash? External source files will not be deleted.`)) { ProjectAssets.moveToTrash(asset.assetId, {}, ACTIVE_PROJECT_ID); assetManagerState.selectedAssetId = null; }
+    if (action === "restore") ProjectAssets.restoreFromTrash(asset.assetId, ACTIVE_PROJECT_ID);
+    if (action === "delete-permanently" && window.confirm(`Permanently remove ${asset.displayName} from this project's asset index? External files will remain untouched.`)) { ProjectAssets.permanentlyDelete(asset.assetId, ACTIVE_PROJECT_ID); assetManagerState.selectedAssetId = null; }
+    if (action === "resolve-duplicate") { const otherId = button.dataset.otherAsset; const duplicate = ProjectAssets.get(otherId, ACTIVE_PROJECT_ID); if (window.confirm(`Use ${asset.displayName} as the retained asset and move the duplicate to Project Trash?`)) { repointAssetDomainReferences(duplicate, asset); ProjectAssets.resolveDuplicate(asset.assetId, otherId, "Use Asset A Everywhere", ACTIVE_PROJECT_ID); } }
+    if (action === "different-version") ProjectAssets.resolveDuplicate(asset.assetId, button.dataset.otherAsset, "Mark as Different Versions", ACTIVE_PROJECT_ID);
+    renderAssetManager(); renderProjectLibrary();
+  } catch (error) { assetManagerState.lastError = error.message; renderAssetManager(); }
+}
+
+function setupAssetManagerEvents() {
+  const search = document.querySelector("#assetSearch"); if (search) search.addEventListener("input", (event) => { assetManagerState.search = event.target.value; renderAssetManager(); });
+  const sort = document.querySelector("#assetSort"); if (sort) { sort.innerHTML = ProjectAssets.SORTS.map((item) => `<option>${escapeHtml(item)}</option>`).join(""); sort.value = assetManagerState.sort; sort.addEventListener("change", (event) => { assetManagerState.sort = event.target.value; renderAssetManager(); }); }
+  document.querySelector("#assetFilterList")?.addEventListener("click", (event) => { const filter = event.target.closest("[data-asset-filter]")?.dataset.assetFilter; if (filter) { assetManagerState.filter = filter; renderAssetManager(); } });
+  document.querySelector("#assetList")?.addEventListener("click", (event) => { const row = event.target.closest("[data-asset-id]"); if (row) { assetManagerState.selectedAssetId = row.dataset.assetId; renderAssetManager(); } });
+  document.querySelector("#assetList")?.addEventListener("keydown", (event) => { if (!["Enter", " "].includes(event.key)) return; const row = event.target.closest("[data-asset-id]"); if (row) { event.preventDefault(); assetManagerState.selectedAssetId = row.dataset.assetId; renderAssetManager(); document.querySelector("#assetInspector h3")?.focus?.(); } });
+  document.querySelector("#assetInspector")?.addEventListener("click", (event) => { const button = event.target.closest("[data-asset-action]"); if (button) handleAssetInspectorAction(button.dataset.assetAction, button); });
+  document.querySelectorAll("[data-asset-mode-choice]").forEach((button) => button.addEventListener("click", () => { assetManagerState.mode = button.dataset.assetModeChoice; document.querySelectorAll("[data-asset-mode-choice]").forEach((item) => { const active = item === button; item.classList.toggle("is-active", active); item.setAttribute("aria-pressed", String(active)); }); renderAssetManager(); }));
+  document.querySelector("#validateProjectAssets")?.addEventListener("click", () => { const result = ProjectAssets.validateAll(ACTIVE_PROJECT_ID); assetManagerState.lastError = null; document.querySelector("#assetManagerStatus").textContent = `Validated ${result.results.length} asset${result.results.length === 1 ? "" : "s"}.`; renderAssetManager(); });
+  document.querySelector("#findMissingAssets")?.addEventListener("click", () => { refreshProjectAssetIndex(); assetManagerState.filter = "Missing"; renderAssetManager(); });
+  document.querySelector("#findDuplicateAssets")?.addEventListener("click", () => { assetManagerState.filter = "Duplicate"; renderAssetManager(); });
+  document.querySelector("#cleanTemporaryAssets")?.addEventListener("click", () => { const preview = ProjectAssets.query({ filter: "Temporary" }); if (!preview.length) { document.querySelector("#assetManagerStatus").textContent = "No temporary assets are registered."; return; } if (window.confirm(`Move ${preview.length} safely unused temporary asset${preview.length === 1 ? "" : "s"} to Project Trash? Active jobs and referenced assets will be retained.`)) { const result = ProjectAssets.cleanupTemporary(ACTIVE_PROJECT_ID); document.querySelector("#assetManagerStatus").textContent = `Moved ${result.cleaned.length} temporary asset${result.cleaned.length === 1 ? "" : "s"} to Trash; ${result.blocked.length} retained.`; renderAssetManager(); } });
+  document.querySelector("#exportAssetManifest")?.addEventListener("click", () => { try { const project = ProjectRegistry.getActiveProject(); downloadArrangementFile(ProjectAssets.exportManifest(ACTIVE_PROJECT_ID), `${sanitizeFileName(project?.name || "deckforge-project")}-asset-manifest.json`, "application/json"); document.querySelector("#assetManagerStatus").textContent = "Exported a sanitized project asset manifest."; } catch (error) { assetManagerState.lastError = `Manifest export failed: ${error.message}`; renderAssetManager(); } });
+  document.querySelector("#assetManagerImport")?.addEventListener("click", () => document.querySelector("#ditcFileInput")?.click()); document.querySelector("#assetManagerOpenDitc")?.addEventListener("click", () => switchView("sources"));
+  document.querySelector("#assetManagerEmpty")?.addEventListener("click", (event) => { const action = event.target.closest("[data-asset-empty-action]")?.dataset.assetEmptyAction; if (action === "import") document.querySelector("#ditcFileInput")?.click(); if (action === "ditc") switchView("sources"); if (action === "recording") switchView("finishing"); if (action === "stems") switchView("stems"); if (action === "arrangement") switchView("editor"); if (action === "refresh") { refreshProjectAssetIndex(); renderAssetManager(); } });
+  document.querySelector("#assetRelinkInput")?.addEventListener("change", async (event) => { try { await handleAssetRelinkFile(event.target.files[0]); } catch (error) { assetManagerState.lastError = `Relink failed: ${error.message}`; renderAssetManager(); } });
+  document.querySelector("#openAssetManagerMenu")?.addEventListener("click", () => openProjectAssetManager()); document.querySelector("#openProducerAssets")?.addEventListener("click", () => openProjectAssetManager());
+  window.addEventListener("deckforge:project-assets-changed", (event) => { if (event.detail?.projectId !== ACTIVE_PROJECT_ID) return; if (projectIntelligenceReady) emitProjectContextChange("assets", event.detail.type, { summary: `Project asset ${String(event.detail.type).replace(/-/g, " ")}` }); if (document.querySelector("#assets")?.classList.contains("is-active")) requestAnimationFrame(renderAssetManager); });
+}
+
 const projectLibraryState = { search: "", sort: "Recently Opened", filter: "All", selectedProjectId: null };
 function setProjectLibraryStatus(message = "", state = "idle") { const output = document.querySelector("#projectLibraryStatus"); if (output) { output.textContent = message; output.dataset.state = state; } }
 function projectTypeInitials(type) { return String(type || "Project").split(/\s+/).map((part) => part[0]).join("").slice(0, 3).toUpperCase(); }
@@ -10679,8 +10862,8 @@ function projectCard(project, recentProjectId = null) {
     <div class="project-card__art">${artwork}</div><div class="project-card__body"><div class="project-card__head"><div><h3 id="project-card-${escapeHtml(project.projectId)}">${escapeHtml(project.name)}</h3><small>${escapeHtml(project.type)}</small></div>${project.favorite ? `<span class="project-favorite" aria-label="Favorite project">★</span>` : ""}</div>
     <div class="project-card__meta"><span class="project-status-chip">${active ? "Open" : escapeHtml(project.status)}</span>${recent ? `<span class="project-status-chip">Most recent</span>` : ""}${project.migration && !["Complete", "Not required"].includes(project.migration.status) ? `<span class="project-status-chip is-warning">Migration: ${escapeHtml(project.migration.status)}</span>` : ""}${project.missingAssetCount ? `<span class="project-status-chip is-warning">${project.missingAssetCount} missing asset${project.missingAssetCount === 1 ? "" : "s"}</span>` : ""}${project.needsRepair ? `<span class="project-status-chip is-warning">Needs repair</span>` : ""}</div>
     <div class="project-card__progress" title="Progress: ${escapeHtml(progressLabel)}"><span style="width:${project.progress || 0}%"></span></div>
-    <dl class="project-card__facts"><div><dt>Last opened</dt><dd>${escapeHtml(projectDate(project.lastOpenedAt))}</dd></div><div><dt>Created</dt><dd>${escapeHtml(projectDate(project.createdAt, "Unknown"))}</dd></div><div><dt>Progress</dt><dd>${escapeHtml(progressLabel)}</dd></div><div><dt>Duration</dt><dd>${escapeHtml(project.durationLabel || "No arrangement duration")}</dd></div><div><dt>Tracks</dt><dd>${project.trackCount}</dd></div><div><dt>Arrangement</dt><dd>${escapeHtml(project.arrangementStatus)}</dd></div><div><dt>Recordings</dt><dd>${project.recordingCount}</dd></div><div><dt>Latest export</dt><dd title="${escapeHtml(latestExport)}">${escapeHtml(latestExport)}</dd></div></dl>
-    <div class="project-card__actions">${archived ? `<button type="button" data-project-action="restore">Restore</button>` : `<button type="button" data-project-action="open">${active ? "Continue" : "Open"}</button>`}<button type="button" data-project-action="favorite" aria-pressed="${project.favorite}">${project.favorite ? "Unfavorite" : "Favorite"}</button><button type="button" data-project-action="details">Details</button><button type="button" data-project-action="rename">Rename</button><button type="button" data-project-action="duplicate">Duplicate</button>${!archived ? `<button type="button" data-project-action="archive">Archive</button>` : ""}<button type="button" data-project-action="validate">Validate</button>${project.validation.issues.some((issue) => issue.repairable) ? `<button type="button" data-project-action="repair">Repair</button>` : ""}<button type="button" data-project-action="delete">Delete</button></div></div></article>`;
+    <dl class="project-card__facts"><div><dt>Last opened</dt><dd>${escapeHtml(projectDate(project.lastOpenedAt))}</dd></div><div><dt>Created</dt><dd>${escapeHtml(projectDate(project.createdAt, "Unknown"))}</dd></div><div><dt>Progress</dt><dd>${escapeHtml(progressLabel)}</dd></div><div><dt>Duration</dt><dd>${escapeHtml(project.durationLabel || "No arrangement duration")}</dd></div><div><dt>Tracks</dt><dd>${project.trackCount}</dd></div><div><dt>Arrangement</dt><dd>${escapeHtml(project.arrangementStatus)}</dd></div><div><dt>Recordings</dt><dd>${project.recordingCount}</dd></div><div><dt>Latest export</dt><dd title="${escapeHtml(latestExport)}">${escapeHtml(latestExport)}</dd></div><div><dt>Managed storage</dt><dd>${project.assetStorage?.totalKnownBytes ? escapeHtml(formatFileSize(project.assetStorage.totalKnownBytes)) : project.assetStorage?.unknownSizeCount ? "Size partly unknown" : "No known bytes"}</dd></div><div><dt>Unused assets</dt><dd>${project.unusedAssetCount || 0}</dd></div></dl>
+    <div class="project-card__actions">${archived ? `<button type="button" data-project-action="restore">Restore</button>` : `<button type="button" data-project-action="open">${active ? "Continue" : "Open"}</button><button type="button" data-project-action="manage-assets">Manage Assets</button>`}<button type="button" data-project-action="favorite" aria-pressed="${project.favorite}">${project.favorite ? "Unfavorite" : "Favorite"}</button><button type="button" data-project-action="details">Details</button><button type="button" data-project-action="rename">Rename</button><button type="button" data-project-action="duplicate">Duplicate</button>${!archived ? `<button type="button" data-project-action="archive">Archive</button>` : ""}<button type="button" data-project-action="validate">Validate</button>${project.validation.issues.some((issue) => issue.repairable) ? `<button type="button" data-project-action="repair">Repair</button>` : ""}<button type="button" data-project-action="delete">Delete</button></div></div></article>`;
 }
 
 function renderProjectLibrary() {
@@ -10712,6 +10895,7 @@ async function handleProjectLibraryAction(projectId, action) {
   const project = ProjectRegistry.getProject(projectId); if (!project) return setProjectLibraryStatus("Project not found.", "error");
   try {
     if (action === "open") await openRegisteredProject(projectId);
+    if (action === "manage-assets") await openProjectAssetManager(projectId);
     if (action === "details") revealProjectDetails(projectId);
     if (action === "favorite") { ProjectRegistry.favoriteProject(projectId, !project.metadata?.favorite); setProjectLibraryStatus(`${project.name} ${project.metadata?.favorite ? "removed from" : "added to"} favorites.`, "success"); }
     if (action === "rename") { const name = window.prompt("Rename project", project.name); if (name?.trim()) { const renamed = ProjectRegistry.renameProject(projectId, name); if (projectId === ACTIVE_PROJECT_ID) { producerStudioState.projectName = renamed.name; writeProducerStudioStorage(); renderProducerStudio(); } setProjectLibraryStatus(`Renamed project to ${renamed.name}.`, "success"); } }
@@ -10898,7 +11082,7 @@ function addDroppedSourceUrl(url) {
       name: parsed.hostname.replace("www.", "")
     });
     localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources.slice(0, 20)));
-    ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Track Reference", sourceId: parsed.href, name: parsed.hostname, references: [parsed.href], missing: false, relinkRequired: false });
+    ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Provider Metadata Reference", sourceType: "Metadata Only", sourceId: parsed.href, displayName: parsed.hostname, providerReference: { provider: detectPlatform(parsed.href), referenceId: parsed.href }, references: [assetReference("DITC", parsed.href, parsed.hostname, "Crate metadata", true)], missing: false, relinkRequired: false, metadata: { title: parsed.hostname, provider: detectPlatform(parsed.href) } });
     renderSources();
   } catch {
     /* Ignore non-url text drops. */
@@ -12061,7 +12245,7 @@ function addSource(event) {
   const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
   sources.unshift(item);
   localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources.slice(0, 20)));
-  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Track Reference", sourceId: item.url, name: item.name, references: [item.url] });
+  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Provider Metadata Reference", sourceType: "Metadata Only", sourceId: item.url, displayName: item.name, providerReference: { provider: detectPlatform(item.url), referenceId: item.url }, references: [assetReference("DITC", item.url, item.name, "Crate metadata", true)], metadata: { title: item.name, provider: detectPlatform(item.url) } });
   event.target.reset();
   renderSources();
 }
@@ -12146,7 +12330,7 @@ function addLocalSourceFile(file, options = {}) {
     stemReady: false
   });
   const registered = sourceFiles[0];
-  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Local Audio Reference", sourceId: registered.id, name: registered.name, references: [registered.storageId], checksum: registered.storageId, missing: false, relinkRequired: false, metadata: { folderPath: registered.folderPath, size: file.size, lastModified: file.lastModified } });
+  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Audio Track", sourceType: "Local File", sourceId: registered.id, displayName: registered.name, originalFilename: file.name, mimeType: file.type, sizeBytes: file.size, duration: registered.buffer?.duration || null, persistentReference: { kind: "browser-file-metadata", key: registered.storageId }, references: [assetReference("DITC", registered.id, registered.title || registered.name, "Crate audio", true)], linked: true, missing: false, relinkRequired: false, metadata: { title: registered.title, artist: registered.artist, album: registered.album, tags: registered.tags, lastModified: file.lastModified } });
   ditcState.lastImportResult = `Imported ${file.name}`;
   if (!options.silent) {
     setSourceStatus(`Added ${file.name} to DITC.`);
@@ -12944,6 +13128,7 @@ initializePlaybackRegistry();
 setupProjectRegistryEvents();
 setupEvents();
 setupProducerStudioEvents();
+setupAssetManagerEvents();
 renderGlobalTransport();
 initializeProjectEntryFlow().catch((error) => { updateProjectStorageBindings(null); switchView("projectLibrary", { route: false }); writeProjectRoute("projectLibrary"); renderProjectRegistry(); renderProjectLibrary(); setProjectLibraryStatus(`Project startup recovery: ${error.message}`, "error"); });
 animationLoop();

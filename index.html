@@ -18,6 +18,7 @@
         </div>
         <nav class="rail-tabs" aria-label="Sections">
           <button class="tab-button is-active" data-target="projectLibrary" title="Project Library">Projects</button>
+          <button class="tab-button" data-target="assets" title="Project Asset Manager">Assets</button>
           <button class="tab-button" data-target="decks" title="Decks">Decks</button>
           <button class="tab-button" data-target="sampler" title="Sampler">Pads</button>
           <button class="tab-button" data-target="drums" title="Beat Forge drum machine">Beat Forge</button>
@@ -43,7 +44,7 @@
               <summary><span id="activeProjectName">DeckForge Session</span></summary>
               <div class="project-menu-panel">
                 <label>Open Project <select id="projectSelector"></select></label>
-                <div class="project-menu-actions"><button id="openProjectLibrary" class="primary-button" type="button">Project Library</button><button id="openProject" class="secondary-button" type="button">Open</button><button id="createProject" class="secondary-button" type="button">New</button><button id="renameProject" class="secondary-button" type="button">Rename</button><button id="closeProject" class="secondary-button" type="button">Close</button></div>
+                <div class="project-menu-actions"><button id="openProjectLibrary" class="primary-button" type="button">Project Library</button><button id="openAssetManagerMenu" class="secondary-button" type="button">Manage Assets</button><button id="openProject" class="secondary-button" type="button">Open</button><button id="createProject" class="secondary-button" type="button">New</button><button id="renameProject" class="secondary-button" type="button">Rename</button><button id="closeProject" class="secondary-button" type="button">Close</button></div>
                 <p id="projectMigrationStatus" class="fine-print"></p>
                 <details><summary>Project diagnostics</summary><pre id="projectDiagnostics"></pre></details>
               </div>
@@ -100,6 +101,28 @@
             <p class="fine-print">Open Existing Project shows registered projects. Folder-based projects are unavailable because this browser build has no durable folder-handle integration.</p>
           </section>
           <details class="project-library-diagnostics"><summary>Project Library diagnostics</summary><pre id="projectLibraryDiagnostics"></pre></details>
+        </section>
+
+        <section id="assets" class="view asset-manager" data-asset-mode="simple" aria-labelledby="assetManagerTitle">
+          <header class="asset-manager-toolbar">
+            <div><p class="eyebrow">Project Health</p><h2 id="assetManagerTitle">Project Asset Manager</h2><p id="assetManagerProjectName">No project open</p></div>
+            <label class="asset-search"><span>Search assets</span><input id="assetSearch" type="search" placeholder="Name, artist, type, domain, or tag" autocomplete="off"></label>
+            <label><span>Sort</span><select id="assetSort" aria-label="Sort project assets"></select></label>
+            <div class="asset-toolbar-actions">
+              <button id="validateProjectAssets" type="button">Validate</button><button id="findMissingAssets" type="button">Find Missing</button><button id="findDuplicateAssets" type="button">Find Duplicates</button>
+              <button id="consolidateProjectAssets" type="button" disabled title="Persistent project folders are unavailable in this browser build.">Consolidate</button><button id="cleanTemporaryAssets" type="button">Clean Up</button><button id="exportAssetManifest" type="button">Export Manifest</button>
+            </div>
+            <div class="asset-mode-control" role="group" aria-label="Asset Manager display mode"><button type="button" data-asset-mode-choice="simple" class="is-active" aria-pressed="true">Simple</button><button type="button" data-asset-mode-choice="advanced" aria-pressed="false">Advanced</button></div>
+          </header>
+          <div id="assetManagerStatus" class="asset-manager-status" role="status" aria-live="polite"></div>
+          <div class="asset-storage-summary" id="assetStorageSummary" aria-label="Project storage summary"></div>
+          <div class="asset-manager-layout">
+            <aside class="asset-manager-sidebar" aria-label="Asset filters"><h3>Assets</h3><div id="assetFilterList"></div><hr><button id="assetManagerImport" type="button">Import Audio</button><button id="assetManagerOpenDitc" type="button">Open DITC</button></aside>
+            <section class="asset-list-panel" aria-labelledby="assetListTitle"><h3 id="assetListTitle" class="sr-only">Managed project assets</h3><div class="asset-list-header" aria-hidden="true"><span>Name</span><span>Type</span><span>Status</span><span>Size</span><span>Domain</span><span>Refs</span><span>Last used</span></div><div id="assetList" class="asset-list" role="listbox" aria-label="Project assets"></div><div id="assetManagerEmpty" class="asset-manager-empty" hidden><h3>This project does not contain any managed assets yet.</h3><div><button data-asset-empty-action="import">Import Audio</button><button data-asset-empty-action="ditc">Open DITC</button><button data-asset-empty-action="recording">Create Recording</button><button data-asset-empty-action="stems">Open Stem Lab</button><button data-asset-empty-action="arrangement">Open Arrangement</button><button data-asset-empty-action="refresh">Refresh Asset Index</button></div></div></section>
+            <aside id="assetInspector" class="asset-inspector" aria-live="polite"><h3>Asset Inspector</h3><p>Select an asset to inspect ownership, usage, validation, and available actions.</p></aside>
+          </div>
+          <input id="assetRelinkInput" type="file" accept="audio/*" hidden>
+          <details id="assetManagerDiagnostics" hidden><summary>Asset Manager diagnostics</summary><pre id="assetManagerDiagnosticsOutput"></pre></details>
         </section>
 
         <section id="decks" class="view" aria-labelledby="decksTitle">
@@ -879,6 +902,7 @@
               <p>Your project-aware creative headquarters. Lead with a prompt or act on focused producer recommendations.</p>
             </div>
             <div class="producer-mode-control" role="group" aria-label="Producer Studio display mode">
+              <button id="openProducerAssets" class="secondary-button" type="button">Manage Assets</button>
               <button class="producer-mode-button is-active" data-producer-mode-choice="simple" aria-pressed="true">Simple</button>
               <button class="producer-mode-button" data-producer-mode-choice="advanced" aria-pressed="false">Advanced</button>
             </div>

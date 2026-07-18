@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DeckForge Project Assets Browser Test</title>
+<script src="../src/project-registry.js"></script>
+<script src="../src/project-assets.js"></script>
+<pre id="result">Running…</pre>
+<script>
+(() => {
+  const registry = DeckForgeProjectRegistry;
+  const assets = DeckForgeProjectAssets;
+  const checks = {};
+  const storageBackup = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(Boolean).map((key) => [key, localStorage.getItem(key)]);
+  const restoreStorage = () => { localStorage.clear(); storageBackup.forEach(([key, value]) => localStorage.setItem(key, value)); };
+  const check = (name, condition, detail = null) => {
+    checks[name] = { pass: Boolean(condition), detail };
+    if (!condition) throw new Error(name);
+  };
+  try {
+    localStorage.clear();
+    const alpha = registry.createProject({ name: "Project Assets Test Alpha", type: "Remix" });
+    const audio = assets.register({ projectId: alpha.projectId, owningDomain: "DITC", assetType: "Audio Track", sourceType: "Local File", sourceId: "tone-a", displayName: "Tone.wav", originalFilename: "Tone.wav", mimeType: "audio/wav", sizeBytes: 352844, duration: 2, checksum: "abc123", checksumKind: "sha256", linked: true, references: [{ domain: "DITC", itemId: "tone-a", itemLabel: "Tone", usageType: "Crate audio", active: true }] });
+    check("registration and ownership", audio.projectId === alpha.projectId && audio.sizeBytes === 352844, audio);
+    check("usage graph", assets.usage(audio.assetId).active.length === 1, assets.usage(audio.assetId));
+    check("safe removal blocks active usage", !assets.removalPlan(audio.assetId).safeToRemove, assets.removalPlan(audio.assetId));
+
+    const missing = assets.register({ projectId: alpha.projectId, owningDomain: "DITC", assetType: "Audio Track", sourceType: "Local File", sourceId: "missing-a", displayName: "Missing.wav", mimeType: "audio/wav", sizeBytes: 1000, duration: 10, linked: false, missing: true, relinkRequired: true });
+    const relink = assets.relink(missing.assetId, { linkedAssetId: audio.assetId, mimeType: "audio/wav", sizeBytes: 5000, duration: 30, matchMethod: "Manual", userConfirmed: true });
+    check("missing and relink", !relink.asset.missing && relink.asset.metadata.relink.linkedAssetId === audio.assetId, relink);
+    check("relink mismatch warnings", relink.warnings.length >= 2, relink.warnings);
+
+    const duplicate = assets.register({ projectId: alpha.projectId, owningDomain: "DITC", assetType: "Audio Track", sourceType: "Local File", sourceId: "tone-b", displayName: "Tone Copy.wav", sizeBytes: 352844, duration: 2, checksum: "abc123", checksumKind: "sha256", linked: true });
+    check("exact duplicate classification", assets.findDuplicates().some((pair) => pair.classification === "Exact Duplicate"), assets.findDuplicates());
+    assets.resolveDuplicate(audio.assetId, duplicate.assetId, "Use Asset A Everywhere");
+    check("duplicate moved to Trash", assets.get(duplicate.assetId, alpha.projectId, { includeTrash: true }).trash.trashed, null);
+    assets.restoreFromTrash(duplicate.assetId);
+    check("Trash restore", !assets.get(duplicate.assetId).trash.trashed, null);
+
+    const temporary = assets.register({ projectId: alpha.projectId, owningDomain: "Stem Lab", assetType: "Temporary Processing File", sourceType: "Backend Temporary", sourceId: "temp-a", displayName: "Active temp", temporary: true, activeJobId: "job-a", sizeBytes: 2048 });
+    check("active job protected", !assets.removalPlan(temporary.assetId).safeToRemove, assets.removalPlan(temporary.assetId));
+    check("temporary cleanup defers active job", assets.cleanupTemporary().blocked.some((item) => item.assetId === temporary.assetId), null);
+
+    const metadata = assets.register({ projectId: alpha.projectId, owningDomain: "DITC", assetType: "Provider Metadata Reference", sourceType: "Metadata Only", sourceId: "provider-a", displayName: "Provider track", providerReference: { provider: "Test", externalId: "a" }, linked: false, missing: true, relinkRequired: true });
+    assets.linkMetadata(metadata.assetId, audio.assetId, { matchMethod: "Manual", userConfirmed: true });
+    check("metadata-to-local link", assets.get(metadata.assetId).metadataLink.linkedAssetId === audio.assetId, assets.get(metadata.assetId));
+
+    const invalidUrl = assets.register({ projectId: alpha.projectId, owningDomain: "Recording", assetType: "Recording", sourceType: "Runtime Blob", sourceId: "recording-invalid", displayName: "Invalid URL test", localReference: { url: "blob:http://localhost/private" } });
+    check("object URL validation", assets.validateAsset(invalidUrl, { projectId: alpha.projectId }).status === "Unsupported Reference", assets.validateAsset(invalidUrl, { projectId: alpha.projectId }));
+
+    assets.markShared(audio.assetId, true);
+    const beta = registry.createProject({ name: "Project Assets Test Beta" }, { open: false });
+    assets.linkSharedToProject(audio.assetId, beta.projectId);
+    check("shared deletion protection", !assets.removalPlan(audio.assetId).safeToRemove, assets.removalPlan(audio.assetId));
+    registry.openProject(beta.projectId);
+    const betaAssets = assets.list(beta.projectId);
+    check("shared ownership", betaAssets.some((asset) => asset.assetId === audio.assetId && asset.sharedOwnerProjectId === alpha.projectId), betaAssets);
+    check("project isolation", !betaAssets.some((asset) => asset.assetId === duplicate.assetId), betaAssets);
+    check("shared storage counted once", assets.storageSummary(beta.projectId).sharedBytes === 352844, assets.storageSummary(beta.projectId));
+
+    registry.openProject(alpha.projectId);
+    const manifest = assets.exportManifest(alpha.projectId);
+    check("manifest sanitized", manifest.includes(audio.assetId) && !manifest.includes("blob:") && !manifest.includes("/Users/"), manifest.length);
+    check("diagnostics", assets.diagnostics().totalAssets >= 6, assets.diagnostics());
+    result.textContent = JSON.stringify({ status: "PASS", checks, projectId: alpha.projectId, assetId: audio.assetId, manifestBytes: new Blob([manifest]).size }, null, 2);
+    restoreStorage();
+  } catch (error) {
+    result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks }, null, 2);
+    restoreStorage();
+  }
+})();
+</script>

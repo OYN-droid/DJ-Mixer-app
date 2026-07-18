@@ -4,7 +4,7 @@
   const STORAGE_PREFIX = "deckforge-contextual-recommendations";
   const STATUSES = new Set(["New", "Viewed", "Previewed", "Accepted", "Applied", "Rejected", "Dismissed", "Stale", "Failed", "Undone", "Saved"]);
   const PRIORITY_WEIGHT = { "Needs Attention": 400, "Recommended Next": 300, "Creative Opportunity": 200, "Optional Experiment": 100 };
-  const DOMAIN_ICONS = { DITC: "⌕", Decks: "◉", "Smart Mix": "↝", Pads: "▦", "Beat Forge": "◫", "Harmony Lab": "♬", "Stem Lab": "≋", Arrangement: "▤", "Mixtape Intelligence": "◇", "Project Planning": "✦", Recording: "●", "Export Readiness": "⇧" };
+  const DOMAIN_ICONS = { DITC: "⌕", Decks: "◉", "Smart Mix": "↝", Pads: "▦", "Beat Forge": "◫", "Harmony Lab": "♬", "Stem Lab": "≋", Arrangement: "▤", Assets: "▣", "Mixtape Intelligence": "◇", "Project Planning": "✦", Recording: "●", "Export Readiness": "⇧" };
   const subscribers = new Set();
   let projectId = "deckforge-session";
   let getContext = () => null;
@@ -371,6 +371,13 @@
     return rules;
   }
 
+  function assetRules(context) {
+    const assets = context.assets || {}; const rules = [];
+    if (assets.missingAssets) rules.push({ ruleId: "assets-relink-missing", domain: "Assets", type: "Project Health", title: "Relink missing project files", summary: `${assets.missingAssets} managed asset${assets.missingAssets === 1 ? " needs" : "s need"} attention.`, explanation: "Missing audio remains visible so Arrangement timing and project references can be repaired without fabricating availability.", evidence: [{ label: "Missing assets", value: assets.missingAssets }, { label: "Managed assets", value: assets.totalAssets }, { label: "Known storage", value: assets.totalKnownBytes || "Unknown" }], confidence: .99, expectedImpact: "Restore project playback and export readiness", difficulty: "Easy", beginnerFriendly: true, suggestedAction: { actionId: "open-assets", label: "Find Missing", affectedDomains: ["Assets"] }, priority: "Needs Attention", fingerprint: `${assets.totalAssets}|${assets.missingAssets}` });
+    if (!assets.missingAssets && assets.duplicateCandidates) rules.push({ ruleId: "assets-review-duplicates", domain: "Assets", type: "Project Health", title: "Review duplicate assets", summary: `${assets.duplicateCandidates} duplicate candidate${assets.duplicateCandidates === 1 ? " is" : "s are"} supported by file or metadata evidence.`, explanation: "Review references before consolidating duplicates. DeckForge will not merge based only on title.", evidence: [{ label: "Duplicate candidates", value: assets.duplicateCandidates }, { label: "Unused assets", value: assets.unusedAssets || 0 }], confidence: .84, expectedImpact: "Reduce redundant project storage without breaking references", difficulty: "Intermediate", beginnerFriendly: true, suggestedAction: { actionId: "open-assets", label: "Review Duplicates", affectedDomains: ["Assets"] }, priority: "Recommended Next", fingerprint: `${assets.duplicateCandidates}|${assets.unusedAssets || 0}` });
+    return rules;
+  }
+
   function mixtapeRules(context) {
     const mixtape = context.mixtape || {};
     if (!mixtape.referenceAnalysis || !(mixtape.recommendations || []).length) return [];
@@ -388,7 +395,7 @@
   function generateRules(context) {
     return [
       ...deckRules(context), ...arrangementRules(context), ...beatRules(context), ...harmonyRules(context),
-      ...padRules(context), ...stemRules(context), ...ditcAndPlanningRules(context), ...recordingRules(context), ...mixtapeRules(context)
+      ...padRules(context), ...stemRules(context), ...ditcAndPlanningRules(context), ...assetRules(context), ...recordingRules(context), ...mixtapeRules(context)
     ];
   }
 
