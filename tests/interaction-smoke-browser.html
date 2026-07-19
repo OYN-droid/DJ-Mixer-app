@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DeckForge Interaction Smoke Test</title>
+<pre id="result">Running…</pre>
+<iframe id="app" title="DeckForge interaction test" style="width:1280px;height:900px;border:0"></iframe>
+<script>
+(async () => {
+  const checks = {}; const errors = []; const frame = document.querySelector("#app");
+  const backup = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(Boolean).map((key) => [key, localStorage.getItem(key)]);
+  const restore = () => { localStorage.clear(); backup.forEach(([key, value]) => localStorage.setItem(key, value)); };
+  const check = (name, condition, detail = null) => { checks[name] = { pass: Boolean(condition), detail }; if (!condition) throw new Error(name); };
+  const waitFor = async (predicate, timeout = 5000) => { const started = performance.now(); while (performance.now() - started < timeout) { const value = predicate(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 25)); } throw new Error("Timed out waiting for application state"); };
+  try {
+    localStorage.clear(); localStorage.setItem("deckforge-local-libraries:v1", "{malformed local-library state");
+    frame.contentWindow.addEventListener("error", (event) => errors.push(event.error?.stack || event.message));
+    frame.src = "../index.html?interaction-smoke=1";
+    const app = await waitFor(() => frame.contentDocument?.readyState === "complete" && frame.contentDocument.querySelector("#projectLibraryCreate") && frame.contentWindow.DeckForgeLocalLibraries && frame.contentDocument);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    check("application mounts", app.querySelector("#projectLibrary.is-active") && typeof frame.contentWindow.DeckForgeLocalLibraries === "object", app.body.className);
+    check("failed local-library initialization is isolated", errors.length === 0 && app.querySelector("#projectLibraryCreate").disabled === false, errors);
+    const create = app.querySelector("#projectLibraryCreate"); const rect = create.getBoundingClientRect(); const hit = app.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    check("inactive overlay does not intercept", hit === create || create.contains(hit), hit?.id || hit?.className);
+    create.click(); check("representative handler runs", app.querySelector("#createProjectDialog").open, null);
+    const confirmations = []; frame.contentWindow.confirm = (message) => { confirmations.push(message); return true; };
+    document.title = "RUNNING · submitting project"; app.querySelector("#newProjectName").value = "Interaction Smoke Project"; app.querySelector("#createProjectForm").requestSubmit();
+    await waitFor(() => app.querySelector("#ai.is-active") && !app.body.classList.contains("project-switching"), 10000);
+    const registry = frame.contentWindow.DeckForgeProjectRegistry; const activeProject = registry.getActiveProject();
+    check("project registry receives creation", registry.listProjects().length === 1 && activeProject?.name === "Interaction Smoke Project", registry.diagnostics());
+    check("active project is assigned", registry.getSession()?.projectId === activeProject?.projectId, registry.getSession());
+    check("producer studio opens", app.querySelector("#ai.is-active"), app.querySelector(".view.is-active")?.id);
+    check("first project creation skips switch confirmation", confirmations.length === 0, confirmations);
+    for (const target of ["decks", "sources", "sampler", "drums", "keys", "stems", "editor"]) { document.title = `RUNNING · navigation ${target}`; app.querySelector(`.tab-button[data-target="${target}"]`).click(); document.title = `RUNNING · after navigation ${target}`; check(`navigation ${target}`, app.querySelector(`#${target}.is-active`), app.querySelector(".view.is-active")?.id); }
+    app.querySelector('.tab-button[data-target="projectLibrary"]').click(); await waitFor(() => app.querySelector("#projectLibrary.is-active")); check("main navigation activates", app.querySelector("#projectLibrary.is-active"), app.querySelector(".view.is-active")?.id);
+    app.querySelector(`[data-project-id="${activeProject.projectId}"] [data-project-action="open"]`).click(); await waitFor(() => app.querySelector("#ai.is-active")); check("persisted project reopens", registry.getActiveProject()?.projectId === activeProject.projectId && app.querySelector("#ai.is-active"), registry.getSession());
+    check("startup blocker clears", !app.body.classList.contains("project-closed") && !app.body.classList.contains("project-switching"), app.body.className);
+    check("no uncaught errors", errors.length === 0, errors);
+    document.title = `PASS · ${Object.keys(checks).length} DeckForge interaction checks`; result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2); restore();
+  } catch (error) { document.title = `FAIL · ${error.message}`; result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks, errors }, null, 2); restore(); }
+})();
+</script>

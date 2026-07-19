@@ -4,6 +4,7 @@ const DECKFORGE_LOG_PREFIX = "[DeckForge]";
 const ProjectRegistry = window.DeckForgeProjectRegistry;
 const ProjectAssets = window.DeckForgeProjectAssets;
 const ProjectLibrary = window.DeckForgeProjectLibrary;
+const LocalLibraries = window.DeckForgeLocalLibraries;
 const ProviderFoundation = window.DeckForgeProviders;
 const ProviderRegistry = ProviderFoundation.ProviderRegistry;
 const ProviderConnections = ProviderFoundation.ProviderConnections;
@@ -111,7 +112,7 @@ const PAD_CATEGORIES = ["DITC", "Recent samples", "Favorites", "DJ Drops", "Voca
 
 const sourceFiles = [];
 const droppedFilePaths = new WeakMap();
-const supportedAudioExtensions = [".mp3", ".wav", ".wave", ".aif", ".aiff", ".flac", ".m4a", ".aac", ".alac"];
+const supportedAudioExtensions = [".mp3", ".wav", ".wave", ".aif", ".aiff", ".flac", ".m4a", ".aac", ".alac", ".ogg", ".oga", ".opus", ".webm"];
 const supportedImageExtensions = [".jpg", ".jpeg", ".png", ".webp"];
 let DITC_METADATA_KEY = projectStorageKey("ditc-metadata");
 let DITC_SOURCES_KEY = projectStorageKey("ditc-sources");
@@ -204,6 +205,7 @@ const finishingState = {
 const assetManagerState = { search: "", filter: "All", sort: "Name", mode: "simple", selectedAssetId: null, pendingRelinkAssetId: null, lastError: null };
 const assetPreviewState = { assetId: null, buffer: null, source: null, gain: null, startedAt: 0, playing: false };
 const providerBrowserState = { filter: "local", selectedProviderIds: ["local-files"], searchId: null, query: "", lastSearchStatus: null, lastError: null, selectedGroupId: null };
+const localLibraryState = { activeJobId: null, search: "", filter: "All Tracks", selectedLibraryId: null, pendingMatchReference: null, pendingMatchCandidates: [], pendingRelinkLibraryId: null, lastError: null };
 
 const crateSelection = {
   local: new Set(),
@@ -10583,7 +10585,9 @@ function updateProjectStorageBindings(projectId) {
 
 function resetProjectRuntime(projectId) {
   if (providerBrowserState.searchId) ProviderSearch.cancelSearch(providerBrowserState.searchId);
+  if (localLibraryState.activeJobId) LocalLibraries.cancelIndexing(localLibraryState.activeJobId);
   Object.assign(providerBrowserState, { searchId: null, query: "", lastSearchStatus: null, lastError: null, selectedGroupId: null });
+  Object.assign(localLibraryState, { activeJobId: null, pendingMatchReference: null, pendingMatchCandidates: [], pendingRelinkLibraryId: null, lastError: null });
   if (!projectRuntimeDefaults) projectRuntimeDefaults = captureProjectRuntimeDefaults();
   producerStudioState.contextUnsubscribe?.(); producerStudioState.contextUnsubscribe = null;
   deckState.a = createDeckState("a"); deckState.b = createDeckState("b");
@@ -10643,15 +10647,16 @@ async function openRegisteredProject(projectId) {
   if (target.status === "Archived") return setProjectLibraryStatus("Restore this archived project before opening it.", "error");
   const validation = ProjectRegistry.validateProject(projectId); const blockingIssues = validation.issues.filter((issue) => !issue.repairable);
   if (blockingIssues.length) return setProjectLibraryStatus(`${target.name} cannot open until ${blockingIssues.map((issue) => issue.message).join(" ")}`, "error");
-  if (projectId === ProjectRegistry.getSession()?.projectId && ProjectRegistry.getActiveProject()) { ProjectRegistry.markProjectOpened(projectId); switchView("ai"); setProjectLibraryStatus(`Opened ${target.name}.`, "success"); renderProjectRegistry(); renderProjectLibrary(); return; }
-  if (finishingState.activeRecordingId && !window.confirm("A recording is active. Stop and finalize it before switching projects?")) return;
-  if (finishingState.activeRecordingId) await stopMasterRecording();
-  if (editorState.autosaveState === "Unsaved Changes" && !window.confirm("Save current project changes and switch projects?")) return;
+  const currentProject = ProjectRegistry.getActiveProject();
+  if (projectId === ProjectRegistry.getSession()?.projectId && currentProject) { ProjectRegistry.markProjectOpened(projectId); switchView("ai"); setProjectLibraryStatus(`Opened ${target.name}.`, "success"); renderProjectRegistry(); renderProjectLibrary(); return; }
+  if (currentProject && finishingState.activeRecordingId && !window.confirm("A recording is active. Stop and finalize it before switching projects?")) return;
+  if (currentProject && finishingState.activeRecordingId) await stopMasterRecording();
+  if (currentProject && editorState.autosaveState === "Unsaved Changes" && !window.confirm("Save current project changes and switch projects?")) return;
   setProjectLibraryStatus(`Opening ${target.name}…`, "loading"); document.body.classList.add("project-switching");
   try {
-    if (ProjectRegistry.getActiveProject()) { await stopAllAudio(); if (!persistActiveProjectDomains()) throw new Error("The active project could not be saved safely."); ProjectRegistry.beginSwitch(projectId); }
+    if (currentProject) { await stopAllAudio(); if (!persistActiveProjectDomains()) throw new Error("The active project could not be saved safely."); ProjectRegistry.beginSwitch(projectId); }
     RecordingService.cleanup(); ExportService.cleanup();
-    ProjectRegistry.openProject(projectId, { reason: ProjectRegistry.getActiveProject() ? "user-switch" : "user-open" });
+    ProjectRegistry.openProject(projectId, { reason: currentProject ? "user-switch" : "user-open" });
     await restoreProjectRuntime(projectId);
     document.body.classList.remove("project-closed"); switchView("ai"); setProjectLibraryStatus(`Opened ${target.name}.`, "success");
   } catch (error) { setProjectLibraryStatus(`Open failed: ${error.message}`, "error"); }
@@ -10760,6 +10765,10 @@ function renderAssetInspector() {
   const references = asset.references.length ? `<ul class="asset-usage-list">${asset.references.map((reference) => `<li><strong>${escapeHtml(reference.domain)}</strong><span>${escapeHtml(reference.itemLabel)} · ${escapeHtml(reference.usageType)}</span><small>${reference.active ? "Active" : reference.historical ? "Historical" : "Inactive"}${reference.lastUsedAt ? ` · ${escapeHtml(projectDate(reference.lastUsedAt))}` : ""}</small></li>`).join("")}</ul>` : `<p>No registered domain references.</p>`;
   const duplicateRows = duplicates.length ? `<section><h4>Duplicates</h4>${duplicates.map((item) => { const otherId = item.assetA === asset.assetId ? item.assetB : item.assetA; const other = ProjectAssets.get(otherId, ACTIVE_PROJECT_ID); return `<div class="asset-duplicate"><span>${escapeHtml(item.classification)} · ${escapeHtml(other?.displayName || otherId)}</span><button type="button" data-asset-action="resolve-duplicate" data-other-asset="${escapeHtml(otherId)}">Use this asset</button><button type="button" data-asset-action="different-version" data-other-asset="${escapeHtml(otherId)}">Different versions</button></div>`; }).join("")}</section>` : "";
   output.innerHTML = `<header><div><p class="eyebrow">${escapeHtml(asset.assetType)}</p><h3>${escapeHtml(asset.displayName)}</h3></div><span class="asset-status" data-status="${escapeHtml(assetDisplayStatus(asset))}">${escapeHtml(assetDisplayStatus(asset))}</span></header><dl class="asset-inspector-facts"><div><dt>Owner</dt><dd>${escapeHtml(asset.owningDomain)}</dd></div><div><dt>Location</dt><dd>${escapeHtml(assetLocationLabel(asset))}</dd></div><div><dt>Size</dt><dd>${escapeHtml(assetKnownSize(asset.sizeBytes))}</dd></div><div><dt>Duration</dt><dd>${asset.duration ? escapeHtml(formatTime(asset.duration)) : "Unknown"}</dd></div><div><dt>Usage</dt><dd>${escapeHtml(ProjectAssets.usageStatus(asset))}</dd></div><div><dt>Validation</dt><dd>${escapeHtml(validation.status)}</dd></div></dl><section><h4>Usage and references</h4>${references}</section>${validation.warnings.length || validation.errors.length ? `<section><h4>Validation details</h4><ul>${[...validation.errors, ...validation.warnings].map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>` : ""}${duplicateRows}<div class="asset-inspector-actions">${asset.trash?.trashed ? `<button type="button" data-asset-action="restore">Restore</button><button type="button" class="danger-button" data-asset-action="delete-permanently" ${plan.safeToRemove ? "" : `disabled title="${escapeHtml(plan.blockers.join(", "))}"`}>Delete Permanently</button>` : `<button type="button" data-asset-action="preview" ${preview ? "" : "disabled title=\"No playable runtime audio is available for this asset.\""}>Preview</button><button type="button" data-asset-action="stop-preview" ${assetPreviewState.playing && assetPreviewState.assetId === asset.assetId ? "" : "disabled"}>Stop Preview</button><button type="button" data-asset-action="relink" ${["Audio Track", "Stem", "Recording", "Export", "Arrangement Clip", "Provider Metadata Reference"].includes(asset.assetType) ? "" : "disabled"}>${asset.assetType === "Provider Metadata Reference" ? "Link Local Audio" : "Relink"}</button><button type="button" data-asset-action="open-domain">Open ${escapeHtml(asset.owningDomain)}</button><button type="button" disabled title="Browser file handles are not available.">Reveal</button><button type="button" data-asset-action="share" ${asset.generated ? "disabled title=\"Generated assets cannot be shared automatically.\"" : ""}>${asset.shared ? "Project Owned" : "Make Shared"}</button><button type="button" class="danger-button" data-asset-action="trash" ${plan.safeToRemove ? "" : `disabled title="${escapeHtml(plan.blockers.join(", "))}"`}>Remove Safely</button>`}</div><details class="asset-advanced-only"><summary>Technical details</summary><pre>${escapeHtml(JSON.stringify({ assetId: asset.assetId, projectId: asset.projectId, sourceType: asset.sourceType, sourceId: asset.sourceId, shared: asset.shared, sharedAssetId: asset.sharedAssetId, projectReferences: asset.projectReferences, checksum: asset.checksum, checksumKind: asset.checksumKind, backendReference: asset.backendReference ? { available: true, outputId: asset.backendReference.outputId || null, jobId: asset.backendReference.jobId || null } : null, persistentReference: asset.persistentReference ? { kind: asset.persistentReference.kind, available: true } : null, objectUrlState: asset.sourceType.includes("Runtime") ? "Owned by source service; never persisted" : "None", lineage: asset.lineage, metadata: asset.metadata }, null, 2))}</pre></details>`;
+  if (asset.assetType === "Provider Metadata Reference") {
+    const actions = output.querySelector(".asset-inspector-actions");
+    actions?.insertAdjacentHTML("afterbegin", `<button type="button" data-asset-action="review-match">Review Local Matches</button>${asset.linked || asset.metadataLink?.linkedAssetId ? `<button type="button" data-asset-action="unlink-provider">Unlink Provider Metadata</button>` : ""}`);
+  }
 }
 
 async function resolveAssetPreviewBuffer(asset, seen = new Set()) {
@@ -10822,6 +10831,8 @@ async function handleAssetInspectorAction(action, button) {
   try {
     if (asset.sharedOwnerProjectId && !["open-domain"].includes(action)) throw new Error("This is a read-only shared reference. Open its owner project to modify or relink it.");
     if (action === "preview") await playAssetPreview(asset.assetId); if (action === "stop-preview") stopAssetPreview();
+    if (action === "review-match") { const source = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]").find((item) => item.providerId === asset.providerReference?.provider && item.providerTrackId === asset.providerReference?.externalId); if (!source) throw new Error("The DITC provider reference could not be found."); openLocalMatchReview(source); }
+    if (action === "unlink-provider" && window.confirm(`Unlink local audio from ${asset.displayName}? The local asset and provider metadata will both be preserved.`)) { const source = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]").find((item) => item.providerId === asset.providerReference?.provider && item.providerTrackId === asset.providerReference?.externalId); if (!source) throw new Error("The DITC provider reference could not be found."); LocalLibraries.unlinkLocalMatch(localLibraryReference(source).referenceId, { projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null }); }
     if (action === "relink") { assetManagerState.pendingRelinkAssetId = asset.assetId; const input = document.querySelector("#assetRelinkInput"); input.value = ""; input.click(); }
     if (action === "open-domain") openAssetOwningDomain(asset);
     if (action === "share") ProjectAssets.markShared(asset.assetId, !asset.shared, ACTIVE_PROJECT_ID);
@@ -10867,6 +10878,28 @@ function setupProviderEvents() {
   document.querySelector("#providerSettingsList")?.addEventListener("click", async (event) => { const button = event.target.closest("[data-provider-connection-action]"); const card = button?.closest("[data-provider-settings-card]"); if (!button || !card) return; const providerId = card.dataset.providerSettingsCard; const action = button.dataset.providerConnectionAction; try { if (action === "connect") await ProviderConnections.connectProvider(providerId); if (action === "disconnect") await ProviderConnections.disconnectProvider(providerId); if (action === "refresh") await ProviderConnections.refreshProvider(providerId); if (action === "test") { const result = await ProviderConnections.testProviderConnection(providerId); document.querySelector("#providerBrowserStatus").textContent = result.success ? `${ProviderRegistry.getProvider(providerId).definition.displayName} connection test passed.` : `${ProviderRegistry.getProvider(providerId).definition.displayName} requires attention.`; } } catch (error) { providerBrowserState.lastError = error.userMessage || error.message; document.querySelector("#providerBrowserStatus").textContent = providerBrowserState.lastError; } renderProviderSettings(providerId); renderConnectedMusicBrowser(); });
   document.querySelector("#clearProviderCache")?.addEventListener("click", () => { ProviderFoundation.clearSearchCache(); document.querySelector("#providerBrowserStatus").textContent = "Provider search metadata cache cleared. Imported DITC records were preserved."; });
   ProviderRegistry.subscribeToProviderRegistry(() => { if (document.querySelector("#sources")?.classList.contains("is-active")) requestAnimationFrame(renderConnectedMusicBrowser); });
+}
+
+function setupLocalLibraryEvents() {
+  const chooseForLibrary = (library) => { localLibraryState.pendingRelinkLibraryId = library?.libraryId || null; const input = document.querySelector(library?.libraryType === "Selected Folder" || library?.libraryType === "External Drive" || library?.libraryType === "Apple Music Local Files" ? "#ditcFolderInput" : "#ditcFileInput"); input.value = ""; input.click(); };
+  document.querySelector("#localLibrarySettingsOpen")?.addEventListener("click", () => openLocalLibrarySettings());
+  document.querySelector("#localLibraryPanel")?.addEventListener("click", (event) => { const emptyAction = event.target.closest("[data-local-library-empty-action]")?.dataset.localLibraryEmptyAction; if (emptyAction === "folder") document.querySelector("#ditcFolderInput").click(); if (emptyAction === "files") document.querySelector("#ditcFileInput").click(); if (emptyAction === "playlist") document.querySelector("#localPlaylistInput").click(); if (emptyAction === "assets") { try { LocalLibraries.createExistingAssetsLibrary({ projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null }); renderLocalLibraryPanel(); } catch (error) { localLibraryState.lastError = error.message; renderLocalLibraryPanel(); } } if (emptyAction === "apple") { document.querySelector("#localLibraryStatus").textContent = "Apple Music local files are supported only when you explicitly select accessible, unprotected audio or an implemented playlist export. Cloud-only and DRM-protected items remain metadata only."; } const card = event.target.closest("[data-local-library-id]"); const action = event.target.closest("[data-local-library-action]")?.dataset.localLibraryAction; if (card && action === "settings") openLocalLibrarySettings(card.dataset.localLibraryId); if (card && action === "reauthorize") chooseForLibrary(LocalLibraries.getLocalLibrary(card.dataset.localLibraryId)); });
+  document.querySelector("#localLibraryRefreshAll")?.addEventListener("click", () => { const results = LocalLibraries.listLocalLibraries().map((library) => LocalLibraries.validateLibraryPermission(library.libraryId)); const required = results.filter((result) => result.permissionState !== "Granted" && result.permissionState !== "Not Applicable").length; document.querySelector("#localLibraryStatus").textContent = required ? `${required} librar${required === 1 ? "y requires" : "ies require"} reauthorization. Indexed metadata was preserved.` : "All available local-library permissions were validated."; renderLocalLibraryPanel(); renderLocalLibrarySettings(); });
+  document.querySelectorAll("[data-local-library-settings-close]").forEach((button) => button.addEventListener("click", () => document.querySelector("#localLibrarySettingsDialog")?.close()));
+  document.querySelector("#localLibrarySearch")?.addEventListener("input", (event) => { localLibraryState.search = event.target.value; renderLocalLibrarySettings(); });
+  document.querySelector("#localLibraryFilter")?.addEventListener("change", (event) => { localLibraryState.filter = event.target.value; renderLocalLibrarySettings(); });
+  document.querySelector("#bulkMatchLocalLibrary")?.addEventListener("click", bulkMatchProjectReferences);
+  document.querySelector("#localLibrarySettingsList")?.addEventListener("click", async (event) => { const button = event.target.closest("[data-local-library-action]"); const card = button?.closest("[data-local-library-id]"); if (!button || !card) return; const library = LocalLibraries.getLocalLibrary(card.dataset.localLibraryId); try { if (button.dataset.localLibraryAction === "refresh") { const result = await LocalLibraries.refreshLibrary(library.libraryId, { projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null }); if (result.status === "Permission Required") chooseForLibrary(library); } if (button.dataset.localLibraryAction === "rebuild") { const result = await LocalLibraries.rebuildLibrary(library.libraryId, { projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null }); if (result.status === "Permission Required" || result.status === "Failed") chooseForLibrary(library); } if (button.dataset.localLibraryAction === "reauthorize") chooseForLibrary(library); if (button.dataset.localLibraryAction === "export") downloadArrangementFile(LocalLibraries.exportLibraryIndex(library.libraryId), `${sanitizeFileName(library.displayName)}-local-library.json`, "application/json"); if (button.dataset.localLibraryAction === "remove" && window.confirm(`Remove the ${library.displayName} index? Source files will not be deleted and project assets will be preserved.`)) LocalLibraries.removeLocalLibrary(library.libraryId); } catch (error) { localLibraryState.lastError = error.message; } renderLocalLibraryPanel(); renderLocalLibrarySettings(); });
+  document.querySelector("#localLibraryTrackResults")?.addEventListener("click", async (event) => { const row = event.target.closest("[data-local-track-id]"); const action = event.target.closest("[data-local-track-action]")?.dataset.localTrackAction; if (!row || !action) return; const track = LocalLibraries.getLocalTrack(row.dataset.localTrackId); const source = sourceFiles.find((item) => item.localTrackId === track.localTrackId); if (action === "preview" && source) await handleSourceFileAction("preview", source.id); if (action === "asset") { const reference = track.assetReferences.find((item) => item.projectId === ACTIVE_PROJECT_ID); if (reference) { assetManagerState.selectedAssetId = reference.assetId; await openProjectAssetManager(ACTIVE_PROJECT_ID); } else localLibraryState.lastError = "This track is not registered as an asset in the active project."; } });
+  document.querySelector("#localPlaylistInput")?.addEventListener("change", async (event) => { const file = event.target.files[0]; if (!file) return; try { const library = LocalLibraries.importPlaylist({ name: file.name, type: file.name.split(".").pop(), data: await file.text() }); document.querySelector("#localLibraryStatus").textContent = `Imported ${library.fileCount} playlist metadata entr${library.fileCount === 1 ? "y" : "ies"}. Select the matching audio folder to make them playable.`; } catch (error) { localLibraryState.lastError = error.message; } event.target.value = ""; renderLocalLibraryPanel(); renderLocalLibrarySettings(); });
+  document.querySelector("#importLocalLibraryIndex")?.addEventListener("click", () => document.querySelector("#localLibraryIndexInput").click());
+  document.querySelector("#localLibraryIndexInput")?.addEventListener("change", async (event) => { const file = event.target.files[0]; if (!file) return; try { const library = LocalLibraries.importLibraryIndex(await file.text()); document.querySelector("#localLibraryStatus").textContent = `Imported ${library.fileCount} sanitized index entr${library.fileCount === 1 ? "y" : "ies"}. Reauthorize its files before playback.`; } catch (error) { localLibraryState.lastError = error.message; } event.target.value = ""; renderLocalLibraryPanel(); renderLocalLibrarySettings(); });
+  document.querySelectorAll("[data-local-match-close]").forEach((button) => button.addEventListener("click", () => document.querySelector("#localMatchReviewDialog")?.close()));
+  document.querySelector("#localMatchCandidates")?.addEventListener("click", async (event) => { const row = event.target.closest("[data-local-track-id]"); const action = event.target.closest("[data-local-match-action]")?.dataset.localMatchAction; if (!row || !action) return; try { if (action === "preview") { const source = sourceFiles.find((item) => item.localTrackId === row.dataset.localTrackId); if (!source) throw new Error("Local audio permission is unavailable. Reauthorize the library first."); await handleSourceFileAction("preview", source.id); } if (action === "confirm") await confirmReviewedLocalMatch(row.dataset.localTrackId); if (action === "reject") { LocalLibraries.rejectLocalMatch(localLibraryState.pendingMatchReference.referenceId, row.dataset.localTrackId, { projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null }); localLibraryState.pendingMatchCandidates = localLibraryState.pendingMatchCandidates.filter((item) => item.track.localTrackId !== row.dataset.localTrackId); renderLocalMatchReview(); } } catch (error) { document.querySelector("#localMatchStatus").textContent = error.message; } });
+  document.querySelector("#localMatchChooseFile")?.addEventListener("click", () => { const reference = localLibraryState.pendingMatchReference; const asset = reference && localLibraryAssetForReference(reference); if (!asset) { document.querySelector("#localMatchStatus").textContent = "The provider metadata asset could not be found."; return; } assetManagerState.pendingRelinkAssetId = asset.assetId; const input = document.querySelector("#assetRelinkInput"); input.value = ""; input.click(); });
+  document.querySelector("#localMatchKeepMetadata")?.addEventListener("click", () => { document.querySelector("#localMatchStatus").textContent = "Kept as metadata only. No playable source was created."; document.querySelector("#localMatchReviewDialog")?.close(); });
+  LocalLibraries.subscribe((event) => { if (event.type === "index-started") { localLibraryState.activeJobId = event.detail.jobId; const output = document.querySelector("#localLibraryJob"); output.hidden = false; output.textContent = `Indexing ${event.detail.filesDiscovered || "selected"} files. Counts update from real processed items.`; } if (["index-completed", "index-failed"].includes(event.type)) { localLibraryState.activeJobId = null; const output = document.querySelector("#localLibraryJob"); output.hidden = true; } renderLocalLibraryPanel(); });
+  renderLocalLibraryPanel();
 }
 
 const projectLibraryState = { search: "", sort: "Recently Opened", filter: "All", selectedProjectId: null };
@@ -11067,12 +11100,8 @@ function setupDropZone(element, onFileDrop) {
       return;
     }
     if (element.id === "sourceDrop" && files.length) {
-      const imported = files.filter((file) => addLocalSourceFile(file, { folderPath: fileFolderPath(file), silent: true })).length;
-      ditcState.lastImportResult = `Imported ${imported} of ${files.length} dropped audio files`;
-      setSourceStatus(imported ? `Added ${imported} audio file${imported === 1 ? "" : "s"} to DITC.` : "No new playable files were added. Duplicates were skipped.");
-      renderSources();
-      renderEditorSourceBin();
-      renderAiContext();
+      const folderSelection = files.some((file) => file.webkitRelativePath || String(fileFolderPath(file)).includes("/"));
+      await indexLocalLibrarySelection(files, folderSelection ? "Selected Folder" : "Selected Files");
       return;
     }
     if (element.id === "mixtapeReferenceDrop") {
@@ -12124,16 +12153,23 @@ function setupEvents() {
     event.currentTarget.setAttribute("aria-pressed", ditcState.comfortable ? "true" : "false");
     event.currentTarget.textContent = ditcState.comfortable ? "Compact View" : "Comfortable View";
   });
-  const importDitcFiles = (files) => {
-    const accepted = [...files].filter((file) => addLocalSourceFile(file, { folderPath: fileFolderPath(file), silent: true })).length;
-    ditcState.lastImportResult = `Imported ${accepted} of ${files.length} selected files`;
-    setSourceStatus(accepted ? `Added ${accepted} track${accepted === 1 ? "" : "s"} to DITC.` : "No new playable files were added.");
-    renderSources();
-    renderEditorSourceBin();
-    renderAiContext();
+  const importDitcFiles = async (files, libraryType) => {
+    const selection = [...files];
+    if (!selection.length) return;
+    try {
+      const result = await indexLocalLibrarySelection(selection, libraryType, localLibraryState.pendingRelinkLibraryId);
+      ditcState.lastImportResult = `Indexed ${result.filesIndexed} of ${result.filesDiscovered} selected files`;
+      setSourceStatus(result.filesIndexed ? `Indexed ${result.filesIndexed} track${result.filesIndexed === 1 ? "" : "s"}; playable formats are available in DITC.` : "No supported local audio was indexed.");
+    } catch (error) {
+      localLibraryState.lastError = error.message;
+      setSourceStatus(`Local-library indexing failed: ${error.message}`);
+    } finally {
+      localLibraryState.pendingRelinkLibraryId = null;
+      renderSources(); renderEditorSourceBin(); renderAiContext();
+    }
   };
-  document.querySelector("#ditcFileInput").addEventListener("change", (event) => importDitcFiles(event.target.files));
-  document.querySelector("#ditcFolderInput").addEventListener("change", (event) => importDitcFiles(event.target.files));
+  document.querySelector("#ditcFileInput").addEventListener("change", async (event) => { await importDitcFiles(event.target.files, "Selected Files"); event.target.value = ""; });
+  document.querySelector("#ditcFolderInput").addEventListener("change", async (event) => { await importDitcFiles(event.target.files, "Selected Folder"); event.target.value = ""; });
   document.querySelector("#ditcApplyBatchTag").addEventListener("click", () => {
     const tag = document.querySelector("#ditcBatchTag").value.trim();
     if (!tag || !crateSelection.local.size) {
@@ -12307,6 +12343,10 @@ function persistDitcTrack(track) {
       artist: track.artist || "",
       album: track.album || "",
       year: track.year || "",
+      genre: track.genre || "",
+      version: track.version || "Original",
+      isrc: track.isrc || null,
+      explicitState: track.explicitState || "Unknown",
       analysis: track.analysis || null
     };
     localStorage.setItem(DITC_METADATA_KEY, JSON.stringify(metadata));
@@ -12341,15 +12381,20 @@ function addLocalSourceFile(file, options = {}) {
   }
   const inferred = inferDitcMetadata(file.name);
   const saved = readDitcMetadata()[storageId] || {};
+  const indexed = options.metadata || {};
   sourceFiles.unshift({
     id: createId(),
     projectId: ACTIVE_PROJECT_ID,
     storageId,
     name: file.name,
-    title: saved.title || inferred.title,
-    artist: saved.artist || inferred.artist,
-    album: saved.album || inferred.album,
-    year: saved.year || "",
+    title: saved.title || indexed.title || inferred.title,
+    artist: saved.artist || indexed.artist || inferred.artist,
+    album: saved.album || indexed.album || inferred.album,
+    year: saved.year || indexed.year || "",
+    genre: saved.genre || indexed.genre || "",
+    version: saved.version || indexed.version || "Original",
+    isrc: saved.isrc || indexed.isrc || null,
+    explicitState: saved.explicitState || indexed.explicitState || "Unknown",
     folderPath,
     file,
     buffer: options.buffer || null,
@@ -12359,10 +12404,15 @@ function addLocalSourceFile(file, options = {}) {
     favorite: Boolean(saved.favorite),
     addedAt: Date.now(),
     padReady: false,
-    stemReady: false
+    stemReady: false,
+    libraryId: options.libraryId || null,
+    localTrackId: options.localTrackId || null,
+    permissionState: options.permissionState || "Granted",
+    decodeSupport: options.decodeSupport || "Verified on first use",
+    metadataProvenance: indexed.metadataProvenance || null
   });
   const registered = sourceFiles[0];
-  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Audio Track", sourceType: "Local File", sourceId: registered.id, displayName: registered.name, originalFilename: file.name, mimeType: file.type, sizeBytes: file.size, duration: registered.buffer?.duration || null, persistentReference: { kind: "browser-file-metadata", key: registered.storageId }, references: [assetReference("DITC", registered.id, registered.title || registered.name, "Crate audio", true)], linked: true, missing: false, relinkRequired: false, metadata: { title: registered.title, artist: registered.artist, album: registered.album, tags: registered.tags, lastModified: file.lastModified } });
+  ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "DITC", createdBy: "user", assetType: "Audio Track", sourceType: options.libraryId ? "Indexed Local File" : "Local File", sourceId: registered.id, displayName: registered.name, originalFilename: file.name, mimeType: file.type, sizeBytes: file.size, duration: registered.buffer?.duration || indexed.duration || null, persistentReference: { kind: "browser-file-metadata", key: registered.storageId, libraryId: registered.libraryId, localTrackId: registered.localTrackId, durable: false }, references: [assetReference("DITC", registered.id, registered.title || registered.name, "Crate audio", true)], linked: true, missing: false, relinkRequired: false, metadata: { title: registered.title, artist: registered.artist, album: registered.album, version: registered.version, isrc: registered.isrc, explicitState: registered.explicitState, genre: registered.genre, tags: registered.tags, lastModified: file.lastModified, libraryId: registered.libraryId, localTrackId: registered.localTrackId, permissionState: registered.permissionState, decodeSupport: registered.decodeSupport, metadataProvenance: registered.metadataProvenance } });
   ditcState.lastImportResult = `Imported ${file.name}`;
   if (!options.silent) {
     setSourceStatus(`Added ${file.name} to DITC.`);
@@ -12635,7 +12685,7 @@ async function handleSavedSourceAction(action, index) {
     return;
   }
   if (action === "external") { const target = item.providerUrl || (/^https?:/i.test(item.url || "") ? item.url : null); if (target) window.open(target, "_blank", "noopener,noreferrer"); else setSourceStatus("This metadata reference does not include a public provider URL."); return; }
-  if (action === "link") { refreshProjectAssetIndex(); const asset = ProjectAssets.list(ACTIVE_PROJECT_ID).find((candidate) => candidate.providerReference?.externalId === item.providerTrackId || candidate.sourceId === item.url); if (!asset) { setSourceStatus("The provider metadata asset could not be found. Refresh Asset Manager and try again."); return; } assetManagerState.selectedAssetId = asset.assetId; await openProjectAssetManager(ACTIVE_PROJECT_ID); return; }
+  if (action === "link") { openLocalMatchReview(item); return; }
   if (!item.linkedAssetId) { setSourceStatus(`${item.name} is ${item.playbackLabel || "Metadata Only"}. Link local audio before using Decks, preview, analysis, Pads, Smart Mix, Stem Lab, or Arrangement.`); return; }
   try {
     const asset = ProjectAssets.get(item.linkedAssetId, ACTIVE_PROJECT_ID); const buffer = await resolveAssetPreviewBuffer(asset); if (!buffer) throw new Error("Linked local audio is unavailable in this browser session.");
@@ -12884,6 +12934,53 @@ function handleAiSearchAction(action, id) {
   if (action === "deck-b") loadBufferToDeck(clip, result.label, "b");
 }
 
+function localLibraryDate(value) { return value ? new Date(value).toLocaleString() : "Never"; }
+function localLibraryReference(source) { return { referenceId: source.resultId || source.providerTrackId || source.url, resultId: source.resultId, providerId: source.providerId || providerIdFromUrl(source.url), providerTrackId: source.providerTrackId || source.url, providerUrl: source.providerUrl || source.url, title: source.title || source.name, artist: source.artist || source.uploader || source.channel || "Unknown artist", album: source.album || "", version: source.version || (/live/i.test(source.title || source.name || "") ? "Live" : "Original"), duration: source.duration ?? null, isrc: source.isrc || null, explicitState: source.explicitState || (source.explicit ? "Explicit" : "Unknown"), resultType: source.resultType || "Track" }; }
+function localLibrarySourceForReference(referenceId) { return JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]").find((source) => (source.resultId || source.providerTrackId || source.url) === referenceId) || null; }
+function localLibraryAssetForReference(reference) { return ProjectAssets.list(ACTIVE_PROJECT_ID).find((asset) => asset.assetType === "Provider Metadata Reference" && (asset.providerReference?.externalId === reference.providerTrackId || asset.sourceId === reference.providerUrl || asset.sourceId === reference.referenceId)); }
+
+function renderLocalLibraryPanel() {
+  const cards = document.querySelector("#localLibraryCards"); if (!cards) return; const libraries = LocalLibraries.listLocalLibraries(); const empty = document.querySelector("#localLibraryEmpty"); if (empty) empty.hidden = libraries.length > 0;
+  cards.innerHTML = libraries.map((library) => `<article class="local-library-card" data-local-library-id="${escapeHtml(library.libraryId)}"><header><div><h4>${escapeHtml(library.displayName)}</h4><p>${escapeHtml(library.libraryType)}</p></div><span data-library-status="${escapeHtml(library.status)}">${escapeHtml(library.status)}</span></header><div class="local-library-counts"><span>${library.fileCount} indexed</span><span>${library.playableFileCount} playable</span><span>${library.missingFileCount} missing</span><span>${library.duplicateCount} duplicate candidate${library.duplicateCount === 1 ? "" : "s"}</span></div><p>${escapeHtml(library.permissionState)} · Manual Refresh Required</p><div><button type="button" data-local-library-action="settings">Manage</button>${library.permissionState !== "Granted" ? `<button type="button" data-local-library-action="reauthorize">Reauthorize</button>` : ""}</div></article>`).join("");
+  const status = document.querySelector("#localLibraryStatus"); if (status && !localLibraryState.lastError) status.textContent = libraries.length ? `${libraries.length} local librar${libraries.length === 1 ? "y" : "ies"}; ${libraries.reduce((sum, item) => sum + item.playableFileCount, 0)} playable file${libraries.reduce((sum, item) => sum + item.playableFileCount, 0) === 1 ? "" : "s"} in this browser session.` : "Choose where DeckForge should look for your music.";
+  if (status && localLibraryState.lastError) status.textContent = localLibraryState.lastError;
+  const diagnostics = document.querySelector("#localLibraryDiagnosticsOutput"); if (diagnostics && DECKFORGE_DEVELOPMENT) diagnostics.textContent = JSON.stringify(LocalLibraries.diagnostics({ projectId: ACTIVE_PROJECT_ID }), null, 2);
+}
+
+function renderLocalLibrarySettings() {
+  const libraries = LocalLibraries.listLocalLibraries(); const output = document.querySelector("#localLibrarySettingsList"); if (!output) return;
+  output.innerHTML = libraries.map((library) => `<section class="local-library-settings-card" data-local-library-id="${escapeHtml(library.libraryId)}"><header><div><h3>${escapeHtml(library.displayName)}</h3><p>${escapeHtml(library.libraryType)} · ${escapeHtml(library.status)}</p></div><span>${escapeHtml(library.permissionState)}</span></header><dl><dt>Roots</dt><dd>${library.rootReferences.length ? library.rootReferences.map((root) => `${escapeHtml(root.displayName)} (${escapeHtml(root.permissionState)})`).join("<br>") : "No durable root handle"}</dd><dt>Indexed</dt><dd>${library.fileCount}</dd><dt>Playable</dt><dd>${library.playableFileCount}</dd><dt>Unsupported</dt><dd>${library.unsupportedFileCount}</dd><dt>Missing</dt><dd>${library.missingFileCount}</dd><dt>Duplicates</dt><dd>${library.duplicateCount}</dd><dt>Last indexed</dt><dd>${escapeHtml(localLibraryDate(library.lastIndexedAt))}</dd><dt>Watching</dt><dd>${escapeHtml(library.watchCapability)}</dd></dl><p>${escapeHtml(library.privacySummary)}</p><div class="local-library-settings-actions"><button type="button" data-local-library-action="refresh">Refresh</button><button type="button" data-local-library-action="rebuild">Rebuild</button><button type="button" data-local-library-action="reauthorize">Reauthorize</button><button type="button" data-local-library-action="export">Export Index</button><button type="button" class="danger-button" data-local-library-action="remove">Remove Library</button></div></section>`).join("") || `<div class="local-library-empty"><strong>No local library index exists.</strong><span>Use the DITC Local Music panel to select files or a folder.</span></div>`;
+  let tracks;
+  if (localLibraryState.filter === "Version Conflicts") {
+    const conflictIds = new Set(JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]").flatMap((source) => LocalLibraries.findLocalMatches(localLibraryReference(source), { projectId: ACTIVE_PROJECT_ID }).filter((candidate) => candidate.match.confidence === "Version Conflict").map((candidate) => candidate.track.localTrackId)));
+    tracks = LocalLibraries.searchLocalLibrary(localLibraryState.search, { filter: "All Tracks" }).filter((track) => conflictIds.has(track.localTrackId));
+  } else tracks = LocalLibraries.searchLocalLibrary(localLibraryState.search, { filter: localLibraryState.filter });
+  const trackOutput = document.querySelector("#localLibraryTrackResults");
+  const trackRows = tracks.map((track) => `<article class="local-library-track" data-local-track-id="${escapeHtml(track.localTrackId)}" tabindex="0"><div><strong>${escapeHtml(track.title)}</strong><span>${escapeHtml(track.artist)} · ${escapeHtml(track.album)}</span><small>${escapeHtml(track.fileName)} · ${escapeHtml(track.libraryName)}</small></div><span>${escapeHtml(track.version)}</span><span>${track.duration == null ? "Duration unknown" : formatTime(track.duration)}</span><span>${track.playable ? "Playable" : track.missing ? "Missing / Reauthorize" : escapeHtml(track.decodeSupport)}</span><div>${track.playable ? `<button type="button" data-local-track-action="preview">Preview</button>` : ""}<button type="button" data-local-track-action="asset">Asset Manager</button></div></article>`).join("");
+  trackOutput.innerHTML = `<h3>Indexed Tracks (${tracks.length})</h3>${trackRows || `<p class="fine-print">No indexed tracks match this search and filter.</p>`}`;
+}
+
+async function indexLocalLibrarySelection(files, libraryType = "Selected Files", existingLibraryId = null) {
+  const list = Array.from(files || []); if (!list.length) return; const folderName = list[0]?.webkitRelativePath?.split("/")[0] || ""; let libraryId = existingLibraryId;
+  if (!libraryId) { const library = LocalLibraries.createLocalLibrary({ displayName: libraryType === "Selected Folder" ? folderName || "Selected Music Folder" : `Selected Audio Files · ${new Date().toLocaleDateString()}`, libraryType, status: "Indexing", permissionState: "Granted", rootReferences: [{ displayName: folderName || `${list.length} selected file${list.length === 1 ? "" : "s"}`, referenceType: libraryType === "Selected Folder" ? "Browser Folder Selection" : "Browser File Selection", permissionState: "Granted", available: true, persistentReference: { kind: "browser-selection-metadata", durable: false, relativePrefix: folderName } }] }); libraryId = library.libraryId; }
+  localLibraryState.lastError = null; const result = existingLibraryId ? await LocalLibraries.relinkLibraryRoot(libraryId, { files: list, projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null, pathForFile: fileFolderPath }) : await LocalLibraries.indexLibrary(libraryId, { files: list, projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null, pathForFile: fileFolderPath }); localLibraryState.activeJobId = null;
+  if (result.status === "Failed") localLibraryState.lastError = result.error; else setSourceStatus(`Indexed ${result.filesIndexed} file${result.filesIndexed === 1 ? "" : "s"}; ${result.duplicatesFound} duplicate${result.duplicatesFound === 1 ? "" : "s"} found; ${result.filesSkipped} unavailable or skipped.`);
+  renderLocalLibraryPanel(); renderLocalLibrarySettings(); renderSources(); renderEditorSourceBin(); renderAiContext();
+}
+
+function openLocalLibrarySettings(libraryId = null) { localLibraryState.selectedLibraryId = libraryId; renderLocalLibrarySettings(); const dialog = document.querySelector("#localLibrarySettingsDialog"); if (!dialog.open) dialog.showModal(); if (libraryId) requestAnimationFrame(() => dialog.querySelector(`[data-local-library-id="${CSS.escape(libraryId)}"]`)?.scrollIntoView({ block: "start" })); }
+
+function renderLocalMatchReview() {
+  const reference = localLibraryState.pendingMatchReference; const candidates = localLibraryState.pendingMatchCandidates; if (!reference) return; const summary = document.querySelector("#localMatchReference"); summary.innerHTML = `<article class="local-match-reference"><span>Provider metadata</span><strong>${escapeHtml(reference.title)}</strong><p>${escapeHtml(reference.artist)}${reference.album ? ` · ${escapeHtml(reference.album)}` : ""} · ${escapeHtml(reference.version || "Original")}${reference.duration == null ? "" : ` · ${formatTime(reference.duration)}`}</p><small>${escapeHtml(ProviderRegistry.getProvider(reference.providerId)?.definition.displayName || reference.providerId)}</small></article>`;
+  const output = document.querySelector("#localMatchCandidates"); output.innerHTML = candidates.length ? candidates.map(({ track, match }) => `<article class="local-match-candidate" data-local-track-id="${escapeHtml(track.localTrackId)}"><div><strong>${escapeHtml(track.title)}</strong><p>${escapeHtml(track.artist)} · ${escapeHtml(track.album)} · ${escapeHtml(track.version)}</p><small>${escapeHtml(track.fileName)}${track.duration == null ? "" : ` · ${formatTime(track.duration)}`}</small></div><span class="local-match-confidence" data-confidence="${escapeHtml(match.confidence)}">${escapeHtml(match.confidence)}</span><details><summary>Evidence</summary><ul>${match.evidence.map((item) => `<li>${escapeHtml(item.signal)}: ${escapeHtml(item.state)} (${item.weight})</li>`).join("")}${match.conflicts.map((item) => `<li>Conflict: ${escapeHtml(item)}</li>`).join("")}</ul><small>Deterministic score: ${match.score}</small></details><div><button type="button" data-local-match-action="preview" ${track.playable ? "" : "disabled title=\"Local audio permission is required.\""}>Preview Local</button><button type="button" data-local-match-action="confirm">${match.confidence === "Exact Match" ? "Confirm Match" : "Confirm After Review"}</button><button type="button" data-local-match-action="reject">Reject Match</button></div></article>`).join("") : `<div class="local-library-empty"><strong>No local match found.</strong><span>Select a different file or keep this item as metadata only.</span></div>`;
+}
+
+function openLocalMatchReview(source) { const reference = localLibraryReference(source); localLibraryState.pendingMatchReference = reference; localLibraryState.pendingMatchCandidates = LocalLibraries.findLocalMatches(reference, { projectId: ACTIVE_PROJECT_ID }).slice(0, 12); document.querySelector("#localMatchStatus").textContent = localLibraryState.pendingMatchCandidates.length ? "Review evidence before confirming. Conflicting versions are never selected automatically." : "No candidate was found in the indexed local libraries."; renderLocalMatchReview(); const dialog = document.querySelector("#localMatchReviewDialog"); if (!dialog.open) dialog.showModal(); }
+
+async function confirmReviewedLocalMatch(localTrackId) { const reference = localLibraryState.pendingMatchReference; if (!reference) return; const result = LocalLibraries.confirmLocalMatch(reference, localTrackId, { projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null, userConfirmed: true }); document.querySelector("#localMatchStatus").textContent = `${reference.title} is linked to local audio as ${result.match.confidence}.`; refreshProjectAssetIndex(); renderSources(); renderAssetManager(); renderLocalLibraryPanel(); }
+
+async function bulkMatchProjectReferences() { const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]").filter((source) => !source.linkedAssetId); if (!sources.length) { document.querySelector("#localLibraryStatus").textContent = "No unlinked provider references are available to match."; return; } const result = await LocalLibraries.bulkMatch(sources.map(localLibraryReference), { projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null }); if (result.status === "Cancelled") { localLibraryState.lastError = result.error; renderLocalLibraryPanel(); return; } if (result.exact.length && window.confirm(`Confirm ${result.exact.length} exact local match${result.exact.length === 1 ? "" : "es"}? ${result.review.length} uncertain candidate${result.review.length === 1 ? "" : "s"} will remain for review.`)) result.exact.forEach((item) => LocalLibraries.confirmLocalMatch(item.reference, item.track.localTrackId, { projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null, userConfirmed: true })); document.querySelector("#localLibraryStatus").textContent = `${result.exact.length} exact, ${result.review.length} require review, ${result.unmatched.length} unmatched.`; refreshProjectAssetIndex(); renderSources(); renderLocalLibrarySettings(); }
+
 function providerIdsForFilter(filter = providerBrowserState.filter) {
   const providers = ProviderRegistry.listProviders({ enabled: true });
   if (filter === "all") return providers.map((provider) => provider.providerId);
@@ -12966,7 +13063,7 @@ async function handleProviderResultAction(action, groupId) {
     if (action === "import") { await ProviderSearch.importResult(providerBrowserState.searchId, groupId, ACTIVE_PROJECT_ID); setSourceStatus(`${group.title} added to DITC as ${source.playbackLabel}.`); }
     if (action === "external" && source.providerUrl) window.open(source.providerUrl, "_blank", "noopener,noreferrer");
     if (action === "preview") { if (source.providerId === "local-files") await handleSourceFileAction("preview", source.providerTrackId); else throw new Error("This provider does not expose a supported preview source."); }
-    if (action === "link") { await ProviderSearch.importResult(providerBrowserState.searchId, groupId, ACTIVE_PROJECT_ID); refreshProjectAssetIndex(); const asset = ProjectAssets.list(ACTIVE_PROJECT_ID).find((item) => item.providerReference?.externalId === source.providerTrackId && item.providerReference?.provider === source.providerId); if (!asset) throw new Error("Provider metadata asset could not be created."); assetManagerState.selectedAssetId = asset.assetId; await openProjectAssetManager(ACTIVE_PROJECT_ID); }
+    if (action === "link") { await ProviderSearch.importResult(providerBrowserState.searchId, groupId, ACTIVE_PROJECT_ID); const saved = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]").find((item) => item.providerId === source.providerId && item.providerTrackId === source.providerTrackId); if (!saved) throw new Error("Provider metadata reference could not be created."); openLocalMatchReview(saved); }
   } catch (error) { providerBrowserState.lastError = error.userMessage || error.message; setSourceStatus(providerBrowserState.lastError); }
   renderConnectedMusicBrowser();
 }
@@ -12992,6 +13089,7 @@ function renderSources() {
   renderDitcInspector();
   renderDitcDiagnostics();
   renderConnectedMusicBrowser();
+  renderLocalLibraryPanel();
   updateSmartMixSourceOptions();
 }
 
@@ -13100,8 +13198,8 @@ function renderDitcTrackRow(source) {
 function renderDitcReferenceRow(source, index) {
   const row = document.createElement("article");
   row.className = "ditc-track-row";
-  const providerId = source.providerId || providerIdFromUrl(source.url); const provider = ProviderRegistry.getProvider(providerId)?.definition; const linked = Boolean(source.linkedAssetId); const playbackState = linked ? "Local Audio Linked" : source.playbackCapability || (/^https?:/i.test(source.providerUrl || source.url || "") ? "External Playback" : "Metadata Only"); const playbackLabel = ProviderFoundation.normalizeResult({ providerId, providerTrackId: source.providerTrackId || source.url, title: source.name, playbackCapability: playbackState }).playbackLabel; const external = /^https?:/i.test(source.providerUrl || source.url || "");
-  row.innerHTML = `<label><input type="checkbox" data-crate-kind="saved" data-crate-id="${index}" ${crateSelection.saved.has(String(index)) ? "checked" : ""}></label><span class="ditc-artwork" aria-hidden="true">↗</span><div><strong>${escapeHtml(source.title || source.name)}</strong><span class="ditc-track-subtitle">${escapeHtml(source.artist || provider?.displayName || detectPlatform(source.url))}${source.album ? ` · ${escapeHtml(source.album)}` : ""}</span></div><span class="ditc-cell ditc-optional">${escapeHtml(playbackLabel)}</span><span class="ditc-cell">${source.analysis?.bpm || "N/A"} BPM</span><span class="ditc-cell">${escapeHtml(source.analysis?.key || "N/A")}</span><span class="ditc-cell ditc-optional">${source.duration ? formatTime(source.duration) : "Unknown"}<br>${escapeHtml(provider?.displayName || detectPlatform(source.url))}</span><div class="ditc-row-actions">${linked ? `<button data-source-action="preview" data-source-index="${index}" title="Preview linked local audio">▶</button><button data-source-action="deck-a" data-source-index="${index}" title="Load linked audio to Deck A">A</button><button data-source-action="deck-b" data-source-index="${index}" title="Load linked audio to Deck B">B</button>` : `${external ? `<button data-source-action="external" data-source-index="${index}" title="Open on ${escapeHtml(provider?.displayName || "provider")}">↗</button>` : ""}<button data-source-action="link" data-source-index="${index}" title="Link a local audio asset">Link</button>`}<button data-source-action="delete" data-source-index="${index}" title="Delete reference">×</button></div>`;
+  const providerId = source.providerId || providerIdFromUrl(source.url); const provider = ProviderRegistry.getProvider(providerId)?.definition; const linked = Boolean(source.linkedAssetId); const playbackState = linked ? "Local Audio Linked" : source.playbackCapability || (/^https?:/i.test(source.providerUrl || source.url || "") ? "External Playback" : "Metadata Only"); const candidate = !linked && LocalLibraries ? LocalLibraries.findLocalMatches(localLibraryReference(source), { projectId: ACTIVE_PROJECT_ID })[0] : null; const suggestionLabel = candidate ? ["Version Conflict", "Duration Conflict", "Artist Conflict"].includes(candidate.match.confidence) ? candidate.match.confidence : "Local Match Suggested" : null; const playbackLabel = suggestionLabel || ProviderFoundation.normalizeResult({ providerId, providerTrackId: source.providerTrackId || source.url, title: source.name, playbackCapability: playbackState }).playbackLabel; const external = /^https?:/i.test(source.providerUrl || source.url || "");
+  row.innerHTML = `<label><input type="checkbox" data-crate-kind="saved" data-crate-id="${index}" ${crateSelection.saved.has(String(index)) ? "checked" : ""}></label><span class="ditc-artwork" aria-hidden="true">↗</span><div><strong>${escapeHtml(source.title || source.name)}</strong><span class="ditc-track-subtitle">${escapeHtml(source.artist || provider?.displayName || detectPlatform(source.url))}${source.album ? ` · ${escapeHtml(source.album)}` : ""}</span></div><span class="ditc-cell ditc-optional">${escapeHtml(playbackLabel)}</span><span class="ditc-cell">${source.analysis?.bpm || "N/A"} BPM</span><span class="ditc-cell">${escapeHtml(source.analysis?.key || "N/A")}</span><span class="ditc-cell ditc-optional">${source.duration ? formatTime(source.duration) : "Unknown"}<br>${escapeHtml(provider?.displayName || detectPlatform(source.url))}</span><div class="ditc-row-actions">${linked ? `<button data-source-action="preview" data-source-index="${index}" title="Preview linked local audio">▶</button><button data-source-action="deck-a" data-source-index="${index}" title="Load linked audio to Deck A">A</button><button data-source-action="deck-b" data-source-index="${index}" title="Load linked audio to Deck B">B</button>` : `${external ? `<button data-source-action="external" data-source-index="${index}" title="Open on ${escapeHtml(provider?.displayName || "provider")}">↗</button>` : ""}<button data-source-action="link" data-source-index="${index}" title="${candidate ? "Review deterministic local-match evidence" : "Choose local audio"}">${candidate ? "Review Match" : "Link Local Audio"}</button>`}<button data-source-action="delete" data-source-index="${index}" title="Delete reference">×</button></div>`;
   return row;
 }
 
@@ -13239,6 +13337,37 @@ async function initializeProjectEntryFlow() {
 }
 
 projectRuntimeDefaults = captureProjectRuntimeDefaults();
+LocalLibraries.configureRuntimeBridge({
+  ownsProject: (projectId, contextVersion) => ProjectRegistry.owns(projectId, contextVersion),
+  registerTrack: (track, file, projectId, options = {}) => {
+    if (!ProjectRegistry.owns(projectId, options.contextVersion ?? null)) throw new Error("Local track belongs to a stale project context.");
+    let source = sourceFiles.find((item) => item.localTrackId === track.localTrackId);
+    if (!source) {
+      addLocalSourceFile(file, { folderPath: track.relativePath, silent: true, metadata: track, libraryId: track.libraryId, localTrackId: track.localTrackId, permissionState: track.permissionState, decodeSupport: track.decodeSupport });
+      source = sourceFiles.find((item) => item.localTrackId === track.localTrackId) || sourceFiles.find((item) => item.storageId === ditcTrackStorageId(file, track.relativePath));
+    }
+    if (!source) throw new Error("The indexed file could not be registered with DITC.");
+    if (!source.localTrackId) { source.localTrackId = track.localTrackId; source.libraryId = track.libraryId; source.permissionState = "Granted"; }
+    const asset = ProjectAssets.list(projectId).find((item) => item.owningDomain === "DITC" && item.sourceId === source.id);
+    if (!asset) throw new Error("The indexed file could not be registered with Project Asset Manager.");
+    return { sourceId: source.id, assetId: asset.assetId };
+  },
+  listExistingAssets: (projectId) => ProjectAssets.list(projectId).filter((asset) => asset.assetType === "Audio Track" && !asset.trash?.trashed),
+  confirmLink: (reference, track, assetReference, match, projectId) => {
+    const metadataAsset = localLibraryAssetForReference(reference); if (!metadataAsset) return { linked: false, error: "Provider metadata asset was not found in the active project." };
+    ProjectAssets.linkMetadata(metadataAsset.assetId, assetReference.assetId, { matchMethod: "Local Library deterministic match", matchConfidence: match.score, confidence: match.confidence, evidence: match.evidence, userConfirmed: true, originalProvider: reference.providerId, title: reference.title, artist: reference.artist, album: reference.album, version: reference.version }, projectId);
+    const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]"); const source = sources.find((item) => (item.resultId || item.providerTrackId || item.url) === reference.referenceId);
+    if (source) { Object.assign(source, { linkedAssetId: assetReference.assetId, matchMethod: "Local Library deterministic match", matchConfidence: match.confidence, matchScore: match.score, matchEvidence: match.evidence, userConfirmed: true, linkedAt: new Date().toISOString(), playbackCapability: "Local Audio Linked", playbackLabel: "Local Audio Linked", localLinkStatus: "Linked" }); localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources)); }
+    return { linked: true, metadataAssetId: metadataAsset.assetId, localAssetId: assetReference.assetId };
+  },
+  unlinkLink: (referenceId, projectId) => {
+    const source = localLibrarySourceForReference(referenceId); if (!source) return false; const reference = localLibraryReference(source); const metadataAsset = localLibraryAssetForReference(reference);
+    if (metadataAsset) ProjectAssets.update(metadataAsset.assetId, { linked: false, metadataLink: null, sourceType: source.providerUrl ? "External Source" : "Metadata Only" }, projectId);
+    const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]"); const saved = sources.find((item) => (item.resultId || item.providerTrackId || item.url) === referenceId);
+    if (saved) { Object.assign(saved, { linkedAssetId: null, matchMethod: null, matchConfidence: null, matchScore: null, matchEvidence: null, userConfirmed: false, linkedAt: null, playbackCapability: saved.providerUrl ? "External Playback" : "Metadata Only", playbackLabel: saved.providerUrl ? "Open on Provider" : "Metadata Only", localLinkStatus: "Not Linked" }); localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources)); }
+    return true;
+  }
+});
 ProviderFoundation.configureRuntimeBridge({
   listLocalTracks: () => sourceFiles.map((track) => { const asset = ACTIVE_PROJECT_ID ? ProjectAssets.list(ACTIVE_PROJECT_ID).find((item) => item.owningDomain === "DITC" && item.sourceId === track.id) : null; return { id: track.id, storageId: track.storageId, name: track.name, title: track.title, artist: track.artist, album: track.album, duration: track.buffer?.duration || track.analysis?.duration || null, buffer: track.buffer, file: track.file, analysis: track.analysis, tags: track.tags, artwork: track.artwork, assetId: asset?.assetId || null }; }),
   importResult: (group, projectId) => importProviderResultToDitc(group, projectId),
@@ -13251,6 +13380,7 @@ setupEvents();
 setupProducerStudioEvents();
 setupAssetManagerEvents();
 setupProviderEvents();
+setupLocalLibraryEvents();
 renderGlobalTransport();
 initializeProjectEntryFlow().catch((error) => { updateProjectStorageBindings(null); switchView("projectLibrary", { route: false }); writeProjectRoute("projectLibrary"); renderProjectRegistry(); renderProjectLibrary(); setProjectLibraryStatus(`Project startup recovery: ${error.message}`, "error"); });
 animationLoop();

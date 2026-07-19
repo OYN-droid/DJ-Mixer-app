@@ -64,6 +64,8 @@ This directory contains the DeckForge Design Bible and the recovery and implemen
 31. [Project Asset Manager regression checklist](36-project-asset-manager-regression-checklist.md)
 32. [Connected Provider Foundation audit](36-connected-provider-audit.md)
 33. [Connected Provider Foundation regression checklist](37-connected-provider-foundation-regression-checklist.md)
+34. [Local Music Library Linking audit](37-local-library-linking-audit.md)
+35. [Local Music Library Linking regression checklist](38-local-library-linking-regression-checklist.md)
 
 ## Architecture decisions
 
@@ -72,6 +74,7 @@ This directory contains the DeckForge Design Bible and the recovery and implemen
 3. [Project Switching](adr/ADR-003-project-switching.md)
 4. [Project Asset Ownership](adr/ADR-004-asset-ownership.md)
 5. [Connected Provider Foundation](adr/ADR-005-connected-provider-foundation.md)
+6. [Local Music Library Linking](adr/ADR-006-local-library-linking.md)
 
 ## Recovery snapshot
 

@@ -1,0 +1,73 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DeckForge Local Library Browser Test</title>
+<script src="../src/local-library.js"></script>
+<pre id="result">Running…</pre>
+<script>
+(async () => {
+  const service = DeckForgeLocalLibraries; const checks = {}; const linked = []; let activeProjectId = "project-alpha"; let registered = 0;
+  const backup = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(Boolean).map((key) => [key, localStorage.getItem(key)]);
+  const restore = () => { localStorage.clear(); backup.forEach(([key, value]) => localStorage.setItem(key, value)); };
+  const check = (name, condition, detail = null) => { checks[name] = { pass: Boolean(condition), detail }; if (!condition) throw new Error(name); };
+  try {
+    localStorage.clear(); service.listLocalLibraries().forEach((library) => service.removeLocalLibrary(library.libraryId));
+    service.configureRuntimeBridge({
+      ownsProject: (projectId) => projectId === activeProjectId,
+      getFormatSupport: (file) => ({ supported: /\.(wav|mp3)$/i.test(file.name), extensionRecognized: /\.(wav|mp3)$/i.test(file.name), decodeSupport: /\.(wav|mp3)$/i.test(file.name) ? "Test supported" : "Unsupported", nativePlaybackSupport: /\.(wav|mp3)$/i.test(file.name) ? "Test supported" : "Unavailable", analysisSupport: /\.(wav|mp3)$/i.test(file.name) ? "Available after explicit decode" : "Unavailable", explanation: "Browser-test capability fixture" }),
+      registerTrack: (track) => ({ assetId: `asset-${++registered}`, sourceId: `source-${registered}` }),
+      confirmLink: (reference, track, asset, match) => { linked.push({ reference, track, asset, match }); return { linked: true }; },
+      unlinkLink: () => true,
+      listExistingAssets: () => []
+    });
+    const library = service.createLocalLibrary({ displayName: "Explicit Test Selection", libraryType: "Selected Files", permissionState: "Granted", rootReferences: [{ displayName: "Two selected files", permissionState: "Granted", available: true }] });
+    const original = new File([new Uint8Array(128)], "Artist - Song.wav", { type: "audio/wav", lastModified: 1000 });
+    const unsupported = new File([new Uint8Array(16)], "notes.txt", { type: "text/plain", lastModified: 1001 });
+    const indexed = await service.indexLibrary(library.libraryId, { files: [original, unsupported], projectId: "project-alpha", metadataForFile: (file) => file === original ? { title: "Song", artist: "Artist", album: "Album", version: "Original", duration: 200, isrc: "US-TEST-00001" } : {} });
+    const ready = service.getLocalLibrary(library.libraryId); const track = ready.tracks.find((item) => item.fileName === original.name);
+    check("explicit indexing", indexed.status === "Complete" && ready.fileCount === 2 && ready.playableFileCount === 1, { indexed, ready });
+    check("unsupported is honest", ready.unsupportedFileCount === 1 && ready.tracks.find((item) => item.fileName === "notes.txt").playable === false, ready);
+    check("project asset registration", track.assetReferences.some((item) => item.projectId === "project-alpha" && item.assetId), track.assetReferences);
+    const duplicate = await service.indexLibrary(library.libraryId, { files: [original], projectId: "project-alpha" });
+    check("persistent duplicate prevention", service.getLocalLibrary(library.libraryId).fileCount === 2 && duplicate.duplicatesFound === 1, duplicate);
+
+    const copy = new File([new Uint8Array(128)], "Artist - Song Copy.wav", { type: "audio/wav", lastModified: 2000 });
+    await service.indexLibrary(library.libraryId, { files: [copy], projectId: "project-alpha", metadataForFile: () => ({ title: "Song", artist: "Artist", album: "Album", version: "Original", duration: 200 }) });
+    check("duplicate-copy grouping", service.getLocalLibrary(library.libraryId).tracks.filter((item) => item.duplicateGroupId).length === 2, service.getLocalLibrary(library.libraryId).tracks);
+
+    const exactReference = { referenceId: "ref-exact", providerId: "test-provider", providerTrackId: "provider-1", title: "Song", artist: "Artist", album: "Album", version: "Original", duration: 201, isrc: "US-TEST-00001" };
+    const exact = service.findLocalMatches(exactReference, { projectId: "project-alpha" })[0];
+    check("deterministic exact match", exact.match.confidence === "Exact Match" && exact.match.autoSelectable, exact);
+    const confirmed = service.confirmLocalMatch(exactReference, exact.track.localTrackId, { projectId: "project-alpha", userConfirmed: true });
+    check("explicit confirm and unlink", confirmed.linked && linked.length === 1 && service.unlinkLocalMatch("ref-exact", { projectId: "project-alpha" }), confirmed);
+
+    const liveReference = { referenceId: "ref-live", title: "Song", artist: "Artist", album: "Album", version: "Live", duration: 200 };
+    const conflict = service.findLocalMatches(liveReference, { projectId: "project-alpha" })[0];
+    check("version conflict preserved", conflict.match.confidence === "Version Conflict" && !conflict.match.autoSelectable, conflict);
+    const durationConflict = service.scoreLocalMatch({ referenceId: "ref-duration", title: "Song", artist: "Artist", version: "Original", duration: 260 }, track);
+    check("duration conflict preserved", durationConflict.confidence === "Duration Conflict", durationConflict);
+    const bulk = await service.bulkMatch([exactReference, liveReference, { referenceId: "none", title: "Nothing Here", artist: "Nobody" }], { projectId: "project-alpha" });
+    check("bulk review boundary", bulk.exact.length === 1 && bulk.review.length === 1 && bulk.unmatched.length === 1, bulk);
+
+    service.disconnectLibrary(library.libraryId, "External volume unavailable"); const disconnected = service.getLocalLibrary(library.libraryId);
+    check("disconnect retains metadata", disconnected.status === "Disconnected" && disconnected.fileCount === 3 && disconnected.tracks.every((item) => !item.playable), disconnected);
+    const relinked = await service.relinkLibraryRoot(library.libraryId, { files: [original, copy], projectId: "project-alpha" });
+    check("reauthorization restores runtime", relinked.status === "Complete" && service.getLocalLibrary(library.libraryId).playableFileCount === 2, relinked);
+
+    const playlist = service.importPlaylist({ name: "crate.m3u8", type: "m3u8", data: "#EXTM3U\n#EXTINF:123,Artist - Playlist Song\nMusic/Artist - Playlist Song.mp3" });
+    check("implemented M3U import", playlist.fileCount === 1 && playlist.tracks[0].duration === 123 && playlist.tracks[0].missing, playlist);
+    const exported = service.exportLibraryIndex(library.libraryId);
+    check("sanitized portable index", !/token|secret|objectURL|blob:/i.test(exported) && JSON.parse(exported).library.tracks.every((item) => !item.playable && item.permissionState === "Prompt Required"), exported);
+    const imported = service.importLibraryIndex(exported);
+    check("index import requires permission", imported.status === "Permission Required" && imported.tracks.every((item) => item.missing && !item.assetReferences.length), imported);
+
+    let ownershipChecks = 0; service.configureRuntimeBridge({ ownsProject: (projectId) => projectId === "project-alpha" && ++ownershipChecks < 3 });
+    const late = await service.bulkMatch([exactReference, liveReference], { projectId: "project-alpha" });
+    check("late async ownership rejection", late.status === "Cancelled" && late.processed === 1 && /Project changed/.test(late.error), late);
+    service.configureRuntimeBridge({ ownsProject: (projectId) => projectId === activeProjectId });
+    activeProjectId = "project-beta"; let isolationError = null; try { await service.bulkMatch([exactReference], { projectId: "project-alpha" }); } catch (error) { isolationError = error; }
+    check("project isolation", Boolean(isolationError), isolationError?.message);
+    check("diagnostics sanitized", !/token|secret|password/i.test(JSON.stringify(service.diagnostics({ projectId: "project-beta" }))), service.diagnostics({ projectId: "project-beta" }));
+    document.title = `PASS · ${Object.keys(checks).length} Local Library checks`; result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2); restore();
+  } catch (error) { document.title = `FAIL · ${error.message}`; result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks }, null, 2); restore(); }
+})();
+</script>

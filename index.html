@@ -1173,8 +1173,9 @@
               <span>Current project: DeckForge Session</span>
             </div>
             <div class="ditc-header-actions">
-              <label class="file-button primary-button">Import Files<input id="ditcFileInput" type="file" accept="audio/*" multiple></label>
-              <label class="file-button secondary-button">Import Folder<input id="ditcFolderInput" type="file" accept="audio/*" webkitdirectory multiple></label>
+              <label class="file-button primary-button">Select Audio Files<input id="ditcFileInput" type="file" accept="audio/*,.mp3,.wav,.wave,.aif,.aiff,.flac,.aac,.m4a,.alac,.ogg,.oga,.opus,.webm" multiple></label>
+              <label class="file-button secondary-button">Select Music Folder<input id="ditcFolderInput" type="file" accept="audio/*,.mp3,.wav,.wave,.aif,.aiff,.flac,.aac,.m4a,.alac,.ogg,.oga,.opus,.webm" webkitdirectory multiple></label>
+              <button id="localLibrarySettingsOpen" class="secondary-button" type="button">Local Libraries</button>
               <button id="ditcModeToggle" class="secondary-button" aria-pressed="false">Advanced</button>
             </div>
           </div>
@@ -1186,6 +1187,19 @@
             <button id="ditcMemoryToggle" class="secondary-button" aria-pressed="true">Prioritize Project Memory</button>
             <span id="ditcResultCount">0 results</span>
           </div>
+          <section id="localLibraryPanel" class="local-library-panel" aria-labelledby="localLibraryTitle">
+            <header><div><p class="eyebrow">Local Music</p><h3 id="localLibraryTitle">Your Music Locations</h3><p>DeckForge indexes only files and folders you explicitly select. Local audio is not uploaded.</p></div><button id="localLibraryRefreshAll" class="secondary-button" type="button">Validate Libraries</button></header>
+            <p id="localLibraryStatus" class="local-library-status" role="status" aria-live="polite">Choose where DeckForge should look for your music.</p>
+            <div id="localLibraryCards" class="local-library-cards"></div>
+            <div id="localLibraryEmpty" class="local-library-empty">
+              <strong>Choose where DeckForge should look for your music.</strong>
+              <div><button type="button" data-local-library-empty-action="folder">Select Music Folder</button><button type="button" data-local-library-empty-action="files">Select Audio Files</button><button type="button" data-local-library-empty-action="playlist">Import Playlist</button><button type="button" data-local-library-empty-action="assets">Use Existing Project Assets</button><button type="button" data-local-library-empty-action="apple">Learn About Apple Music Local Files</button></div>
+            </div>
+            <div id="localLibraryJob" class="local-library-job" aria-live="polite" hidden></div>
+            <input id="localPlaylistInput" type="file" accept=".m3u,.m3u8,application/vnd.apple.mpegurl,audio/x-mpegurl" hidden>
+            <input id="localLibraryIndexInput" type="file" accept="application/json,.json" hidden>
+            <details id="localLibraryDiagnostics" class="ditc-advanced-only"><summary>Local-library diagnostics</summary><pre id="localLibraryDiagnosticsOutput"></pre></details>
+          </section>
           <section id="connectedMusicBrowser" class="provider-browser" aria-labelledby="providerBrowserTitle">
             <header><div><p class="eyebrow">Connected Sources</p><h3 id="providerBrowserTitle">Connected Music Browser</h3><p>Search sources by their real capabilities. Catalog access never implies native DeckForge audio.</p></div><button id="providerSettingsOpen" class="secondary-button" type="button">Source Settings</button></header>
             <div id="providerSourceChips" class="provider-source-chips" role="toolbar" aria-label="Music source filters"></div>
@@ -1197,7 +1211,7 @@
           </section>
           <div id="sourceDrop" class="drop-zone ditc-drop-zone">
             <strong>Drop music or a folder here</strong>
-            <span>Then preview it, or load it onto Deck A or Deck B. Supported: MP3, WAV, AIFF, FLAC, M4A, AAC and ALAC.</span>
+            <span>Then preview it, or load it onto Deck A or Deck B. Browser support is checked for MP3, WAV, AIFF, FLAC, M4A, AAC, ALAC, OGG, Opus, and WebM; real decode is verified on first use.</span>
           </div>
           <p id="sourceStatus" class="fine-print" role="status">DITC is ready for local music.</p>
           <div class="ditc-layout">
@@ -1254,9 +1268,18 @@
       <article><header><div><p class="eyebrow">Connected Sources</p><h2 id="providerSettingsTitle">Provider Settings</h2></div><button type="button" data-provider-settings-close aria-label="Close provider settings">×</button></header><div id="providerSettingsList"></div><footer><button id="clearProviderCache" class="secondary-button" type="button">Clear Search Cache</button><button class="primary-button" type="button" data-provider-settings-close>Done</button></footer></article>
     </dialog>
 
+    <dialog id="localLibrarySettingsDialog" class="project-dialog local-library-settings-dialog" aria-labelledby="localLibrarySettingsTitle">
+      <article><header><div><p class="eyebrow">Local Music</p><h2 id="localLibrarySettingsTitle">Local Library Settings</h2></div><button type="button" data-local-library-settings-close aria-label="Close local library settings">×</button></header><div class="local-library-settings-toolbar"><label>Search indexed metadata<input id="localLibrarySearch" type="search" placeholder="Track, artist, album, filename…"></label><label>Filter<select id="localLibraryFilter"><option>All Tracks</option><option>Playable</option><option>Linked</option><option>Unmatched</option><option>Missing</option><option>Permission Required</option><option>Duplicates</option><option>Version Conflicts</option><option>Apple Music Local</option><option>Imported Playlist</option><option>External Drive</option><option>Shared Assets</option></select></label><button id="bulkMatchLocalLibrary" type="button">Match Project References</button></div><div id="localLibrarySettingsList"></div><div id="localLibraryTrackResults"></div><footer><button id="importLocalLibraryIndex" class="secondary-button" type="button">Import Index</button><button class="primary-button" type="button" data-local-library-settings-close>Done</button></footer></article>
+    </dialog>
+
+    <dialog id="localMatchReviewDialog" class="project-dialog local-match-dialog" aria-labelledby="localMatchReviewTitle">
+      <article><header><div><p class="eyebrow">Local Audio Linking</p><h2 id="localMatchReviewTitle">Review Local Match</h2></div><button type="button" data-local-match-close aria-label="Close match review">×</button></header><div id="localMatchReference"></div><div id="localMatchCandidates"></div><p id="localMatchStatus" role="status" aria-live="polite"></p><footer><button id="localMatchChooseFile" class="secondary-button" type="button">Choose Different File</button><button id="localMatchKeepMetadata" class="secondary-button" type="button">Keep Metadata Only</button><button class="primary-button" type="button" data-local-match-close>Done</button></footer></article>
+    </dialog>
+
     <script src="src/project-registry.js"></script>
     <script src="src/project-assets.js"></script>
     <script src="src/project-library.js"></script>
+    <script src="src/local-library.js"></script>
     <script src="src/provider-foundation.js"></script>
     <script src="src/audio/playback-registry.js"></script>
     <script src="src/project-intelligence.js"></script>
