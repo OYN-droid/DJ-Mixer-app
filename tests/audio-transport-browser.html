@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RUNNING · DeckForge audio transport QA</title>
+<pre id="result">Running…</pre>
+<iframe id="app" title="DeckForge audio transport QA" style="width:1440px;height:1000px;border:0"></iframe>
+<script>
+(async () => {
+  const checks = {}; const errors = []; const frame = document.querySelector("#app");
+  const backup = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(Boolean).map((key) => [key, localStorage.getItem(key)]);
+  const restore = () => { localStorage.clear(); backup.forEach(([key, value]) => localStorage.setItem(key, value)); };
+  const check = (name, condition, detail = null) => { checks[name] = { pass: Boolean(condition), detail }; if (!condition) throw new Error(name); };
+  const waitFor = async (predicate, timeout = 90000) => { const started = performance.now(); while (performance.now() - started < timeout) { const value = predicate(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error("Timed out waiting for application state"); };
+  const event = (type = "input") => new Event(type, { bubbles: true });
+  const setFiles = (input, files) => { const transfer = new DataTransfer(); files.forEach((file) => transfer.items.add(file)); input.files = transfer.files; input.dispatchEvent(event("change")); };
+  const createTestWav = (seconds = 4, sampleRate = 44100) => {
+    const sampleCount = seconds * sampleRate; const buffer = new ArrayBuffer(44 + sampleCount * 2); const view = new DataView(buffer);
+    const write = (offset, value) => Array.from(value).forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0)));
+    write(0, "RIFF"); view.setUint32(4, 36 + sampleCount * 2, true); write(8, "WAVE"); write(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); write(36, "data"); view.setUint32(40, sampleCount * 2, true);
+    for (let index = 0; index < sampleCount; index += 1) view.setInt16(44 + index * 2, Math.sin(2 * Math.PI * 220 * index / sampleRate) * 8192, true);
+    return new Blob([buffer], { type: "audio/wav" });
+  };
+  try {
+    localStorage.clear(); frame.contentWindow.addEventListener("error", (value) => errors.push(value.error?.stack || value.message)); frame.src = "../index.html?audio-transport-qa=1";
+    const app = await waitFor(() => frame.contentDocument?.readyState === "complete" && frame.contentDocument.querySelector("#projectLibraryCreate") && frame.contentDocument);
+    frame.contentWindow.confirm = () => true;
+    app.querySelector("#projectLibraryCreate").click(); app.querySelector("#newProjectName").value = "Audio Transport QA"; app.querySelector("#createProjectForm").requestSubmit(); await waitFor(() => app.querySelector("#ai.is-active"));
+    app.querySelector("#audioEnable").click(); await waitFor(() => app.querySelector("#audioEnable").textContent === "Audio On", 10000); check("audio context starts", app.querySelector("#audioEnable").textContent === "Audio On", app.querySelector("#globalPlaybackState").textContent);
+
+    document.title = "RUNNING · decks";
+    const sourceBlob = createTestWav();
+    const deckAFile = new File([sourceBlob], "qa-drums-a.wav", { type: "audio/wav" }); const deckBFile = new File([sourceBlob], "qa-drums-b.wav", { type: "audio/wav" });
+    setFiles(app.querySelector("#file-a"), [deckAFile]); setFiles(app.querySelector("#file-b"), [deckBFile]); await waitFor(() => app.querySelector("#deck-status-a").dataset.state === "ready" && app.querySelector("#deck-status-b").dataset.state === "ready"); check("both deck pickers decode WAV", true, [app.querySelector("#deck-status-a").textContent, app.querySelector("#deck-status-b").textContent]);
+
+    const action = (name, deck) => app.querySelector(`[data-action="${name}"][data-deck="${deck}"]`);
+    action("play", "a").click(); await waitFor(() => app.querySelector("#deck-status-a").dataset.state === "playing"); action("play", "a").click(); await waitFor(() => app.querySelector("#deck-status-a").dataset.state === "paused"); check("Deck A play and pause", true, app.querySelector("#deck-status-a").textContent);
+    action("play", "b").click(); await waitFor(() => app.querySelector("#deck-status-b").dataset.state === "playing"); action("play", "b").click(); await waitFor(() => app.querySelector("#deck-status-b").dataset.state === "paused"); check("Deck B play and pause", true, app.querySelector("#deck-status-b").textContent);
+    action("play", "a").click(); action("play", "b").click(); await waitFor(() => ["a", "b"].every((id) => app.querySelector(`#deck-status-${id}`).dataset.state === "playing")); check("both decks play together", true);
+
+    const cross = app.querySelector("#crossfader"); const mixerCross = app.querySelector("#mixerCrossfader"); cross.value = "1"; cross.dispatchEvent(event()); check("crossfaders synchronize", mixerCross.value === "1", mixerCross.value); cross.value = "0"; cross.dispatchEvent(event()); check("crossfader endpoints accepted", mixerCross.value === "0", mixerCross.value);
+    for (const [id, value] of [["mixer-trim-a", ".42"], ["mixer-filter-a", "3200"], ["channel-a", ".55"]]) { const control = app.querySelector(`#${id}`); control.value = value; control.dispatchEvent(event()); }
+    check("deck gain/filter/channel controls respond", app.querySelector("#mixer-trim-a").value === "0.42" && app.querySelector("#mixer-filter-a").value === "3200" && app.querySelector("#channel-a").value === "0.55");
+
+    action("loop", "a").click(); action("forward", "a").click(); action("cue", "a").click(); action("restart", "a").click(); await waitFor(() => ["playing", "cueing", "paused"].includes(app.querySelector("#deck-status-a").dataset.state)); check("deck loop cue nudge restart handlers run", action("loop", "a").getAttribute("aria-pressed") === "true", app.querySelector("#deck-status-a").textContent);
+    app.querySelector("#globalStop").click(); await waitFor(() => ["a", "b"].every((id) => app.querySelector(`#deck-status-${id}`).dataset.state !== "playing")); check("Global Stop stops both decks", true, app.querySelector("#globalPlaybackState").textContent);
+
+    await new Promise((resolve) => setTimeout(resolve, 500)); const typing = app.querySelector("#aiPrompt"); typing.focus(); const beforeTyping = `${app.querySelector("#globalPlaybackState").textContent}|${app.querySelector("#globalPlaybackSource").textContent}`; typing.dispatchEvent(new KeyboardEvent("keydown", { code: "Space", key: " ", bubbles: true })); await new Promise((resolve) => setTimeout(resolve, 250)); const afterTyping = `${app.querySelector("#globalPlaybackState").textContent}|${app.querySelector("#globalPlaybackSource").textContent}`; check("transport shortcut ignored while typing", afterTyping === beforeTyping, { beforeTyping, afterTyping });
+
+    document.title = "RUNNING · sampler";
+    setFiles(app.querySelector("#sampleFile"), [new File([sourceBlob], "qa-pad.wav", { type: "audio/wav" })]); await waitFor(() => app.querySelector("#pads .delete-button")); const padMode = app.querySelector("#padMode"); padMode.value = "loop"; padMode.dispatchEvent(event("change")); app.querySelector("#padStart").value = "100"; app.querySelector("#padStart").dispatchEvent(event()); app.querySelector("#slicePadToPads").click(); app.querySelector("#stopPads").click(); check("pad load mode trim slice and stop handlers run", app.querySelectorAll("#pads .delete-button").length >= 1, app.querySelectorAll("#pads .delete-button").length);
+
+    document.title = "RUNNING · instruments";
+    app.querySelector("#drumPlay").click(); await waitFor(() => app.querySelector("#drumPlay").textContent === "Playing"); app.querySelector("#drumPause").click(); check("Beat Forge starts and pauses", app.querySelector("#drumPlay").textContent === "Resume", app.querySelector("#drumPlay").textContent); app.querySelector("#drumStop").click();
+    app.querySelector("#generateHarmonyPlan").click(); app.querySelector("#applyHarmonyPlan").click(); app.querySelector("#harmonyPlay").click(); await waitFor(() => app.querySelector("#harmonyPlay").textContent === "Playing"); app.querySelector("#harmonyPause").click(); check("Harmony pattern starts and pauses", app.querySelector("#harmonyPlay").textContent === "Resume", app.querySelector("#harmonyPlay").textContent); app.querySelector("#harmonyStop").click(); app.querySelector("#releaseKeys").click();
+
+    document.title = "RUNNING · arrangement";
+    app.querySelector('.tab-button[data-target="editor"]').click(); app.querySelector("#editorAddBeat").click(); await waitFor(() => app.querySelector("#editorTimeline .editor-clip")); app.querySelector("#editorDuplicate").click(); app.querySelector("#editorLoop").click(); app.querySelector("#editorUndo").click(); app.querySelector("#editorRedo").click(); app.querySelector("#editorSave").click(); check("Arrangement edit undo redo and save handlers run", /Saved/i.test(app.querySelector("#editorSaveStatus").textContent), app.querySelector("#editorSaveStatus").textContent);
+
+    document.title = "RUNNING · export";
+    app.querySelector('.tab-button[data-target="finishing"]').click(); app.querySelector("#exportOutputType").value = "Arrangement Project"; app.querySelector("#exportOutputType").dispatchEvent(event("change")); app.querySelector("#startFinishExport").click(); await waitFor(() => /Complete|Failed|Blocked/.test(app.querySelector("#finishExportStatus").textContent), 20000); check("Arrangement export creates output", /Complete/.test(app.querySelector("#finishExportStatus").textContent), app.querySelector("#finishExportStatus").textContent);
+    check("no uncaught errors", errors.length === 0, errors);
+    document.title = `PASS · ${Object.keys(checks).length} audio transport checks`; result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2); restore();
+  } catch (error) { document.title = `FAIL · ${error.message}`; result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks, errors }, null, 2); restore(); }
+})();
+</script>

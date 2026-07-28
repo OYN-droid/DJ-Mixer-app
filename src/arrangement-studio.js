@@ -1,4 +1,7 @@
 (function initializeArrangementStudioEngine(global) {
+  // TODO: Migrate live editing ownership into this engine. Until then, app.js editorState is the
+  // single source of truth for the active UI; this module only normalizes, persists, versions,
+  // validates, imports, and exports arrangement snapshots.
   const SCHEMA_VERSION = 1;
   const STORAGE_PREFIX = "deckforge-arrangement-studio";
   const SOURCE_TYPES = new Set(["DITC Track", "Deck Recording", "Stem", "Pad Recording", "Beat Forge Pattern", "Harmony Lab Pattern", "Transition", "Imported Audio", "Generated Audio", "Performance Events"]);

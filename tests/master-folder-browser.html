@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RUNNING · Master Folder</title>
+<pre id="result">Running…</pre>
+<iframe id="app" title="Master Folder browser test" style="width:1280px;height:900px;border:0"></iframe>
+<script>
+(async () => {
+  const checks = {}; const errors = []; const frame = document.querySelector("#app");
+  const backup = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(Boolean).map((key) => [key, localStorage.getItem(key)]);
+  const restore = () => { localStorage.clear(); backup.forEach(([key, value]) => localStorage.setItem(key, value)); };
+  const check = (name, condition, detail = null) => { checks[name] = { pass: Boolean(condition), detail }; if (!condition) throw new Error(name); };
+  const waitFor = async (predicate, timeout = 10000) => { const started = performance.now(); while (performance.now() - started < timeout) { const value = predicate(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 25)); } throw new Error("Timed out waiting for application state"); };
+  const setFiles = (input, files) => { const transfer = new DataTransfer(); files.forEach((file) => transfer.items.add(file)); input.files = transfer.files; input.dispatchEvent(new Event("change", { bubbles: true })); };
+  try {
+    localStorage.clear(); frame.contentWindow.addEventListener("error", (event) => errors.push(event.error?.stack || event.message)); frame.src = "../index.html?master-folder-test=1";
+    const app = await waitFor(() => frame.contentDocument?.readyState === "complete" && frame.contentDocument.querySelector("#projectLibraryCreate") && frame.contentDocument);
+    frame.contentWindow.confirm = () => true;
+    app.querySelector("#projectLibraryCreate").click(); app.querySelector("#newProjectName").value = "Master Folder QA"; app.querySelector("#createProjectForm").requestSubmit(); await waitFor(() => app.querySelector("#ai.is-active"));
+    frame.contentWindow.jsmediatags = { read: (file, handlers) => handlers.onSuccess({ tags: file.name.includes("Master") ? { title: "Master Song", artist: "Master Artist", album: "Master Album" } : { title: "Source Song", artist: "Source Artist" } }) };
+    setFiles(app.querySelector("#ditcFileInput"), [new File([new Uint8Array(32)], "Source Artist - Source Song.mp3", { type: "audio/mpeg" })]);
+    await waitFor(() => app.querySelector('[data-source-action="select"]'));
+    app.querySelector('[data-source-action="select"]').click(); await waitFor(() => app.querySelector('[data-source-action="similar"]'));
+    frame.contentWindow.fetch = async (url) => url === "/api/similar-tracks"
+      ? new Response(JSON.stringify({ suggestions: [{ title: "Source Song", artist: "Source Artist", reason: "Existing source." }, { title: "Master Song", artist: "Master Artist", reason: "Master-folder fixture." }, { title: "Missing Song", artist: "Missing Artist", reason: "Manual fallback fixture." }] }), { status: 200, headers: { "Content-Type": "application/json" } })
+      : fetch(url);
+    app.querySelector('[data-source-action="similar"]').click(); await waitFor(() => app.querySelectorAll("#similarTracksOutput .similar-track-item").length === 3);
+
+    const suggestionInput = app.querySelector("#similarTrackImportInput"); let manualClicks = 0;
+    suggestionInput.addEventListener("click", (event) => { manualClicks += 1; event.preventDefault(); });
+    app.querySelector('#similarTracksOutput [data-suggestion-import="2"]').click(); await waitFor(() => manualClicks === 1);
+    check("no connection uses manual import", suggestionInput.dataset.suggestionIndex === "2", suggestionInput.dataset.suggestionIndex);
+
+    const masterFile = new File([new Uint8Array(32)], "Master Artist - Master Song.mp3", { type: "audio/mpeg" });
+    const masterFileHandle = { kind: "file", getFile: async () => masterFile };
+    const unrelatedHandle = { kind: "file", getFile: async () => new File([new Uint8Array(8)], "Unrelated.mp3", { type: "audio/mpeg" }) };
+    const nestedHandle = { kind: "directory", async *entries() { yield ["Unrelated.mp3", unrelatedHandle]; yield [masterFile.name, masterFileHandle]; } };
+    const masterHandle = { kind: "directory", name: "Master Music", async *entries() { yield ["Nested", nestedHandle]; } };
+    frame.contentWindow.showDirectoryPicker = async (options) => { check("directory picker requests read mode", options.mode === "read", options); return masterHandle; };
+    app.querySelector("#connectMasterFolderButton").click(); await waitFor(() => app.querySelector("#masterFolderStatus").textContent === "Connected: Master Music");
+    check("master folder connects for this session", app.querySelector("#sourceStatus").textContent.includes("Connected master folder: Master Music"), app.querySelector("#sourceStatus").textContent);
+    app.querySelector('#similarTracksOutput [data-suggestion-import="1"]').click(); await waitFor(() => app.querySelector("#sourceList").textContent.includes("Master Song"));
+    check("recursive exact-tag match imports automatically", app.querySelector("#sourceList").textContent.includes("Master Artist") && app.querySelectorAll('#similarTracksOutput [data-suggestion-load-deck]').length === 4 && manualClicks === 1, app.querySelector("#similarTracksOutput").textContent);
+    app.querySelector('#similarTracksOutput [data-suggestion-import="2"]').click(); await waitFor(() => manualClicks === 2);
+    check("connected miss falls back to manual import", app.querySelector("#sourceStatus").textContent.includes("No match found in master folder") && suggestionInput.dataset.suggestionIndex === "2", app.querySelector("#sourceStatus").textContent);
+    check("no uncaught errors", errors.length === 0, errors);
+    document.title = `PASS · ${Object.keys(checks).length} Master Folder checks`; result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2); restore();
+  } catch (error) { document.title = `FAIL · ${error.message}`; result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks, errors }, null, 2); restore(); }
+})();
+</script>

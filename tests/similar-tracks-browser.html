@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RUNNING · Find Similar Tracks</title>
+<pre id="result">Running…</pre>
+<iframe id="app" title="Find Similar Tracks browser test" style="width:1280px;height:900px;border:0"></iframe>
+<script>
+(async () => {
+  const checks = {}; const errors = []; const frame = document.querySelector("#app");
+  const backup = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(Boolean).map((key) => [key, localStorage.getItem(key)]);
+  const restore = () => { localStorage.clear(); backup.forEach(([key, value]) => localStorage.setItem(key, value)); };
+  const check = (name, condition, detail = null) => { checks[name] = { pass: Boolean(condition), detail }; if (!condition) throw new Error(name); };
+  const waitFor = async (predicate, timeout = 10000) => { const started = performance.now(); while (performance.now() - started < timeout) { const value = predicate(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 25)); } throw new Error("Timed out waiting for application state"); };
+  const setFiles = (input, files) => { const transfer = new DataTransfer(); files.forEach((file) => transfer.items.add(file)); input.files = transfer.files; input.dispatchEvent(new Event("change", { bubbles: true })); };
+  const createTestWav = (seconds = 4, sampleRate = 44100) => { const sampleCount = seconds * sampleRate; const buffer = new ArrayBuffer(44 + sampleCount * 2); const view = new DataView(buffer); const write = (offset, value) => Array.from(value).forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0))); write(0, "RIFF"); view.setUint32(4, 36 + sampleCount * 2, true); write(8, "WAVE"); write(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); write(36, "data"); view.setUint32(40, sampleCount * 2, true); for (let index = 0; index < sampleCount; index += 1) view.setInt16(44 + index * 2, Math.sin(2 * Math.PI * 220 * index / sampleRate) * 8192, true); return new Blob([buffer], { type: "audio/wav" }); };
+  try {
+    localStorage.clear(); frame.contentWindow.addEventListener("error", (event) => errors.push(event.error?.stack || event.message)); frame.src = "../index.html?similar-tracks-test=1";
+    const app = await waitFor(() => frame.contentDocument?.readyState === "complete" && frame.contentDocument.querySelector("#projectLibraryCreate") && frame.contentDocument);
+    frame.contentWindow.confirm = () => true;
+    app.querySelector("#projectLibraryCreate").click(); app.querySelector("#newProjectName").value = "Similar Tracks QA"; app.querySelector("#createProjectForm").requestSubmit(); await waitFor(() => app.querySelector("#ai.is-active"));
+    app.querySelector("#audioEnable").click(); await waitFor(() => app.querySelector("#audioEnable").textContent === "Audio On");
+    check("empty panel renders", app.querySelector("#similarTracksOutput")?.textContent.includes("No suggestions yet"), app.querySelector("#similarTracksOutput")?.textContent);
+
+    const requests = []; let shouldFail = false; const nativeFetch = frame.contentWindow.fetch.bind(frame.contentWindow);
+    frame.contentWindow.fetch = async (url, options) => {
+      if (url !== "/api/similar-tracks") return nativeFetch(url, options);
+      requests.push(JSON.parse(options.body));
+      if (shouldFail) return new Response(JSON.stringify({ error: "ANTHROPIC_API_KEY is not configured on the server." }), { status: 503, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ suggestions: [{ title: "Source Track (Official Audio)", artist: "Source Artist", reason: "Exact normalized library match." }, { title: "Safe <Track>", artist: "Artist & Co", reason: "Compatible tempo <script> and era." }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+    frame.contentWindow.jsmediatags = { read: (_file, handlers) => handlers.onError({ type: "test-no-tags" }) };
+    const wav = createTestWav();
+    setFiles(app.querySelector("#ditcFileInput"), [new File([wav], "Source Artist - Source Track.wav", { type: "audio/wav" })]);
+    await waitFor(() => app.querySelector('[data-source-action="select"]'));
+    app.querySelector('[data-source-action="select"]').click(); await waitFor(() => app.querySelector('[data-source-action="similar"]'));
+    check("Find Similar appears for selected track", app.querySelector('[data-source-action="similar"]').textContent === "Find Similar");
+    app.querySelector('[data-source-action="similar"]').click();
+    await waitFor(() => app.querySelectorAll("#similarTracksOutput .similar-track-item").length === 2);
+    check("request uses selected track metadata", requests.length === 1 && requests[0].title === "Source Track" && requests[0].artist === "Source Artist", requests);
+    check("normalized existing match offers both decks", app.querySelectorAll('#similarTracksOutput [data-suggestion-load-deck]').length === 2 && app.querySelector('#similarTracksOutput [data-suggestion-import="1"]'), app.querySelector("#similarTracksOutput").textContent);
+    check("suggestion HTML is escaped", !app.querySelector("#similarTracksOutput script") && app.querySelector("#similarTracksOutput").textContent.includes("<script>"));
+    app.querySelector('#similarTracksOutput [data-suggestion-import="1"]').click(); const suggestionInput = app.querySelector("#similarTrackImportInput"); setFiles(suggestionInput, [new File([wav], "unrelated-filename.wav", { type: "audio/wav" })]);
+    await waitFor(() => app.querySelectorAll('#similarTracksOutput [data-suggestion-load-deck]').length === 4, 30000);
+    check("manual import switches suggestion to matched", !app.querySelector('#similarTracksOutput [data-suggestion-import="1"]') && app.querySelector("#sourceList").textContent.includes("Safe <Track>"), app.querySelector("#similarTracksOutput").textContent);
+    check("manual import persists Suggested tag", Array.from({ length: localStorage.length }, (_, index) => localStorage.getItem(localStorage.key(index))).some((value) => value?.includes('"Suggested"') && value.includes("Safe <Track>")));
+    const importedSuggestion = Array.from(app.querySelectorAll("#similarTracksOutput .similar-track-item")).find((item) => item.textContent.includes("Safe <Track>"));
+    importedSuggestion.querySelector('[data-suggestion-load-deck="a"]').click();
+    check("imported suggestion dispatches existing Deck A load", app.querySelector("#sourceStatus").textContent.includes("Loading unrelated-filename.wav"), app.querySelector("#sourceStatus").textContent);
+
+    shouldFail = true; app.querySelector('[data-source-action="similar"]').click(); await waitFor(() => app.querySelector("#similarTracksOutput").textContent.startsWith("Error:"));
+    check("each click makes a fresh request", requests.length === 2, requests.length);
+    check("server errors are shown clearly", app.querySelector("#similarTracksOutput").textContent.includes("ANTHROPIC_API_KEY is not configured"), app.querySelector("#similarTracksOutput").textContent);
+    check("no uncaught errors", errors.length === 0, errors);
+    document.title = `PASS · ${Object.keys(checks).length} Find Similar checks`; result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2); restore();
+  } catch (error) { document.title = `FAIL · ${error.message}`; result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks, errors }, null, 2); restore(); }
+})();
+</script>

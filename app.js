@@ -35,7 +35,7 @@ const AudioEngine = {
   masterAnalyser: null,
   masterGain: null,
 
-  async init() {
+  async init(options = {}) {
     if (!this.context) {
       this.context = new (window.AudioContext || window.webkitAudioContext)();
       this.destination = this.context.createMediaStreamDestination();
@@ -47,11 +47,201 @@ const AudioEngine = {
       this.masterGain.connect(this.context.destination);
       this.masterGain.connect(this.destination);
     }
-    if (this.context.state === "suspended") {
+    if (this.context.state === "suspended" && options.resume !== false) {
       await this.context.resume();
     }
   }
 };
+
+async function synthesizeBassDrop(ctx) {
+  const duration = 1.5;
+  const offline = new OfflineAudioContext(2, ctx.sampleRate * duration, ctx.sampleRate);
+  const osc = offline.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(180, 0);
+  osc.frequency.exponentialRampToValueAtTime(35, 0.6);
+  const gain = offline.createGain();
+  gain.gain.setValueAtTime(0.9, 0);
+  gain.gain.exponentialRampToValueAtTime(0.001, duration);
+  osc.connect(gain).connect(offline.destination);
+  osc.start(0);
+  osc.stop(duration);
+
+  const noiseBuffer = offline.createBuffer(1, offline.sampleRate * 0.08, offline.sampleRate);
+  const noiseData = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < noiseData.length; i++) noiseData[i] = (Math.random() * 2 - 1) * (1 - i / noiseData.length);
+  const noise = offline.createBufferSource();
+  noise.buffer = noiseBuffer;
+  const noiseGain = offline.createGain();
+  noiseGain.gain.setValueAtTime(0.6, 0);
+  noise.connect(noiseGain).connect(offline.destination);
+  noise.start(0);
+
+  return offline.startRendering();
+}
+
+async function synthesizeVinylBrake(ctx) {
+  const duration = 1.0;
+  const offline = new OfflineAudioContext(2, ctx.sampleRate * duration, ctx.sampleRate);
+  const noiseBuffer = offline.createBuffer(1, offline.sampleRate * duration, offline.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * 0.3;
+  const source = offline.createBufferSource();
+  source.buffer = noiseBuffer;
+  source.playbackRate.setValueAtTime(1, 0);
+  source.playbackRate.linearRampToValueAtTime(0.05, duration);
+  const filter = offline.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(4000, 0);
+  filter.frequency.linearRampToValueAtTime(200, duration);
+  source.connect(filter).connect(offline.destination);
+  source.start(0);
+  return offline.startRendering();
+}
+
+async function synthesizeLaserRiser(ctx) {
+  const duration = 1.4;
+  const offline = new OfflineAudioContext(2, ctx.sampleRate * duration, ctx.sampleRate);
+  const osc = offline.createOscillator();
+  osc.type = "sawtooth";
+  osc.frequency.setValueAtTime(100, 0);
+  osc.frequency.exponentialRampToValueAtTime(2200, duration);
+  const filter = offline.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(400, 0);
+  filter.frequency.exponentialRampToValueAtTime(8000, duration);
+  const gain = offline.createGain();
+  gain.gain.setValueAtTime(0.3, 0);
+  gain.gain.linearRampToValueAtTime(0.45, duration * 0.8);
+  gain.gain.linearRampToValueAtTime(0, duration);
+  osc.connect(filter).connect(gain).connect(offline.destination);
+  osc.start(0);
+  osc.stop(duration);
+  return offline.startRendering();
+}
+
+async function synthesizeReverseCymbal(ctx) {
+  const duration = 2.0;
+  const offline = new OfflineAudioContext(2, ctx.sampleRate * duration, ctx.sampleRate);
+  const noiseBuffer = offline.createBuffer(1, offline.sampleRate * duration, offline.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  const source = offline.createBufferSource();
+  source.buffer = noiseBuffer;
+  const filter = offline.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(200, 0);
+  filter.frequency.exponentialRampToValueAtTime(9000, duration);
+  const gain = offline.createGain();
+  gain.gain.setValueAtTime(0, 0);
+  gain.gain.linearRampToValueAtTime(0.4, duration);
+  source.connect(filter).connect(gain).connect(offline.destination);
+  source.start(0);
+  return offline.startRendering();
+}
+
+async function synthesizeVocalChopStab(ctx) {
+  const duration = 0.25;
+  const offline = new OfflineAudioContext(2, ctx.sampleRate * duration, ctx.sampleRate);
+  const osc = offline.createOscillator();
+  osc.type = "square";
+  osc.frequency.setValueAtTime(330, 0);
+  const gain = offline.createGain();
+  gain.gain.setValueAtTime(0.4, 0);
+  gain.gain.exponentialRampToValueAtTime(0.001, duration);
+  osc.connect(gain).connect(offline.destination);
+  osc.start(0);
+  osc.stop(duration);
+  return offline.startRendering();
+}
+
+const STOCK_FX_SOURCE = "Stock FX Pack · Procedural Web Audio";
+const STOCK_AUDIO_SOURCE = "Stock FX Pack · Licensed Audio Asset";
+const STOCK_FX_PACK = [
+  { name: "Airhorn", url: "assets/stock-fx/Reggae_Horn.mp3" },
+  { name: "Siren Riser", url: "assets/stock-fx/135117__andre_onate__regea-syren.wav" },
+  { name: "Bass Drop", synth: synthesizeBassDrop },
+  { name: "Vinyl Brake", synth: synthesizeVinylBrake },
+  { name: "Laser Riser", synth: synthesizeLaserRiser },
+  { name: "Reverse Cymbal", synth: synthesizeReverseCymbal },
+  { name: "Vocal Chop Stab", synth: synthesizeVocalChopStab }
+];
+const STOCK_SCRATCH_SAMPLES = [
+  { name: "Scratch 1", url: "assets/stock-fx/151822__templeofhades__scratch-sample.wav" },
+  { name: "Scratch 2", url: "assets/stock-fx/454739__g_m_d_three__scratch_transform_012.wav" },
+  { name: "Scratch 3", url: "assets/stock-fx/607040__primoferal__scratch-011.wav" },
+  { name: "Scratch 4", url: "assets/stock-fx/61924__noisecollector__scratch9.wav" }
+];
+const STOCK_ADDITIONAL_SAMPLES = [
+  { name: "Explosion", url: "assets/stock-fx/Explosion.mp3" },
+  { name: "Machine Gun", url: "assets/stock-fx/machinegun.mp3" },
+  { name: "Gun Shot", url: "assets/stock-fx/Gun_shot.mp3" },
+  { name: "Gun Cock", url: "assets/stock-fx/Gun_Cocked_Pumped.mp3" }
+];
+
+function padHasUserAssignment(index) {
+  return Boolean(sampler.buffers[index] || sampler.relink[index]);
+}
+
+function isStockFxSource(source) {
+  return source === STOCK_FX_SOURCE || source === STOCK_AUDIO_SOURCE;
+}
+
+async function loadStockFxPack() {
+  await AudioEngine.init({ resume: false });
+  const ctx = AudioEngine.context;
+  const projectId = ACTIVE_PROJECT_ID;
+  const contextVersion = ProjectRegistry.getSession()?.contextVersion ?? null;
+  for (let i = 0; i < STOCK_FX_PACK.length; i++) {
+    if (padHasUserAssignment(i)) continue;
+    const { name, synth, url } = STOCK_FX_PACK[i];
+    const buffer = url ? await loadAudioFromUrl(url, { resume: false }) : await synth(ctx);
+    if (!ProjectRegistry.owns(projectId, contextVersion)) return;
+    if (padHasUserAssignment(i)) continue;
+    setPadBuffer(i, buffer, name, {
+      category: "FX",
+      source: url ? STOCK_AUDIO_SOURCE : STOCK_FX_SOURCE,
+      sourceType: url ? "Bundled Audio Asset" : "Procedurally Synthesized Audio",
+      originalFilename: url?.split("/").pop() || null,
+      generated: !url,
+      createdBy: "system"
+    });
+  }
+  let nextPadIndex = STOCK_FX_PACK.length;
+  for (const sample of STOCK_SCRATCH_SAMPLES) {
+    while (nextPadIndex < sampler.buffers.length && padHasUserAssignment(nextPadIndex)) nextPadIndex += 1;
+    if (nextPadIndex >= sampler.buffers.length) return;
+    const buffer = await loadAudioFromUrl(sample.url, { resume: false });
+    if (!ProjectRegistry.owns(projectId, contextVersion)) return;
+    while (nextPadIndex < sampler.buffers.length && padHasUserAssignment(nextPadIndex)) nextPadIndex += 1;
+    if (nextPadIndex >= sampler.buffers.length) return;
+    setPadBuffer(nextPadIndex, buffer, sample.name, {
+      category: "Scratches",
+      source: STOCK_AUDIO_SOURCE,
+      sourceType: "Bundled Audio Asset",
+      originalFilename: sample.url.split("/").pop(),
+      createdBy: "system"
+    });
+    nextPadIndex += 1;
+  }
+  nextPadIndex = STOCK_FX_PACK.length + STOCK_SCRATCH_SAMPLES.length;
+  for (const sample of STOCK_ADDITIONAL_SAMPLES) {
+    while (nextPadIndex < sampler.buffers.length && padHasUserAssignment(nextPadIndex)) nextPadIndex += 1;
+    if (nextPadIndex >= sampler.buffers.length) return;
+    const buffer = await loadAudioFromUrl(sample.url, { resume: false });
+    if (!ProjectRegistry.owns(projectId, contextVersion)) return;
+    while (nextPadIndex < sampler.buffers.length && padHasUserAssignment(nextPadIndex)) nextPadIndex += 1;
+    if (nextPadIndex >= sampler.buffers.length) return;
+    setPadBuffer(nextPadIndex, buffer, sample.name, {
+      category: "FX",
+      source: STOCK_AUDIO_SOURCE,
+      sourceType: "Bundled Audio Asset",
+      originalFilename: sample.url.split("/").pop(),
+      createdBy: "system"
+    });
+    nextPadIndex += 1;
+  }
+}
 
 const deckState = {
   a: createDeckState("a"),
@@ -116,6 +306,7 @@ const supportedAudioExtensions = [".mp3", ".wav", ".wave", ".aif", ".aiff", ".fl
 const supportedImageExtensions = [".jpg", ".jpeg", ".png", ".webp"];
 let DITC_METADATA_KEY = projectStorageKey("ditc-metadata");
 let DITC_SOURCES_KEY = projectStorageKey("ditc-sources");
+let DITC_SMART_CRATES_KEY = projectStorageKey("ditc-smart-crates");
 const ditcState = {
   search: "",
   filter: "all",
@@ -130,6 +321,10 @@ const ditcState = {
   lastError: "None",
   dragTarget: "None"
 };
+const smartCrateEditorState = { editingId: null, name: "", combinator: "all", rules: [] };
+const similarTracksState = { loading: false, results: [], error: null, forTrackId: null };
+const masterFolderState = { handle: null, connecting: false, error: null };
+const folderIndexProgress = { active: false, phase: "idle", total: 0, completed: 0, startedAt: 0 };
 
 const editorState = {
   arrangementId: `arrangement-${Date.now().toString(36)}`,
@@ -1844,6 +2039,31 @@ function formatTime(seconds) {
   return `${minutes}:${String(secs).padStart(2, "0")}`;
 }
 
+function renderFolderIndexProgress() {
+  const el = document.querySelector("#folderIndexProgress");
+  if (!el) return;
+  if (!folderIndexProgress.active) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "block";
+  const { phase, total, completed, startedAt } = folderIndexProgress;
+  if (phase === "collecting") {
+    el.innerHTML = `<div class="fine-print">Scanning folder... ${completed.toLocaleString()} audio files found so far</div>`;
+    return;
+  }
+  const percent = total ? Math.round((completed / total) * 100) : 0;
+  const elapsedMs = Date.now() - startedAt;
+  const perFileMs = completed > 0 ? elapsedMs / completed : 0;
+  const remainingMs = perFileMs * (total - completed);
+  const remainingLabel = completed < 5
+    ? "Estimating time remaining..."
+    : `About ${formatTime(Math.round(remainingMs / 1000))} remaining`;
+  el.innerHTML = `
+    <div class="fine-print">Reading tags: ${completed.toLocaleString()} of ${total.toLocaleString()} files (${percent}%) · ${remainingLabel}</div>
+    <div class="progress-bar-track"><div class="progress-bar-fill" style="width:${percent}%;"></div></div>`;
+}
+
 function markSelection(id, point) {
   const deck = deckState[id];
   if (!deck.buffer) return;
@@ -2305,7 +2525,7 @@ function switchPadScene(name) {
 
 function savePadWorkspace() {
   sampler.banks[sampler.bank] = capturePadBank();
-  const serializableBanks = Object.fromEntries(Object.entries(sampler.banks).map(([name, bank]) => [name, { ...bank, projectId: ACTIVE_PROJECT_ID, buffers: undefined, relink: bank.names.map((padName, index) => Boolean(bank.buffers[index]) || bank.relink[index]) }]));
+  const serializableBanks = Object.fromEntries(Object.entries(sampler.banks).map(([name, bank]) => [name, { ...bank, projectId: ACTIVE_PROJECT_ID, buffers: undefined, relink: bank.names.map((padName, index) => isStockFxSource(bank.sources[index]) ? false : Boolean(bank.buffers[index]) || bank.relink[index]) }]));
   const scenes = Object.fromEntries(Object.entries(sampler.scenes).map(([name, scene]) => [name, { ...scene, projectId: ACTIVE_PROJECT_ID }]));
   localStorage.setItem(projectStorageKey("pads"), JSON.stringify({ projectId: ACTIVE_PROJECT_ID, bank: sampler.bank, scene: sampler.scene, workspaceMode: sampler.workspaceMode, quantize: sampler.quantize, banks: serializableBanks, scenes, promptHistory: sampler.promptHistory.slice(-20).map((item) => item && typeof item === "object" ? { ...item, projectId: ACTIVE_PROJECT_ID } : item) }));
 }
@@ -4980,11 +5200,12 @@ function buildMixtapeBlueprint(structure, context, referenceId) {
   };
 }
 
+const CHAPTER_NAMES = ["Cold Open", "Identity Drop", "First Blend Run", "Energy Lift", "Reset / Skit", "Peak Sequence", "Callback Outro"];
+
 function buildMixtapeChapters(structure, tracks, context) {
-  const chapterNames = ["Cold Open", "Identity Drop", "First Blend Run", "Energy Lift", "Reset / Skit", "Peak Sequence", "Callback Outro"];
-  return chapterNames.map((name, index) => {
+  return CHAPTER_NAMES.map((name, index) => {
     const track = tracks[index % Math.max(1, tracks.length)];
-    const segment = structure.segments[Math.min(structure.segments.length - 1, Math.floor((index / chapterNames.length) * structure.segments.length))];
+    const segment = structure.segments[Math.min(structure.segments.length - 1, Math.floor((index / CHAPTER_NAMES.length) * structure.segments.length))];
     return {
       title: name,
       detail: track
@@ -4992,6 +5213,26 @@ function buildMixtapeChapters(structure, tracks, context) {
         : `Use deck/pad material for ${segment.intensity.toLowerCase()} energy; add ${structure.sampleWorld[index % structure.sampleWorld.length]} as a thematic bridge.`
     };
   });
+}
+
+function extractMixtapeChapterPlan() {
+  if (!aiPlanState?.steps) return null;
+  const chapters = CHAPTER_NAMES.map((name) => {
+    const step = aiPlanState.steps.find((item) => item.title === name);
+    if (!step) return null;
+    let anchorFilename = step.anchorFilename || step.anchorTrack || step.trackName || null;
+    let transitionStyle = step.transitionStyle || null;
+    let energy = step.energy || null;
+    if (!anchorFilename || !transitionStyle) {
+      const parsed = String(step.detail || "").match(/^(.+?) as anchor\. Aim for (.+?) energy,\s*(.+?) into next section\.$/i);
+      if (!parsed) return null;
+      anchorFilename ||= parsed[1].trim();
+      energy ||= parsed[2].trim();
+      transitionStyle ||= parsed[3].trim();
+    }
+    return { name, anchorFilename, energy, transitionStyle };
+  });
+  return chapters.every(Boolean) ? chapters : null;
 }
 
 function renderMixtapeInspiration(state) {
@@ -5806,7 +6047,7 @@ function applyPromptToTransition(transition, promptPlan) {
 
 function promptCandidateMatches(item, promptPlan) {
   const text = promptPlan.rawPrompt.toLowerCase();
-  const searchable = `${item.name} ${item.analysis?.genre || ""} ${item.analysis?.mood || ""} ${item.notes || ""}`.toLowerCase();
+  const searchable = `${item.name} ${item.genre || item.analysis?.genre || ""} ${item.mood || item.analysis?.mood || ""} ${item.notes || ""}`.toLowerCase();
   const requestedTerms = ["east coast", "west coast", "house", "hip-hop", "hip hop", "r&b", "jungle", "dnb", "dark", "bright", "chill", "high energy", "low energy"].filter((term) => text.includes(term));
   return !requestedTerms.length || requestedTerms.some((term) => searchable.includes(term.replace("high energy", "high").replace("low energy", "low")));
 }
@@ -6238,7 +6479,35 @@ function continueTempoBridgePlan(bridgePlan, activeBridgeDeck, destinationDeck) 
 }
 
 async function startAiMix(mode = document.querySelector("#smartMixMode")?.value || "club") {
-  await startSmartMix(mode, document.querySelector("#smartMixSource")?.value || "both");
+  const chapterPlan = extractMixtapeChapterPlan();
+  if (!chapterPlan) {
+    if (aiPlanState?.tags?.mixtape) {
+      setSmartMixStatus("The mixtape plan is missing one or more playable chapter anchors. Rebuild the blueprint after importing its seven anchor tracks.");
+      return false;
+    }
+    return startSmartMix(mode, document.querySelector("#smartMixSource")?.value || "both");
+  }
+  const availableItems = await collectAutoMixItems(mode, "both");
+  const missing = [];
+  const orderedItems = chapterPlan.map((chapter) => {
+    const anchor = normalizeMatchText(chapter.anchorFilename);
+    const item = availableItems.find((candidate) => normalizeMatchText(candidate.name) === anchor);
+    if (!item) {
+      missing.push(chapter.anchorFilename);
+      return null;
+    }
+    return { ...item, mixtapeChapter: chapter.name };
+  }).filter(Boolean);
+  if (missing.length) {
+    setSmartMixStatus(`Mixtape plan cannot start. Missing chapter anchor${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.`);
+    return false;
+  }
+  if (autoMixState.running || detectActiveDeck()) stopAiMix({ stopDecks: true, silent: true });
+  return startSmartMix(mode, "crate", null, {
+    orderedItems,
+    preserveOrder: true,
+    chapterPlan
+  });
 }
 
 function detectActiveDeck() {
@@ -6260,7 +6529,7 @@ function deckAsSmartMixItem(id, mode) {
   }, mode);
 }
 
-async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = null) {
+async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = null, options = {}) {
   autoMixState.state = "Analyzing Active Deck";
   setSmartMixStatus(`Analyzing ${smartMixSourceLabel(sourceMode).toLowerCase()}...`);
   renderSmartMixPanel();
@@ -6270,7 +6539,7 @@ async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = nu
     promptPlan.activeDeck = activeDeck;
     promptPlan.incomingDeck = oppositeDeck;
   }
-  let items = await collectAutoMixItems(mode, sourceMode);
+  let items = options.orderedItems || await collectAutoMixItems(mode, sourceMode);
   if (promptPlan && !promptPlan.incomingWasLoaded && Number.isFinite(promptPlan.targetPlaybackTime) && promptPlan.targetPlaybackTime - currentDeckTime(activeDeck || promptPlan.activeDeck) < 2) {
     autoMixState.lastError = "Incoming track preparation could not finish before the requested deadline. Extend the transition time or transition when ready.";
     setSmartMixStatus(autoMixState.lastError);
@@ -6305,7 +6574,26 @@ async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = nu
     return false;
   }
   if (autoMixState.running) stopAiMix({ keepDecks: true, silent: true });
-  const plan = buildSmartMixPlan(items, mode, activeDeck ? "decks" : sourceMode);
+  const plan = buildSmartMixPlan(items, mode, options.preserveOrder ? "decks" : activeDeck ? "decks" : sourceMode);
+  if (options.chapterPlan) {
+    plan.transitions.forEach((transition, index) => {
+      const chapter = options.chapterPlan[index];
+      if (!chapter) return;
+      const styleHint = /echo/.test(chapter.transitionStyle)
+        ? `filter ${chapter.transitionStyle}`
+        : /drop|callout/.test(chapter.transitionStyle)
+          ? `drop mix ${chapter.transitionStyle}`
+          : /scratch/.test(chapter.transitionStyle)
+            ? `quick ${chapter.transitionStyle}`
+            : /breakdown reset/.test(chapter.transitionStyle)
+              ? `long ${chapter.transitionStyle}`
+              : chapter.transitionStyle;
+      const style = supportedPromptStyle(styleHint).style;
+      transition.style = style;
+      transition.filterSweep = /filter|bass|long|vocal|drop/.test(style);
+      transition.note = `${chapter.name}: ${style.replace(/-/g, " ")} into ${plan.items[(index + 1) % plan.items.length]?.mixtapeChapter || "next chapter"}`;
+    });
+  }
   if (promptPlan && plan.transitions[0]) applyPromptToTransition(plan.transitions[0], promptPlan);
   if (promptPlan?.requiresSaferPlan) {
     smartPromptState.state = "Unsafe Plan Detected";
@@ -7080,13 +7368,28 @@ function executeTransition(plan = transitionController.activePlan) {
 }
 
 function completeTransition(planId = transitionController.activePlan?.id) {
-  if (transitionController.activePlan && planId && transitionController.activePlan.id !== planId) return false;
+  const plan = transitionController.activePlan;
+  if (plan && planId && plan.id !== planId) return false;
   transitionController.transitionStarted = false;
   transitionController.crossfaderAutomationActive = false;
-  if (transitionController.activePlan) transitionController.activePlan.status = "Complete";
+  if (plan) plan.status = "Complete";
   transitionController.schedulerActive = false;
   transitionController.pollTimer = null;
   transitionController.activePlan = null;
+
+  const belongsToUnadvancedAutoMix = autoMixState.running
+    && plan
+    && autoMixState.items.length > 1
+    && plan.activeDeck === autoMixState.activeDeck
+    && plan.incomingDeck === autoMixState.incomingDeck;
+  if (belongsToUnadvancedAutoMix) {
+    autoMixState.index = autoMixState.preparedIndex ?? (autoMixState.index + 1) % autoMixState.items.length;
+    autoMixState.activeDeck = plan.incomingDeck || autoMixState.incomingDeck;
+    autoMixState.incomingDeck = autoMixState.activeDeck === "a" ? "b" : "a";
+    autoMixState.preparedDeck = null;
+    autoMixState.preparedIndex = null;
+    if (autoMixState.running) scheduleNextAutoMix();
+  }
   return true;
 }
 
@@ -10578,6 +10881,7 @@ function updateProjectStorageBindings(projectId) {
   initialProjectSession = ProjectRegistry.getSession();
   DITC_METADATA_KEY = projectStorageKey("ditc-metadata");
   DITC_SOURCES_KEY = projectStorageKey("ditc-sources");
+  DITC_SMART_CRATES_KEY = projectStorageKey("ditc-smart-crates");
   PRODUCER_STUDIO_KEY = projectStorageKey("producer-studio");
   SMART_PROMPT_HISTORY_KEY = projectStorageKey("smart-mix-history");
   SMART_PROMPT_RECIPES_KEY = projectStorageKey("smart-mix-recipes");
@@ -10599,6 +10903,9 @@ function resetProjectRuntime(projectId) {
   replaceProjectRuntimeState(smartPromptState, projectRuntimeDefaults.smartPromptState);
   replaceProjectRuntimeState(autoMixState, projectRuntimeDefaults.autoMixState);
   replaceProjectRuntimeState(ditcState, projectRuntimeDefaults.ditcState); ditcState.smartMixIds = new Set();
+  Object.assign(smartCrateEditorState, { editingId: null, name: "", combinator: "all", rules: [] });
+  if (document.querySelector("#smartCrateEditor")) document.querySelector("#smartCrateEditor").style.display = "none";
+  Object.assign(similarTracksState, { loading: false, results: [], error: null, forTrackId: null });
   replaceProjectRuntimeState(mixtapeReferenceState, projectRuntimeDefaults.mixtapeReferenceState);
   sourceFiles.splice(0); crateSelection.local.clear(); crateSelection.saved.clear();
   aiPlanState = null; aiSearchResultsState = []; mixtapeInspirationState = null;
@@ -10615,6 +10922,7 @@ async function restoreProjectRuntime(projectId) {
   updateProjectStorageBindings(projectId);
   resetProjectRuntime(projectId);
   restorePadWorkspace(); restoreBeatForgeState(); restoreHarmonyState(); readProducerStudioStorage();
+  await loadStockFxPack();
   editorState.projectId = projectId; editorState.name = producerStudioState.projectName ? `${producerStudioState.projectName} Arrangement` : editorState.name; restoreArrangementProject();
   readSmartPromptStorage();
   initializeProducerMemory(); initializeFinishingServices(); initializeProjectIntelligence(); initializeRecommendationEngine(); initializeMissionEngine(); initializeStemCapabilities(); applyStemMemoryPreferences(); resumeOwnedStemJobs();
@@ -10818,7 +11126,8 @@ function repointAssetDomainReferences(duplicate, retained) {
 
 async function handleAssetRelinkFile(file) {
   const target = ProjectAssets.get(assetManagerState.pendingRelinkAssetId, ACTIVE_PROJECT_ID); assetManagerState.pendingRelinkAssetId = null; if (!target || !file) return; if (!isSupportedAudioFile(file)) throw new Error("Choose a supported audio file for relinking."); const buffer = await loadAudioFile(file); const mismatch = target.duration && Math.abs(buffer.duration - target.duration) / Math.max(.01, target.duration) > .25; if (mismatch && !window.confirm(`The replacement is ${formatTime(buffer.duration)}, which differs substantially from the expected ${formatTime(target.duration)}. Keep existing timing and continue?`)) return;
-  addLocalSourceFile(file, { buffer, silent: true }); const local = sourceFiles[0]; const localAsset = ProjectAssets.list(ACTIVE_PROJECT_ID).find((asset) => asset.owningDomain === "DITC" && asset.sourceId === local.id); if (!localAsset) throw new Error("The replacement file could not be registered.");
+  const tags = await readEmbeddedAudioTags(file);
+  addLocalSourceFile(file, { buffer, silent: true, ...(tags ? { metadata: tags, preferMetadata: true } : {}) }); const local = sourceFiles[0]; const localAsset = ProjectAssets.list(ACTIVE_PROJECT_ID).find((asset) => asset.owningDomain === "DITC" && asset.sourceId === local.id); if (!localAsset) throw new Error("The replacement file could not be registered.");
   if (target.assetType === "Provider Metadata Reference") { ProjectAssets.linkMetadata(target.assetId, localAsset.assetId, { matchMethod: "Manual", userConfirmed: true, originalProvider: target.providerReference?.provider, title: target.metadata?.title, artist: target.metadata?.artist, album: target.metadata?.album }, ACTIVE_PROJECT_ID); const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]"); const source = sources.find((item) => item.url === target.sourceId || (item.providerId === target.providerReference?.provider && item.providerTrackId === target.providerReference?.externalId)); if (source) { Object.assign(source, { linkedAssetId: localAsset.assetId, matchMethod: "Manual", matchConfidence: null, linkedAt: new Date().toISOString(), playbackCapability: "Local Audio Linked", playbackLabel: "Local Audio Linked", localLinkStatus: "Linked" }); localStorage.setItem(DITC_SOURCES_KEY, JSON.stringify(sources)); } }
   else { const result = ProjectAssets.relink(target.assetId, { linkedAssetId: localAsset.assetId, matchMethod: "Manual", userConfirmed: true, keepExistingTiming: true, localReference: { kind: "linked-project-asset", assetId: localAsset.assetId }, originalFilename: file.name, mimeType: file.type, sizeBytes: file.size, duration: buffer.duration }, ACTIVE_PROJECT_ID); const impactedClips = editorState.clips.filter((clip) => clip.id === target.sourceId || clip.sourceId === target.sourceId); if (impactedClips.length) { pushArrangementHistory(`Relink ${target.displayName}`); impactedClips.forEach((clip) => { clip.source = { id: local.id, label: file.name, detail: "Relinked through Asset Manager", duration: buffer.duration, sourceKind: "crate", fileName: file.name, buffer, playable: true }; clip.sourceKind = "crate"; clip.sourceId = local.id; clip.missingSource = false; clip.relinkRequired = false; }); editorState.runtimeSourceCache.set(`crate:${local.id}`, buffer); arrangementChanged(`Relinked ${impactedClips.length} arrangement reference${impactedClips.length === 1 ? "" : "s"} through Asset Manager`, { type: "arrangement-source-relinked" }); renderEditor(); } if (result.warnings.length) assetManagerState.lastError = `Relinked with warning: ${result.warnings.join(" ")}`; }
   setSourceStatus(`Linked ${file.name} through Project Asset Manager.`); refreshProjectAssetIndex(); renderSources(); renderAssetManager();
@@ -10883,7 +11192,7 @@ function setupProviderEvents() {
 function setupLocalLibraryEvents() {
   const chooseForLibrary = (library) => { localLibraryState.pendingRelinkLibraryId = library?.libraryId || null; const input = document.querySelector(library?.libraryType === "Selected Folder" || library?.libraryType === "External Drive" || library?.libraryType === "Apple Music Local Files" ? "#ditcFolderInput" : "#ditcFileInput"); input.value = ""; input.click(); };
   document.querySelector("#localLibrarySettingsOpen")?.addEventListener("click", () => openLocalLibrarySettings());
-  document.querySelector("#localLibraryPanel")?.addEventListener("click", (event) => { const emptyAction = event.target.closest("[data-local-library-empty-action]")?.dataset.localLibraryEmptyAction; if (emptyAction === "folder") document.querySelector("#ditcFolderInput").click(); if (emptyAction === "files") document.querySelector("#ditcFileInput").click(); if (emptyAction === "playlist") document.querySelector("#localPlaylistInput").click(); if (emptyAction === "assets") { try { LocalLibraries.createExistingAssetsLibrary({ projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null }); renderLocalLibraryPanel(); } catch (error) { localLibraryState.lastError = error.message; renderLocalLibraryPanel(); } } if (emptyAction === "apple") { document.querySelector("#localLibraryStatus").textContent = "Apple Music local files are supported only when you explicitly select accessible, unprotected audio or an implemented playlist export. Cloud-only and DRM-protected items remain metadata only."; } const card = event.target.closest("[data-local-library-id]"); const action = event.target.closest("[data-local-library-action]")?.dataset.localLibraryAction; if (card && action === "settings") openLocalLibrarySettings(card.dataset.localLibraryId); if (card && action === "reauthorize") chooseForLibrary(LocalLibraries.getLocalLibrary(card.dataset.localLibraryId)); });
+  document.querySelector("#localLibraryPanel")?.addEventListener("click", async (event) => { const emptyAction = event.target.closest("[data-local-library-empty-action]")?.dataset.localLibraryEmptyAction; if (emptyAction === "folder") await triggerMusicFolderSelection(); if (emptyAction === "files") document.querySelector("#ditcFileInput").click(); if (emptyAction === "playlist") document.querySelector("#localPlaylistInput").click(); if (emptyAction === "assets") { try { LocalLibraries.createExistingAssetsLibrary({ projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null }); renderLocalLibraryPanel(); } catch (error) { localLibraryState.lastError = error.message; renderLocalLibraryPanel(); } } if (emptyAction === "apple") { document.querySelector("#localLibraryStatus").textContent = "Apple Music local files are supported only when you explicitly select accessible, unprotected audio or an implemented playlist export. Cloud-only and DRM-protected items remain metadata only."; } const card = event.target.closest("[data-local-library-id]"); const action = event.target.closest("[data-local-library-action]")?.dataset.localLibraryAction; if (card && action === "settings") openLocalLibrarySettings(card.dataset.localLibraryId); if (card && action === "reauthorize") chooseForLibrary(LocalLibraries.getLocalLibrary(card.dataset.localLibraryId)); });
   document.querySelector("#localLibraryRefreshAll")?.addEventListener("click", () => { const results = LocalLibraries.listLocalLibraries().map((library) => LocalLibraries.validateLibraryPermission(library.libraryId)); const required = results.filter((result) => result.permissionState !== "Granted" && result.permissionState !== "Not Applicable").length; document.querySelector("#localLibraryStatus").textContent = required ? `${required} librar${required === 1 ? "y requires" : "ies require"} reauthorization. Indexed metadata was preserved.` : "All available local-library permissions were validated."; renderLocalLibraryPanel(); renderLocalLibrarySettings(); });
   document.querySelectorAll("[data-local-library-settings-close]").forEach((button) => button.addEventListener("click", () => document.querySelector("#localLibrarySettingsDialog")?.close()));
   document.querySelector("#localLibrarySearch")?.addEventListener("input", (event) => { localLibraryState.search = event.target.value; renderLocalLibrarySettings(); });
@@ -11138,7 +11447,63 @@ function addDroppedSourceUrl(url) {
   }
 }
 
+async function importDitcFiles(files, libraryType) {
+  const selection = [...files];
+  if (!selection.length) return;
+  try {
+    const result = await indexLocalLibrarySelection(selection, libraryType, localLibraryState.pendingRelinkLibraryId);
+    ditcState.lastImportResult = `Indexed ${result.filesIndexed} of ${result.filesDiscovered} selected files`;
+    setSourceStatus(result.filesIndexed ? `Indexed ${result.filesIndexed} track${result.filesIndexed === 1 ? "" : "s"}; playable formats are available in DITC.` : "No supported local audio was indexed.");
+  } catch (error) {
+    localLibraryState.lastError = error.message;
+    setSourceStatus(`Local-library indexing failed: ${error.message}`);
+  } finally {
+    localLibraryState.pendingRelinkLibraryId = null;
+    renderSources(); renderEditorSourceBin(); renderAiContext();
+  }
+}
+
+async function triggerMusicFolderSelection() {
+  if (masterFolderSupported()) {
+    try {
+      const { files } = await collectFilesFromDirectoryPicker();
+      if (files.length) await importDitcFiles(files, "Selected Folder");
+    } catch (error) {
+      if (error.name !== "AbortError") setSourceStatus(`Folder selection failed: ${error.message}`);
+    }
+  } else {
+    document.querySelector("#ditcFolderInput").click();
+  }
+}
+
 function setupEvents() {
+  const suggestionImportInput = document.createElement("input");
+  suggestionImportInput.id = "similarTrackImportInput";
+  suggestionImportInput.type = "file";
+  suggestionImportInput.accept = "audio/*,.mp3,.wav,.wave,.aif,.aiff,.flac,.aac,.m4a,.alac,.ogg,.oga,.opus,.webm";
+  suggestionImportInput.hidden = true;
+  document.body.appendChild(suggestionImportInput);
+  suggestionImportInput.addEventListener("change", async () => {
+    const index = Number(suggestionImportInput.dataset.suggestionIndex);
+    const suggestion = similarTracksState.results[index];
+    const file = suggestionImportInput.files[0];
+    suggestionImportInput.value = "";
+    if (!suggestion || !file) return;
+    try {
+      const buffer = await loadAudioFile(file);
+      const tags = await readEmbeddedAudioTags(file);
+      const added = addLocalSourceFile(file, { buffer, silent: true, preferMetadata: true, metadata: { title: suggestion.title, artist: suggestion.artist, tags: ["Suggested"], ...(tags || {}) } });
+      if (!added) throw new Error(ditcState.lastError || "The selected audio file could not be imported.");
+      const source = sourceFiles[0];
+      source.tags = [...new Set([...(source.tags || []), "Suggested"])];
+      persistDitcTrack(source);
+      setSourceStatus(`Imported ${suggestion.artist} - ${suggestion.title} from a local audio file.`);
+      renderSources();
+      renderSimilarTracksPanel();
+    } catch (error) {
+      setSourceStatus(`Suggestion import failed: ${error.message}`);
+    }
+  });
   document.querySelector("#audioEnable").addEventListener("click", async () => {
     try {
       await AudioEngine.init();
@@ -12080,7 +12445,35 @@ function setupEvents() {
   document.querySelector("#sourceList").addEventListener("dragend", () => {
     ditcState.dragTarget = "None";
   });
-  document.querySelector("#ditcInspector").addEventListener("click", (event) => {
+  document.querySelector("#ditcInspector").addEventListener("click", async (event) => {
+    if (event.target.closest("#connectMasterFolderButton")) {
+      await connectMasterFolder();
+      return;
+    }
+    const suggestionDeck = event.target.closest("[data-suggestion-load-deck]");
+    if (suggestionDeck) {
+      handleSourceFileAction(`deck-${suggestionDeck.dataset.suggestionLoadDeck}`, suggestionDeck.dataset.sourceId);
+      return;
+    }
+    const suggestionImport = event.target.closest("[data-suggestion-import]");
+    if (suggestionImport) {
+      const index = Number(suggestionImport.dataset.suggestionImport);
+      const suggestion = similarTracksState.results[index];
+      if (suggestion && masterFolderState.handle) {
+        setSourceStatus(`Searching master folder for "${suggestion.title}"...`);
+        const found = await findFileInMasterFolder(suggestion);
+        if (found) {
+          addLocalSourceFile(found.file, { metadata: found.tags, preferMetadata: true });
+          renderSources();
+          renderSimilarTracksPanel();
+          return;
+        }
+        setSourceStatus(`No match found in master folder for "${suggestion.title}". Choose a file manually.`);
+      }
+      suggestionImportInput.dataset.suggestionIndex = String(index);
+      suggestionImportInput.click();
+      return;
+    }
     const action = event.target.closest("[data-source-action]");
     if (action) {
       handleSourceFileAction(action.dataset.sourceAction, action.dataset.sourceId);
@@ -12136,10 +12529,99 @@ function setupEvents() {
     renderSources();
   });
   document.querySelector("#ditcCollectionList").addEventListener("click", (event) => {
+    if (event.target.closest("#newSmartCrateButton")) {
+      openSmartCrateEditor();
+      return;
+    }
+    const editButton = event.target.closest("[data-smart-crate-edit]");
+    if (editButton) {
+      openSmartCrateEditor(editButton.dataset.smartCrateEdit);
+      return;
+    }
+    const deleteButton = event.target.closest("[data-smart-crate-delete]");
+    if (deleteButton) {
+      const crateId = deleteButton.dataset.smartCrateDelete;
+      writeSmartCrates(readSmartCrates().filter((crate) => crate.id !== crateId));
+      if (ditcState.filter === `crate:${crateId}`) ditcState.filter = "all";
+      renderDitcCollections();
+      renderSources();
+      return;
+    }
     const button = event.target.closest("[data-ditc-filter]");
     if (!button) return;
     ditcState.filter = button.dataset.ditcFilter;
     renderSources();
+  });
+  document.querySelector("#smartCrateName").addEventListener("input", (event) => {
+    smartCrateEditorState.name = event.target.value;
+  });
+  document.querySelector("#smartCrateCombinator").addEventListener("change", (event) => {
+    smartCrateEditorState.combinator = event.target.value;
+  });
+  document.querySelector("#smartCrateRuleList").addEventListener("change", (event) => {
+    const fieldSelect = event.target.closest("[data-smart-crate-rule-field]");
+    if (fieldSelect) {
+      const index = Number(fieldSelect.dataset.smartCrateRuleField);
+      const field = fieldSelect.value;
+      const operator = SMART_CRATE_OPERATORS[SMART_CRATE_FIELDS[field].type][0].id;
+      smartCrateEditorState.rules[index] = { field, operator, value: "" };
+      renderSmartCrateEditor();
+      return;
+    }
+    const operatorSelect = event.target.closest("[data-smart-crate-rule-operator]");
+    if (operatorSelect) {
+      const index = Number(operatorSelect.dataset.smartCrateRuleOperator);
+      const rule = smartCrateEditorState.rules[index];
+      rule.operator = operatorSelect.value;
+      rule.value = operatorSelect.value === "between" ? ["", ""] : Array.isArray(rule.value) ? "" : rule.value;
+      renderSmartCrateEditor();
+    }
+  });
+  document.querySelector("#smartCrateRuleList").addEventListener("input", (event) => {
+    const input = event.target.closest("[data-smart-crate-rule-value]");
+    if (!input) return;
+    const index = Number(input.dataset.smartCrateRuleValue);
+    const part = input.dataset.smartCrateValuePart;
+    if (part === undefined) smartCrateEditorState.rules[index].value = input.value;
+    else {
+      if (!Array.isArray(smartCrateEditorState.rules[index].value)) smartCrateEditorState.rules[index].value = ["", ""];
+      smartCrateEditorState.rules[index].value[Number(part)] = input.value;
+    }
+  });
+  document.querySelector("#smartCrateRuleList").addEventListener("click", (event) => {
+    const deleteButton = event.target.closest("[data-smart-crate-rule-delete]");
+    if (!deleteButton) return;
+    smartCrateEditorState.rules.splice(Number(deleteButton.dataset.smartCrateRuleDelete), 1);
+    renderSmartCrateEditor();
+  });
+  document.querySelector("#addSmartCrateRuleButton").addEventListener("click", () => {
+    smartCrateEditorState.rules.push({ field: "genre", operator: "equals", value: "" });
+    renderSmartCrateEditor();
+  });
+  document.querySelector("#saveSmartCrateButton").addEventListener("click", () => {
+    const name = smartCrateEditorState.name.trim();
+    if (!name) {
+      setSourceStatus("Enter a Smart Crate name before saving.");
+      document.querySelector("#smartCrateName").focus();
+      return;
+    }
+    const crate = {
+      id: smartCrateEditorState.editingId || `crate-${createId()}`,
+      name,
+      combinator: smartCrateEditorState.combinator,
+      rules: smartCrateEditorState.rules.map((rule) => ({ ...rule, value: Array.isArray(rule.value) ? [...rule.value] : rule.value }))
+    };
+    const crates = readSmartCrates();
+    const existingIndex = crates.findIndex((item) => item.id === crate.id);
+    if (existingIndex === -1) crates.push(crate);
+    else crates[existingIndex] = crate;
+    writeSmartCrates(crates);
+    document.querySelector("#smartCrateEditor").style.display = "none";
+    renderDitcCollections();
+    renderSources();
+  });
+  document.querySelector("#cancelSmartCrateButton").addEventListener("click", () => {
+    document.querySelector("#smartCrateEditor").style.display = "none";
   });
   document.querySelector("#ditcModeToggle").addEventListener("click", (event) => {
     ditcState.advanced = !ditcState.advanced;
@@ -12153,22 +12635,10 @@ function setupEvents() {
     event.currentTarget.setAttribute("aria-pressed", ditcState.comfortable ? "true" : "false");
     event.currentTarget.textContent = ditcState.comfortable ? "Compact View" : "Comfortable View";
   });
-  const importDitcFiles = async (files, libraryType) => {
-    const selection = [...files];
-    if (!selection.length) return;
-    try {
-      const result = await indexLocalLibrarySelection(selection, libraryType, localLibraryState.pendingRelinkLibraryId);
-      ditcState.lastImportResult = `Indexed ${result.filesIndexed} of ${result.filesDiscovered} selected files`;
-      setSourceStatus(result.filesIndexed ? `Indexed ${result.filesIndexed} track${result.filesIndexed === 1 ? "" : "s"}; playable formats are available in DITC.` : "No supported local audio was indexed.");
-    } catch (error) {
-      localLibraryState.lastError = error.message;
-      setSourceStatus(`Local-library indexing failed: ${error.message}`);
-    } finally {
-      localLibraryState.pendingRelinkLibraryId = null;
-      renderSources(); renderEditorSourceBin(); renderAiContext();
-    }
-  };
   document.querySelector("#ditcFileInput").addEventListener("change", async (event) => { await importDitcFiles(event.target.files, "Selected Files"); event.target.value = ""; });
+  document.querySelector("#selectMusicFolderButton").addEventListener("click", async () => {
+    await triggerMusicFolderSelection();
+  });
   document.querySelector("#ditcFolderInput").addEventListener("change", async (event) => { await importDitcFiles(event.target.files, "Selected Folder"); event.target.value = ""; });
   document.querySelector("#ditcApplyBatchTag").addEventListener("click", () => {
     const tag = document.querySelector("#ditcBatchTag").value.trim();
@@ -12214,7 +12684,8 @@ function setupEvents() {
   setupDitcDropAction("#sampler", "pad");
   setupDitcDropAction("#smartMixPanel", "smartmix");
   setupDropZone(document.querySelector("#sourceDrop"), async (file) => {
-    addLocalSourceFile(file);
+    const tags = await readEmbeddedAudioTags(file);
+    addLocalSourceFile(file, tags ? { metadata: tags, preferMetadata: true } : {});
   });
   setupDropZone(document.querySelector("#stemDrop"), loadStemFile);
   setupDropZone(document.querySelector("#mixtapeReferenceDrop"), loadMixtapeReferenceFile);
@@ -12331,6 +12802,115 @@ function readDitcMetadata() {
   }
 }
 
+function readSmartCrates() {
+  try {
+    return JSON.parse(localStorage.getItem(DITC_SMART_CRATES_KEY) || "[]");
+  } catch {
+    ditcState.lastError = "Smart Crates could not be read. Defaults are being used.";
+    return [];
+  }
+}
+
+function writeSmartCrates(crates) {
+  localStorage.setItem(DITC_SMART_CRATES_KEY, JSON.stringify(crates));
+}
+
+const SMART_CRATE_FIELDS = {
+  genre: { label: "Genre", type: "string", get: (track) => track.genre || track.analysis?.genre || "" },
+  artist: { label: "Artist", type: "string", get: (track) => track.artist || "" },
+  album: { label: "Album", type: "string", get: (track) => track.album || "" },
+  year: { label: "Year", type: "number", get: (track) => Number(track.year) || null },
+  bpm: { label: "BPM", type: "number", get: (track) => Number(track.analysis?.bpm) || null },
+  key: { label: "Key", type: "string", get: (track) => track.analysis?.key || "" },
+  energy: { label: "Energy", type: "string", get: (track) => track.analysis?.energy || "" },
+  mood: { label: "Mood", type: "string", get: (track) => track.mood || track.analysis?.mood || "" },
+  tags: { label: "Tags", type: "list", get: (track) => track.tags || [] },
+  favorite: { label: "Favorite", type: "boolean", get: (track) => Boolean(track.favorite) },
+  dateAdded: { label: "Date Added", type: "date", get: (track) => track.addedAt || null },
+  duration: { label: "Duration (sec)", type: "number", get: (track) => track.analysis?.duration || track.buffer?.duration || null }
+};
+
+const SMART_CRATE_OPERATORS = {
+  string: [
+    { id: "equals", label: "is" },
+    { id: "contains", label: "contains" },
+    { id: "not_contains", label: "does not contain" }
+  ],
+  number: [
+    { id: "equals", label: "=" },
+    { id: "greater_than", label: ">" },
+    { id: "less_than", label: "<" },
+    { id: "between", label: "between" }
+  ],
+  list: [
+    { id: "contains", label: "includes" },
+    { id: "not_contains", label: "does not include" }
+  ],
+  boolean: [
+    { id: "is_true", label: "is true" },
+    { id: "is_false", label: "is false" }
+  ],
+  date: [
+    { id: "within_last_days", label: "within the last (days)" },
+    { id: "before", label: "before" },
+    { id: "after", label: "after" }
+  ]
+};
+
+function evaluateSmartCrateRule(track, rule) {
+  const fieldDef = SMART_CRATE_FIELDS[rule.field];
+  if (!fieldDef) return false;
+  const value = fieldDef.get(track);
+  switch (fieldDef.type) {
+    case "string": {
+      const a = String(value || "").toLowerCase();
+      const b = String(rule.value || "").toLowerCase();
+      if (rule.operator === "equals") return a === b;
+      if (rule.operator === "contains") return a.includes(b);
+      if (rule.operator === "not_contains") return !a.includes(b);
+      return false;
+    }
+    case "number": {
+      if (value === null || value === undefined) return false;
+      if (rule.operator === "equals") return value === Number(rule.value);
+      if (rule.operator === "greater_than") return value > Number(rule.value);
+      if (rule.operator === "less_than") return value < Number(rule.value);
+      if (rule.operator === "between") {
+        const [min, max] = Array.isArray(rule.value) ? rule.value : [0, 0];
+        return value >= Number(min) && value <= Number(max);
+      }
+      return false;
+    }
+    case "list": {
+      const lower = (value || []).map((item) => String(item).toLowerCase());
+      const target = String(rule.value || "").toLowerCase();
+      if (rule.operator === "contains") return lower.includes(target);
+      if (rule.operator === "not_contains") return !lower.includes(target);
+      return false;
+    }
+    case "boolean": {
+      if (rule.operator === "is_true") return value === true;
+      if (rule.operator === "is_false") return value === false;
+      return false;
+    }
+    case "date": {
+      if (!value) return false;
+      if (rule.operator === "within_last_days") return (Date.now() - value) < Number(rule.value) * 86400000;
+      if (rule.operator === "before") return value < new Date(rule.value).getTime();
+      if (rule.operator === "after") return value > new Date(rule.value).getTime();
+      return false;
+    }
+    default:
+      return false;
+  }
+}
+
+function evaluateSmartCrate(track, crate) {
+  if (!crate.rules.length) return true;
+  const results = crate.rules.map((rule) => evaluateSmartCrateRule(track, rule));
+  return crate.combinator === "any" ? results.some(Boolean) : results.every(Boolean);
+}
+
 function persistDitcTrack(track) {
   try {
     const metadata = readDitcMetadata();
@@ -12366,6 +12946,38 @@ function inferDitcMetadata(fileName) {
   };
 }
 
+const embeddedAudioTagCache = new WeakMap();
+
+function readEmbeddedAudioTags(file) {
+  if (file && embeddedAudioTagCache.has(file)) return embeddedAudioTagCache.get(file);
+  const request = new Promise((resolve) => {
+    if (typeof window.jsmediatags === "undefined") {
+      resolve(null);
+      return;
+    }
+    window.jsmediatags.read(file, {
+      onSuccess: (result) => {
+        const tags = result.tags || {};
+        console.log("RAW TAGS:", tags); // TEMP DEBUG - remove after diagnosis
+        const picture = tags.picture || null;
+        resolve({
+          title: tags.title || null,
+          artist: tags.artist || null,
+          album: tags.album || null,
+          year: tags.year || null,
+          genre: tags.genre || null,
+          trackNumber: tags.track || null,
+          hasArtwork: Boolean(picture),
+          metadataProvenance: "embedded-tag"
+        });
+      },
+      onError: () => resolve(null)
+    });
+  });
+  if (file) embeddedAudioTagCache.set(file, request);
+  return request;
+}
+
 function addLocalSourceFile(file, options = {}) {
   if (!isSupportedAudioFile(file)) {
     ditcState.lastError = `${file?.name || "File"} is not a supported audio format.`;
@@ -12382,13 +12994,18 @@ function addLocalSourceFile(file, options = {}) {
   const inferred = inferDitcMetadata(file.name);
   const saved = readDitcMetadata()[storageId] || {};
   const indexed = options.metadata || {};
+  const preferredTitle = options.preferMetadata ? indexed.title || saved.title : saved.title || indexed.title;
+  const preferredArtist = options.preferMetadata ? indexed.artist || saved.artist : saved.artist || indexed.artist;
+  const preferredTags = options.preferMetadata
+    ? [...new Set([...(Array.isArray(saved.tags) ? saved.tags : []), ...(Array.isArray(indexed.tags) ? indexed.tags : [])])]
+    : Array.isArray(saved.tags) ? saved.tags : Array.isArray(indexed.tags) ? indexed.tags : [];
   sourceFiles.unshift({
     id: createId(),
     projectId: ACTIVE_PROJECT_ID,
     storageId,
     name: file.name,
-    title: saved.title || indexed.title || inferred.title,
-    artist: saved.artist || indexed.artist || inferred.artist,
+    title: preferredTitle || inferred.title,
+    artist: preferredArtist || inferred.artist,
     album: saved.album || indexed.album || inferred.album,
     year: saved.year || indexed.year || "",
     genre: saved.genre || indexed.genre || "",
@@ -12400,7 +13017,7 @@ function addLocalSourceFile(file, options = {}) {
     buffer: options.buffer || null,
     analysis: options.analysis || saved.analysis || null,
     notes: options.notes || saved.notes || "",
-    tags: Array.isArray(saved.tags) ? saved.tags : [],
+    tags: preferredTags,
     favorite: Boolean(saved.favorite),
     addedAt: Date.now(),
     padReady: false,
@@ -12582,6 +13199,7 @@ async function handleSourceFileAction(action, id) {
   const item = sourceFiles.find((source) => source.id === id);
   if (!item) return;
   if (action === "select") {
+    if (ditcState.selectedTrackId !== id) Object.assign(similarTracksState, { loading: false, results: [], error: null, forTrackId: null });
     ditcState.selectedTrackId = id;
     renderSources();
     return;
@@ -12600,6 +13218,10 @@ async function handleSourceFileAction(action, id) {
   }
   if (action === "delete") {
     if (window.confirm(`Remove ${item.name} from this DITC session?`)) deleteLocalSourceFile(id);
+    return;
+  }
+  if (action === "similar") {
+    await fetchSimilarTracks(item);
     return;
   }
   setSourceStatus(`Loading ${item.name}...`);
@@ -12698,8 +13320,8 @@ async function handleSavedSourceAction(action, index) {
   } catch (error) { setSourceStatus(`${item.name} cannot play: ${error.message} Relink it through Asset Manager.`); }
 }
 
-async function loadAudioFromUrl(url) {
-  await AudioEngine.init();
+async function loadAudioFromUrl(url, options = {}) {
+  await AudioEngine.init({ resume: options.resume });
   const response = await fetch(url, { mode: "cors" });
   if (!response.ok) {
     throw new Error("Unable to fetch audio URL.");
@@ -12961,11 +13583,31 @@ function renderLocalLibrarySettings() {
 }
 
 async function indexLocalLibrarySelection(files, libraryType = "Selected Files", existingLibraryId = null) {
-  const list = Array.from(files || []); if (!list.length) return; const folderName = list[0]?.webkitRelativePath?.split("/")[0] || ""; let libraryId = existingLibraryId;
+  const list = Array.from(files || []); if (!list.length) return { filesIndexed: 0, filesDiscovered: 0, duplicatesFound: 0, filesSkipped: 0, status: "Empty Selection" }; const folderName = list[0]?.webkitRelativePath?.split("/")[0] || ""; let libraryId = existingLibraryId;
   if (!libraryId) { const library = LocalLibraries.createLocalLibrary({ displayName: libraryType === "Selected Folder" ? folderName || "Selected Music Folder" : `Selected Audio Files · ${new Date().toLocaleDateString()}`, libraryType, status: "Indexing", permissionState: "Granted", rootReferences: [{ displayName: folderName || `${list.length} selected file${list.length === 1 ? "" : "s"}`, referenceType: libraryType === "Selected Folder" ? "Browser Folder Selection" : "Browser File Selection", permissionState: "Granted", available: true, persistentReference: { kind: "browser-selection-metadata", durable: false, relativePrefix: folderName } }] }); libraryId = library.libraryId; }
-  localLibraryState.lastError = null; const result = existingLibraryId ? await LocalLibraries.relinkLibraryRoot(libraryId, { files: list, projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null, pathForFile: fileFolderPath }) : await LocalLibraries.indexLibrary(libraryId, { files: list, projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null, pathForFile: fileFolderPath }); localLibraryState.activeJobId = null;
+  const embeddedMetadata = new Map();
+  const BATCH_SIZE = 25;
+  folderIndexProgress.active = true;
+  folderIndexProgress.phase = "tagging";
+  folderIndexProgress.total = list.length;
+  folderIndexProgress.completed = 0;
+  folderIndexProgress.startedAt = Date.now();
+  renderFolderIndexProgress();
+  for (let i = 0; i < list.length; i += BATCH_SIZE) {
+    const batch = list.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(batch.map(async (file) => [file, await readEmbeddedAudioTags(file)]));
+    for (const [file, tags] of results) embeddedMetadata.set(file, tags);
+    folderIndexProgress.completed = Math.min(list.length, i + batch.length);
+    renderFolderIndexProgress();
+  }
+  folderIndexProgress.active = false;
+  folderIndexProgress.phase = "idle";
+  renderFolderIndexProgress();
+  const indexOptions = { files: list, projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null, pathForFile: fileFolderPath, metadataForFile: (file) => embeddedMetadata.get(file) || {} };
+  localLibraryState.lastError = null; const result = existingLibraryId ? await LocalLibraries.relinkLibraryRoot(libraryId, indexOptions) : await LocalLibraries.indexLibrary(libraryId, indexOptions); localLibraryState.activeJobId = null;
   if (result.status === "Failed") localLibraryState.lastError = result.error; else setSourceStatus(`Indexed ${result.filesIndexed} file${result.filesIndexed === 1 ? "" : "s"}; ${result.duplicatesFound} duplicate${result.duplicatesFound === 1 ? "" : "s"} found; ${result.filesSkipped} unavailable or skipped.`);
   renderLocalLibraryPanel(); renderLocalLibrarySettings(); renderSources(); renderEditorSourceBin(); renderAiContext();
+  return result;
 }
 
 function openLocalLibrarySettings(libraryId = null) { localLibraryState.selectedLibraryId = libraryId; renderLocalLibrarySettings(); const dialog = document.querySelector("#localLibrarySettingsDialog"); if (!dialog.open) dialog.showModal(); if (libraryId) requestAnimationFrame(() => dialog.querySelector(`[data-local-library-id="${CSS.escape(libraryId)}"]`)?.scrollIntoView({ block: "start" })); }
@@ -13094,7 +13736,7 @@ function renderSources() {
 }
 
 function ditcSearchText(track) {
-  return [track.title, track.artist, track.album, track.name, track.analysis?.genre, track.notes, track.folderPath, ...(track.tags || [])].join(" ").toLowerCase();
+  return [track.title, track.artist, track.album, track.name, track.genre || track.analysis?.genre, track.mood || track.analysis?.mood, track.notes, track.folderPath, ...(track.tags || [])].join(" ").toLowerCase();
 }
 
 function matchesDitcFilter(track) {
@@ -13111,6 +13753,10 @@ function matchesDitcFilter(track) {
   if (filter === "intro") return (track.tags || []).some((tag) => tag.toLowerCase() === "intro") || Boolean(track.analysis?.intro);
   if (filter === "outro") return (track.tags || []).some((tag) => tag.toLowerCase() === "outro") || Boolean(track.analysis?.outro);
   if (filter === "transition") return (track.tags || []).some((tag) => tag.toLowerCase() === "transition") || Boolean(ditcTransitionMatch(track));
+  if (filter.startsWith("crate:")) {
+    const crate = readSmartCrates().find((item) => item.id === filter.slice("crate:".length));
+    return crate ? evaluateSmartCrate(track, crate) : false;
+  }
   return true;
 }
 
@@ -13174,7 +13820,7 @@ function renderDitcTrackRow(source) {
     <label><span class="sr-only">Select ${escapeHtml(source.title)}</span><input type="checkbox" data-crate-kind="local" data-crate-id="${source.id}" ${crateSelection.local.has(source.id) ? "checked" : ""}></label>
     <span class="ditc-artwork" aria-hidden="true">${escapeHtml((source.title || source.name).slice(0, 2).toUpperCase())}</span>
     <button class="ditc-track-title" data-source-action="select" data-source-id="${source.id}" title="Inspect ${escapeHtml(source.title)}">${escapeHtml(source.title)}<span class="ditc-track-subtitle">${escapeHtml(source.artist)} · ${escapeHtml(source.album)}</span></button>
-    <span class="ditc-cell ditc-optional">${escapeHtml(source.analysis?.genre || "Unknown genre")}</span>
+    <span class="ditc-cell ditc-optional">${escapeHtml(source.genre || source.analysis?.genre || "Unknown genre")}</span>
     <span class="ditc-cell">${source.analysis?.bpm || "N/A"} BPM</span>
     <span class="ditc-cell">${escapeHtml(source.analysis?.key || "N/A")}<br>${ditcCamelot(source.analysis?.key)}</span>
     <span class="ditc-cell ditc-optional">${duration ? formatTime(duration) : "N/A"}<br>${transition?.label || "Not Scored"}</span>
@@ -13203,6 +13849,47 @@ function renderDitcReferenceRow(source, index) {
   return row;
 }
 
+function smartCrateRuleValueHtml(rule, fieldDef, index) {
+  if (fieldDef.type === "boolean") return `<span class="fine-print">No value needed</span>`;
+  if (fieldDef.type === "number" && rule.operator === "between") {
+    const [min, max] = Array.isArray(rule.value) ? rule.value : ["", ""];
+    return `<input type="number" step="any" data-smart-crate-rule-value="${index}" data-smart-crate-value-part="0" value="${escapeHtml(min)}" aria-label="Minimum value"><span class="fine-print">and</span><input type="number" step="any" data-smart-crate-rule-value="${index}" data-smart-crate-value-part="1" value="${escapeHtml(max)}" aria-label="Maximum value">`;
+  }
+  const inputType = fieldDef.type === "number" || (fieldDef.type === "date" && rule.operator === "within_last_days") ? "number" : fieldDef.type === "date" ? "date" : "text";
+  const step = inputType === "number" ? ` step="any"` : "";
+  return `<input type="${inputType}"${step} data-smart-crate-rule-value="${index}" value="${escapeHtml(rule.value ?? "")}" aria-label="Rule value">`;
+}
+
+function renderSmartCrateEditor() {
+  const panel = document.querySelector("#smartCrateEditor");
+  const list = document.querySelector("#smartCrateRuleList");
+  if (!panel || !list) return;
+  document.querySelector("#smartCrateName").value = smartCrateEditorState.name;
+  document.querySelector("#smartCrateCombinator").value = smartCrateEditorState.combinator;
+  list.innerHTML = smartCrateEditorState.rules.map((rule, index) => {
+    const fieldDef = SMART_CRATE_FIELDS[rule.field] || SMART_CRATE_FIELDS.genre;
+    const operators = SMART_CRATE_OPERATORS[fieldDef.type];
+    const operator = operators.some((item) => item.id === rule.operator) ? rule.operator : operators[0].id;
+    return `<div class="smart-crate-rule" data-smart-crate-rule="${index}">
+      <select data-smart-crate-rule-field="${index}" aria-label="Rule field">${Object.entries(SMART_CRATE_FIELDS).map(([id, definition]) => `<option value="${id}"${id === rule.field ? " selected" : ""}>${escapeHtml(definition.label)}</option>`).join("")}</select>
+      <select data-smart-crate-rule-operator="${index}" aria-label="Rule operator">${operators.map((item) => `<option value="${item.id}"${item.id === operator ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select>
+      <div class="smart-crate-rule-value">${smartCrateRuleValueHtml({ ...rule, operator }, fieldDef, index)}</div>
+      <button type="button" class="secondary-button" data-smart-crate-rule-delete="${index}" title="Delete rule">×</button>
+    </div>`;
+  }).join("") || `<p class="fine-print">No rules yet. A crate with no rules includes every track.</p>`;
+}
+
+function openSmartCrateEditor(crateId = null) {
+  const crate = crateId ? readSmartCrates().find((item) => item.id === crateId) : null;
+  Object.assign(smartCrateEditorState, crate
+    ? { editingId: crate.id, name: crate.name, combinator: crate.combinator, rules: crate.rules.map((rule) => ({ ...rule, value: Array.isArray(rule.value) ? [...rule.value] : rule.value })) }
+    : { editingId: null, name: "", combinator: "all", rules: [] });
+  const panel = document.querySelector("#smartCrateEditor");
+  panel.style.display = "";
+  renderSmartCrateEditor();
+  document.querySelector("#smartCrateName").focus();
+}
+
 function renderDitcCollections() {
   const container = document.querySelector("#ditcCollectionList");
   const definitions = [
@@ -13210,7 +13897,7 @@ function renderDitcCollections() {
     ["intro", "Intro Ideas"], ["outro", "Outro Ideas"], ["transition", "Transition Songs"], ["analyzed", "Analyzed"],
     ["unanalyzed", "Unanalyzed"], ["stems", "Stem Ready"], ["pads", "Pad Ready"], ["folders", "Imported Folders"]
   ];
-  container.innerHTML = definitions.map(([id, label]) => {
+  const defaultHtml = definitions.map(([id, label]) => {
     const count = sourceFiles.filter((track) => {
       const previous = ditcState.filter;
       ditcState.filter = id;
@@ -13220,13 +13907,26 @@ function renderDitcCollections() {
     }).length;
     return `<button class="ditc-collection-button${ditcState.filter === id ? " is-active" : ""}" data-ditc-filter="${id}"><span>${label}</span><span>${count}</span></button>`;
   }).join("");
+  const customCrates = readSmartCrates();
+  const customHtml = customCrates.map((crate) => {
+    const count = sourceFiles.filter((track) => evaluateSmartCrate(track, crate)).length;
+    const filterId = `crate:${crate.id}`;
+    return `<div class="ditc-collection-row">
+      <button class="ditc-collection-button${ditcState.filter === filterId ? " is-active" : ""}" data-ditc-filter="${escapeHtml(filterId)}"><span>${escapeHtml(crate.name)}</span><span>${count}</span></button>
+      <button class="ditc-crate-edit" data-smart-crate-edit="${escapeHtml(crate.id)}" title="Edit crate">✎</button>
+      <button class="ditc-crate-delete" data-smart-crate-delete="${escapeHtml(crate.id)}" title="Delete crate">×</button>
+    </div>`;
+  }).join("");
+  container.innerHTML = defaultHtml + customHtml + `<button id="newSmartCrateButton" class="secondary-button" type="button">+ New Smart Crate</button>`;
 }
 
 function renderDitcInspector() {
   const inspector = document.querySelector("#ditcInspector");
   const track = sourceFiles.find((source) => source.id === ditcState.selectedTrackId);
   if (!track) {
-    inspector.innerHTML = `<p class="fine-print">Select a track to inspect its metadata and destinations.</p>`;
+    inspector.innerHTML = `<p class="fine-print">Select a track to inspect its metadata and destinations.</p><button id="connectMasterFolderButton" class="secondary-button" type="button">Connect Master Folder</button><div id="masterFolderStatus" class="fine-print">Not connected. Suggestions will use manual file import.</div><div id="similarTracksOutput" class="fine-print" role="status" aria-live="polite">No suggestions yet. Select a track and click Find Similar.</div>`;
+    renderMasterFolderStatus();
+    renderSimilarTracksPanel();
     return;
   }
   const duration = track.analysis?.duration || track.buffer?.duration;
@@ -13235,11 +13935,187 @@ function renderDitcInspector() {
     <div class="ditc-inspector-artwork">${escapeHtml(track.title.slice(0, 2).toUpperCase())}</div>
     <h3>${escapeHtml(track.title)}</h3><p class="fine-print">${escapeHtml(track.artist)} · ${escapeHtml(track.album)}</p>
     <div class="ditc-inspector-actions"><button data-source-action="${ditcState.previewTrackId === track.id ? "stop-preview" : "preview"}" data-source-id="${track.id}">${ditcState.previewTrackId === track.id ? "Stop Preview" : "Preview"}</button><button data-source-action="deck-a" data-source-id="${track.id}">Deck A</button><button data-source-action="deck-b" data-source-id="${track.id}">Deck B</button><button data-source-action="pad" data-source-id="${track.id}">Pads</button><button data-source-action="stems" data-source-id="${track.id}">Stems</button><button data-source-action="arrangement" data-source-id="${track.id}">Arrangement</button></div>
-    <dl><dt>Duration</dt><dd>${duration ? formatTime(duration) : "Unknown"}</dd><dt>File</dt><dd>${escapeHtml(track.file.type || track.name.split(".").pop().toUpperCase())}, ${formatFileSize(track.file.size)}</dd><dt>BPM</dt><dd>${track.analysis?.bpm || "Unknown"}</dd><dt>Key</dt><dd>${escapeHtml(track.analysis?.key || "Unknown")} · ${ditcCamelot(track.analysis?.key)}</dd><dt>Genre</dt><dd>${escapeHtml(track.analysis?.genre || "Unknown")}</dd><dt>Mood</dt><dd>${escapeHtml(track.analysis?.mood || "Unknown")}</dd><dt>Energy</dt><dd>${escapeHtml(track.analysis?.energy || "Unknown")}</dd><dt>Source</dt><dd>Local file</dd><dt>Folder</dt><dd>${escapeHtml(track.folderPath || "Local import")}</dd><dt>Analysis</dt><dd>${track.analysis ? "Analyzed" : "Not analyzed"}</dd><dt>Stem state</dt><dd>${track.stemReady ? "Prepared" : "Not prepared"}</dd><dt>Pad state</dt><dd>${track.padReady ? "Prepared" : "Not prepared"}</dd><dt>Project match</dt><dd>Not Scored</dd><dt>Transition</dt><dd>${transition?.label || "Not Scored"}</dd></dl>
+    <dl><dt>Duration</dt><dd>${duration ? formatTime(duration) : "Unknown"}</dd><dt>File</dt><dd>${escapeHtml(track.file.type || track.name.split(".").pop().toUpperCase())}, ${formatFileSize(track.file.size)}</dd><dt>BPM</dt><dd>${track.analysis?.bpm || "Unknown"}</dd><dt>Key</dt><dd>${escapeHtml(track.analysis?.key || "Unknown")} · ${ditcCamelot(track.analysis?.key)}</dd><dt>Genre</dt><dd>${escapeHtml(track.genre || track.analysis?.genre || "Unknown")}</dd><dt>Mood</dt><dd>${escapeHtml(track.mood || track.analysis?.mood || "Unknown")}</dd><dt>Energy</dt><dd>${escapeHtml(track.analysis?.energy || "Unknown")}</dd><dt>Source</dt><dd>Local file</dd><dt>Folder</dt><dd>${escapeHtml(track.folderPath || "Local import")}</dd><dt>Analysis</dt><dd>${track.analysis ? "Analyzed" : "Not analyzed"}</dd><dt>Stem state</dt><dd>${track.stemReady ? "Prepared" : "Not prepared"}</dd><dt>Pad state</dt><dd>${track.padReady ? "Prepared" : "Not prepared"}</dd><dt>Project match</dt><dd>Not Scored</dd><dt>Transition</dt><dd>${transition?.label || "Not Scored"}</dd></dl>
     <div class="ditc-tag-list">${(track.tags || []).map((tag) => `<button class="ditc-tag" data-ditc-remove-tag="${escapeHtml(tag)}" data-source-id="${track.id}" title="Remove tag">${escapeHtml(tag)} ×</button>`).join("") || "<span class=\"fine-print\">No tags</span>"}</div>
     <label>Add tag <input id="ditcInspectorTag" type="text" placeholder="Intro, House, NYC"></label><button data-ditc-add-tag="${track.id}" class="secondary-button">Add Tag</button>
     <label>Cue notes<textarea data-crate-note-kind="local" data-crate-note-id="${track.id}" rows="4">${escapeHtml(track.notes || "")}</textarea></label>
-    <div class="ditc-inspector-actions"><button data-source-action="analyze" data-source-id="${track.id}">Analyze</button><button data-source-action="smartmix" data-source-id="${track.id}">Add to Smart Mix</button><button data-source-action="favorite" data-source-id="${track.id}">${track.favorite ? "Unfavorite" : "Favorite"}</button><button data-source-action="delete" data-source-id="${track.id}">Delete</button></div>`;
+    <div class="ditc-inspector-actions"><button data-source-action="analyze" data-source-id="${track.id}">Analyze</button><button data-source-action="similar" data-source-id="${track.id}">Find Similar</button><button data-source-action="smartmix" data-source-id="${track.id}">Add to Smart Mix</button><button data-source-action="favorite" data-source-id="${track.id}">${track.favorite ? "Unfavorite" : "Favorite"}</button><button data-source-action="delete" data-source-id="${track.id}">Delete</button></div>
+    <button id="connectMasterFolderButton" class="secondary-button" type="button">Connect Master Folder</button>
+    <div id="masterFolderStatus" class="fine-print">Not connected. Suggestions will use manual file import.</div>
+    <div id="similarTracksOutput" class="fine-print" role="status" aria-live="polite">No suggestions yet. Select a track and click Find Similar.</div>`;
+  renderMasterFolderStatus();
+  renderSimilarTracksPanel();
+}
+
+function masterFolderSupported() {
+  return typeof window.showDirectoryPicker === "function";
+}
+
+async function connectMasterFolder() {
+  if (!masterFolderSupported()) {
+    masterFolderState.error = "Your browser doesn't support folder access without uploading all files. Use Chrome or Edge for this feature.";
+    renderMasterFolderStatus();
+    return;
+  }
+  masterFolderState.connecting = true;
+  masterFolderState.error = null;
+  renderMasterFolderStatus();
+  try {
+    masterFolderState.handle = await window.showDirectoryPicker({ mode: "read" });
+    setSourceStatus(`Connected master folder: ${masterFolderState.handle.name}`);
+  } catch (error) {
+    if (error.name !== "AbortError") masterFolderState.error = error.message;
+  } finally {
+    masterFolderState.connecting = false;
+    renderMasterFolderStatus();
+  }
+}
+
+async function* walkDirectoryHandle(dirHandle, path = "") {
+  for await (const [name, handle] of dirHandle.entries()) {
+    const entryPath = path ? `${path}/${name}` : name;
+    if (handle.kind === "file") {
+      if (/\.(mp3|wav|aiff?|flac|m4a|aac|alac|ogg|opus|webm)$/i.test(name)) {
+        yield { name, path: entryPath, handle };
+      }
+    } else if (handle.kind === "directory") {
+      yield* walkDirectoryHandle(handle, entryPath);
+    }
+  }
+}
+
+async function collectFilesFromDirectoryPicker() {
+  const dirHandle = await window.showDirectoryPicker({ mode: "read" });
+  const files = [];
+  folderIndexProgress.active = true;
+  folderIndexProgress.phase = "collecting";
+  folderIndexProgress.total = 0;
+  folderIndexProgress.completed = 0;
+  folderIndexProgress.startedAt = Date.now();
+  renderFolderIndexProgress();
+  for await (const entry of walkDirectoryHandle(dirHandle)) {
+    const file = await entry.handle.getFile();
+    try {
+      Object.defineProperty(file, "webkitRelativePath", {
+        value: `${dirHandle.name}/${entry.path}`,
+        configurable: true
+      });
+    } catch {
+    }
+    files.push(file);
+    if (files.length % 100 === 0) {
+      folderIndexProgress.completed = files.length;
+      renderFolderIndexProgress();
+    }
+  }
+  folderIndexProgress.completed = files.length;
+  renderFolderIndexProgress();
+  return { files, folderName: dirHandle.name };
+}
+
+async function findFileInMasterFolder(suggestion) {
+  if (!masterFolderState.handle) return null;
+  const suggTitle = normalizeMatchText(suggestion.title);
+  const suggArtist = normalizeMatchText(suggestion.artist);
+  const candidates = [];
+  for await (const entry of walkDirectoryHandle(masterFolderState.handle)) {
+    const normalizedName = normalizeMatchText(entry.name);
+    if (normalizedName.includes(suggTitle) || (suggArtist && normalizedName.includes(suggArtist))) {
+      candidates.push(entry);
+      if (candidates.length >= 8) break;
+    }
+  }
+  for (const candidate of candidates) {
+    const file = await candidate.handle.getFile();
+    const tags = await readEmbeddedAudioTags(file);
+    const tagTitle = normalizeMatchText(tags?.title || "");
+    const tagArtist = normalizeMatchText(tags?.artist || "");
+    if (tagTitle === suggTitle && tagArtist === suggArtist) {
+      return { file, tags };
+    }
+  }
+  return null;
+}
+
+function renderMasterFolderStatus() {
+  const el = document.querySelector("#masterFolderStatus");
+  if (!el) return;
+  if (!masterFolderSupported()) {
+    el.textContent = "Master folder search requires Chrome or Edge.";
+    return;
+  }
+  if (masterFolderState.connecting) { el.textContent = "Connecting..."; return; }
+  if (masterFolderState.error) { el.textContent = `Error: ${masterFolderState.error}`; return; }
+  el.textContent = masterFolderState.handle
+    ? `Connected: ${masterFolderState.handle.name}`
+    : "Not connected. Suggestions will use manual file import.";
+}
+
+function normalizeMatchText(value) {
+  return String(value || "").toLowerCase().replace(/\(.*?\)|\[.*?\]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function findDitcMatchForSuggestion(suggestion) {
+  const suggTitle = normalizeMatchText(suggestion.title);
+  const suggArtist = normalizeMatchText(suggestion.artist);
+  return sourceFiles.find((source) => {
+    return normalizeMatchText(source.title) === suggTitle && normalizeMatchText(source.artist) === suggArtist;
+  }) || null;
+}
+
+async function fetchSimilarTracks(track) {
+  const projectId = ACTIVE_PROJECT_ID;
+  const contextVersion = ProjectRegistry.getSession()?.contextVersion || null;
+  similarTracksState.loading = true;
+  similarTracksState.error = null;
+  similarTracksState.forTrackId = track.id || null;
+  renderSimilarTracksPanel();
+  try {
+    const response = await fetch("/api/similar-tracks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: track.title, artist: track.artist,
+        bpm: track.analysis?.bpm, key: track.analysis?.key,
+        genre: track.genre || track.analysis?.genre, energy: track.analysis?.energy, mood: track.mood || track.analysis?.mood
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `Server returned ${response.status}.`);
+    if (ACTIVE_PROJECT_ID !== projectId || ProjectRegistry.getSession()?.contextVersion !== contextVersion || similarTracksState.forTrackId !== (track.id || null)) return;
+    similarTracksState.results = payload.suggestions || [];
+  } catch (error) {
+    if (ACTIVE_PROJECT_ID === projectId && ProjectRegistry.getSession()?.contextVersion === contextVersion && similarTracksState.forTrackId === (track.id || null)) {
+      similarTracksState.error = error.message;
+      similarTracksState.results = [];
+    }
+  } finally {
+    if (ACTIVE_PROJECT_ID === projectId && ProjectRegistry.getSession()?.contextVersion === contextVersion && similarTracksState.forTrackId === (track.id || null)) {
+      similarTracksState.loading = false;
+      renderSimilarTracksPanel();
+    }
+  }
+}
+
+function renderSimilarTracksPanel() {
+  const output = document.querySelector("#similarTracksOutput");
+  if (!output) return;
+  if (similarTracksState.loading) { output.textContent = "Searching for similar tracks…"; return; }
+  if (similarTracksState.error) { output.textContent = `Error: ${similarTracksState.error}`; return; }
+  if (!similarTracksState.results.length) { output.textContent = "No suggestions yet. Select a track and click Find Similar."; return; }
+  output.innerHTML = similarTracksState.results.map((item, index) => {
+    const match = findDitcMatchForSuggestion(item);
+    const actionHtml = match
+      ? `<button data-suggestion-load-deck="a" data-source-id="${match.id}">Load Deck A</button><button data-suggestion-load-deck="b" data-source-id="${match.id}">Load Deck B</button>`
+      : `<button data-suggestion-import="${index}">Import to DITC</button>`;
+    return `
+      <div class="similar-track-item">
+        <strong>${escapeHtml(item.artist)} - ${escapeHtml(item.title)}</strong>
+        <small>${escapeHtml(item.reason)}</small>
+        <span class="fine-print">${match ? "Already in your DITC library" : "Not in your library yet"}</span>
+        <div class="ditc-inspector-actions">${actionHtml}</div>
+      </div>`;
+  }).join("");
 }
 
 function formatFileSize(bytes) {
@@ -13258,7 +14134,7 @@ function exportDitcTrackList() {
     duration: track.analysis?.duration || track.buffer?.duration || null,
     bpm: track.analysis?.bpm || null,
     key: track.analysis?.key || null,
-    genre: track.analysis?.genre || null,
+    genre: track.genre || track.analysis?.genre || null,
     energy: track.analysis?.energy || null,
     favorite: track.favorite,
     tags: track.tags || [],
@@ -13339,17 +14215,32 @@ async function initializeProjectEntryFlow() {
 projectRuntimeDefaults = captureProjectRuntimeDefaults();
 LocalLibraries.configureRuntimeBridge({
   ownsProject: (projectId, contextVersion) => ProjectRegistry.owns(projectId, contextVersion),
-  registerTrack: (track, file, projectId, options = {}) => {
+  registerTrack: async (track, file, projectId, options = {}) => {
     if (!ProjectRegistry.owns(projectId, options.contextVersion ?? null)) throw new Error("Local track belongs to a stale project context.");
+    const tags = await readEmbeddedAudioTags(file);
     let source = sourceFiles.find((item) => item.localTrackId === track.localTrackId);
     if (!source) {
-      addLocalSourceFile(file, { folderPath: track.relativePath, silent: true, metadata: track, libraryId: track.libraryId, localTrackId: track.localTrackId, permissionState: track.permissionState, decodeSupport: track.decodeSupport });
+      addLocalSourceFile(file, { folderPath: track.relativePath, silent: true, metadata: { ...track, ...(tags || {}) }, preferMetadata: Boolean(tags), libraryId: track.libraryId, localTrackId: track.localTrackId, permissionState: track.permissionState, decodeSupport: track.decodeSupport });
       source = sourceFiles.find((item) => item.localTrackId === track.localTrackId) || sourceFiles.find((item) => item.storageId === ditcTrackStorageId(file, track.relativePath));
     }
     if (!source) throw new Error("The indexed file could not be registered with DITC.");
+    if (tags) {
+      Object.assign(source, {
+        title: tags.title || source.title,
+        artist: tags.artist || source.artist,
+        album: tags.album || source.album,
+        year: tags.year || source.year,
+        genre: tags.genre || source.genre,
+        trackNumber: tags.trackNumber || source.trackNumber || null,
+        hasArtwork: tags.hasArtwork,
+        metadataProvenance: tags.metadataProvenance
+      });
+      persistDitcTrack(source);
+    }
     if (!source.localTrackId) { source.localTrackId = track.localTrackId; source.libraryId = track.libraryId; source.permissionState = "Granted"; }
     const asset = ProjectAssets.list(projectId).find((item) => item.owningDomain === "DITC" && item.sourceId === source.id);
     if (!asset) throw new Error("The indexed file could not be registered with Project Asset Manager.");
+    if (tags) ProjectAssets.update(asset.assetId, { metadata: { ...(asset.metadata || {}), title: source.title, artist: source.artist, album: source.album, genre: source.genre, metadataProvenance: source.metadataProvenance } }, projectId);
     return { sourceId: source.id, assetId: asset.assetId };
   },
   listExistingAssets: (projectId) => ProjectAssets.list(projectId).filter((asset) => asset.assetType === "Audio Track" && !asset.trash?.trashed),
@@ -13374,6 +14265,7 @@ ProviderFoundation.configureRuntimeBridge({
   ownsProject: (projectId, contextVersion) => ProjectRegistry.owns(projectId, contextVersion),
   isOffline: () => navigator.onLine === false
 });
+LocalLibraries.resetAllLocalLibraries();
 initializePlaybackRegistry();
 setupProjectRegistryEvents();
 setupEvents();
@@ -13382,5 +14274,7 @@ setupAssetManagerEvents();
 setupProviderEvents();
 setupLocalLibraryEvents();
 renderGlobalTransport();
+renderMasterFolderStatus();
+renderSimilarTracksPanel();
 initializeProjectEntryFlow().catch((error) => { updateProjectStorageBindings(null); switchView("projectLibrary", { route: false }); writeProjectRoute("projectLibrary"); renderProjectRegistry(); renderProjectLibrary(); setProjectLibraryStatus(`Project startup recovery: ${error.message}`, "error"); });
 animationLoop();

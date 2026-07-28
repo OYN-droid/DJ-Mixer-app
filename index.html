@@ -1174,7 +1174,8 @@
             </div>
             <div class="ditc-header-actions">
               <label class="file-button primary-button">Select Audio Files<input id="ditcFileInput" type="file" accept="audio/*,.mp3,.wav,.wave,.aif,.aiff,.flac,.aac,.m4a,.alac,.ogg,.oga,.opus,.webm" multiple></label>
-              <label class="file-button secondary-button">Select Music Folder<input id="ditcFolderInput" type="file" accept="audio/*,.mp3,.wav,.wave,.aif,.aiff,.flac,.aac,.m4a,.alac,.ogg,.oga,.opus,.webm" webkitdirectory multiple></label>
+              <button type="button" id="selectMusicFolderButton" class="secondary-button">Select Music Folder</button>
+              <input id="ditcFolderInput" type="file" accept="audio/*,.mp3,.wav,.wave,.aif,.aiff,.flac,.aac,.m4a,.alac,.ogg,.oga,.opus,.webm" webkitdirectory multiple style="display:none;">
               <button id="localLibrarySettingsOpen" class="secondary-button" type="button">Local Libraries</button>
               <button id="ditcModeToggle" class="secondary-button" aria-pressed="false">Advanced</button>
             </div>
@@ -1196,6 +1197,7 @@
               <div><button type="button" data-local-library-empty-action="folder">Select Music Folder</button><button type="button" data-local-library-empty-action="files">Select Audio Files</button><button type="button" data-local-library-empty-action="playlist">Import Playlist</button><button type="button" data-local-library-empty-action="assets">Use Existing Project Assets</button><button type="button" data-local-library-empty-action="apple">Learn About Apple Music Local Files</button></div>
             </div>
             <div id="localLibraryJob" class="local-library-job" aria-live="polite" hidden></div>
+            <div id="folderIndexProgress" style="display:none;"></div>
             <input id="localPlaylistInput" type="file" accept=".m3u,.m3u8,application/vnd.apple.mpegurl,audio/x-mpegurl" hidden>
             <input id="localLibraryIndexInput" type="file" accept="application/json,.json" hidden>
             <details id="localLibraryDiagnostics" class="ditc-advanced-only"><summary>Local-library diagnostics</summary><pre id="localLibraryDiagnosticsOutput"></pre></details>
@@ -1218,6 +1220,16 @@
             <aside class="ditc-collections" aria-label="DITC collections">
               <h3>Collections</h3>
               <div id="ditcCollectionList"></div>
+              <div id="smartCrateEditor" class="modal-panel" style="display:none;">
+                <label>Crate name <input id="smartCrateName" type="text" placeholder="High Energy 90s Hip Hop"></label>
+                <label>Match <select id="smartCrateCombinator"><option value="all">All</option><option value="any">Any</option></select> of the following rules:</label>
+                <div id="smartCrateRuleList"></div>
+                <button id="addSmartCrateRuleButton" type="button" class="secondary-button">+ Add Rule</button>
+                <div>
+                  <button id="saveSmartCrateButton" type="button">Save Crate</button>
+                  <button id="cancelSmartCrateButton" type="button" class="secondary-button">Cancel</button>
+                </div>
+              </div>
               <div class="ditc-advanced-only">
                 <h3>Batch actions</h3>
                 <label>Add tag <input id="ditcBatchTag" type="text" placeholder="Example: House"></label>
@@ -1232,6 +1244,9 @@
             </section>
             <aside id="ditcInspector" class="ditc-inspector" aria-label="Selected track inspector">
               <p class="fine-print">Select a track to inspect its metadata and destinations.</p>
+              <button id="connectMasterFolderButton" class="secondary-button" type="button">Connect Master Folder</button>
+              <div id="masterFolderStatus" class="fine-print">Not connected. Suggestions will use manual file import.</div>
+              <div id="similarTracksOutput" class="fine-print" role="status" aria-live="polite">No suggestions yet. Select a track and click Find Similar.</div>
             </aside>
           </div>
           <details class="ditc-reference-form ditc-advanced-only">
@@ -1276,6 +1291,7 @@
       <article><header><div><p class="eyebrow">Local Audio Linking</p><h2 id="localMatchReviewTitle">Review Local Match</h2></div><button type="button" data-local-match-close aria-label="Close match review">×</button></header><div id="localMatchReference"></div><div id="localMatchCandidates"></div><p id="localMatchStatus" role="status" aria-live="polite"></p><footer><button id="localMatchChooseFile" class="secondary-button" type="button">Choose Different File</button><button id="localMatchKeepMetadata" class="secondary-button" type="button">Keep Metadata Only</button><button class="primary-button" type="button" data-local-match-close>Done</button></footer></article>
     </dialog>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js"></script>
     <script src="src/project-registry.js"></script>
     <script src="src/project-assets.js"></script>
     <script src="src/project-library.js"></script>

@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RUNNING · DeckForge local-library reset QA</title>
+<pre id="result">Running…</pre>
+<iframe id="app" title="DeckForge local-library reset QA" style="width:1280px;height:900px;border:0"></iframe>
+<script>
+(async () => {
+  const checks = {}; const errors = []; const frame = document.querySelector("#app");
+  const libraryKey = "deckforge-local-libraries:v1";
+  const backup = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(Boolean).map((key) => [key, localStorage.getItem(key)]);
+  const restore = () => { localStorage.clear(); backup.forEach(([key, value]) => localStorage.setItem(key, value)); };
+  const check = (name, condition, detail = null) => { checks[name] = { pass: Boolean(condition), detail }; if (!condition) throw new Error(name); };
+  const waitFor = async (predicate, timeout = 10000) => { const started = performance.now(); while (performance.now() - started < timeout) { const value = predicate(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 25)); } throw new Error("Timed out waiting for application state"); };
+  const storedLibraries = () => JSON.parse(localStorage.getItem(libraryKey) || "null")?.libraries;
+  const panelState = () => {
+    const document = frame.contentDocument;
+    const cards = document?.querySelector("#localLibraryCards");
+    return { cardCount: cards?.children.length ?? -1, text: cards?.textContent || "", emptyVisible: document?.querySelector("#localLibraryEmpty")?.hidden === false };
+  };
+  try {
+    localStorage.clear();
+    localStorage.setItem(libraryKey, JSON.stringify({
+      schemaVersion: 1,
+      libraries: [{
+        schemaVersion: 1,
+        libraryId: "stale-library",
+        displayName: "Stale Permission Library",
+        libraryType: "Selected Folder",
+        status: "Permission Required",
+        permissionState: "Prompt Required",
+        rootReferences: [],
+        tracks: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }],
+      updatedAt: new Date().toISOString()
+    }));
+    frame.contentWindow.addEventListener("error", (event) => errors.push(event.error?.stack || event.message));
+    frame.src = "../index.html?local-library-reset-qa=1";
+    await waitFor(() => frame.contentDocument?.readyState === "complete" && frame.contentWindow.DeckForgeLocalLibraries);
+    const libraries = frame.contentWindow.DeckForgeLocalLibraries;
+    check("seeded record is cleared before first panel render", libraries.listLocalLibraries().length === 0 && storedLibraries()?.length === 0, { runtime: libraries.listLocalLibraries(), stored: storedLibraries() });
+    check("first-load panel is immediately empty", panelState().cardCount === 0 && panelState().emptyVisible && !/Permission Required|Manual Refresh Required|Stale Permission Library/.test(panelState().text), panelState());
+
+    libraries.createLocalLibrary({ displayName: "Session-only Library", libraryType: "Selected Files" });
+    frame.contentWindow.eval("renderLocalLibraryPanel()");
+    check("session record exists before refresh", libraries.listLocalLibraries().length === 1 && storedLibraries()?.length === 1 && panelState().cardCount === 1, { runtime: libraries.listLocalLibraries(), stored: storedLibraries(), panel: panelState() });
+
+    const reloadComplete = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+    frame.contentWindow.location.reload();
+    await reloadComplete;
+    await waitFor(() => frame.contentWindow.DeckForgeLocalLibraries?.listLocalLibraries().length === 0);
+    check("refresh clears runtime and persisted records", frame.contentWindow.DeckForgeLocalLibraries.listLocalLibraries().length === 0 && storedLibraries()?.length === 0, { runtime: frame.contentWindow.DeckForgeLocalLibraries.listLocalLibraries(), stored: storedLibraries() });
+    check("refreshed panel has no stale permission cards", panelState().cardCount === 0 && panelState().emptyVisible && !/Permission Required|Manual Refresh Required|Session-only Library/.test(panelState().text), panelState());
+    check("no uncaught errors", errors.length === 0, errors);
+    document.title = `PASS · ${Object.keys(checks).length} local-library reset checks`;
+    result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2);
+    restore();
+  } catch (error) {
+    document.title = `FAIL · ${error.message}`;
+    result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks, errors }, null, 2);
+    restore();
+  }
+})();
+</script>

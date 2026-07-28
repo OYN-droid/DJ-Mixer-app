@@ -66,6 +66,7 @@ This directory contains the DeckForge Design Bible and the recovery and implemen
 33. [Connected Provider Foundation regression checklist](37-connected-provider-foundation-regression-checklist.md)
 34. [Local Music Library Linking audit](37-local-library-linking-audit.md)
 35. [Local Music Library Linking regression checklist](38-local-library-linking-regression-checklist.md)
+36. [Project and studio integration QA report](39-manual-qa-report.md)
 
 ## Architecture decisions
 

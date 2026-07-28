@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RUNNING · Directory Picker</title>
+<pre id="result">Running…</pre>
+<iframe id="app" title="Directory picker browser test" style="width:1280px;height:900px;border:0"></iframe>
+<script>
+(async () => {
+  const checks = {}; const errors = []; const frame = document.querySelector("#app");
+  const backup = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(Boolean).map((key) => [key, localStorage.getItem(key)]);
+  const restore = () => { localStorage.clear(); backup.forEach(([key, value]) => localStorage.setItem(key, value)); };
+  const check = (name, condition, detail = null) => { checks[name] = { pass: Boolean(condition), detail }; if (!condition) throw new Error(name); };
+  const waitFor = async (predicate, timeout = 10000) => { const started = performance.now(); while (performance.now() - started < timeout) { const value = predicate(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 25)); } throw new Error("Timed out waiting for application state"); };
+  try {
+    localStorage.clear(); frame.contentWindow.addEventListener("error", (event) => errors.push(event.error?.stack || event.message)); frame.src = "../index.html?directory-picker-test=1";
+    const app = await waitFor(() => frame.contentDocument?.readyState === "complete" && frame.contentDocument.querySelector("#projectLibraryCreate") && frame.contentDocument);
+    frame.contentWindow.confirm = () => true;
+    app.querySelector("#projectLibraryCreate").click(); app.querySelector("#newProjectName").value = "Directory Picker QA"; app.querySelector("#createProjectForm").requestSubmit(); await waitFor(() => app.querySelector("#ai.is-active"));
+    frame.contentWindow.jsmediatags = { read: (_file, handlers) => handlers.onSuccess({ tags: { title: "Picker Track", artist: "Picker Artist", album: "Picker Album" } }) };
+
+    const folderInput = app.querySelector("#ditcFolderInput"); let fallbackClicks = 0;
+    folderInput.addEventListener("click", (event) => { fallbackClicks += 1; event.preventDefault(); });
+    const nativePicker = frame.contentWindow.showDirectoryPicker;
+    frame.contentWindow.showDirectoryPicker = undefined;
+    app.querySelector("#selectMusicFolderButton").click(); await waitFor(() => fallbackClicks === 1);
+    check("unsupported browser uses webkitdirectory fallback", folderInput.hasAttribute("webkitdirectory") && folderInput.multiple, { fallbackClicks, webkitdirectory: folderInput.hasAttribute("webkitdirectory") });
+
+    const audioFile = new File([new Uint8Array(32)], "Picker Artist - Picker Track.mp3", { type: "audio/mpeg" });
+    const fileHandle = { kind: "file", getFile: async () => audioFile };
+    const nestedHandle = { kind: "directory", async *entries() { yield [audioFile.name, fileHandle]; } };
+    const directoryHandle = { kind: "directory", name: "Picker Music", async *entries() { yield ["Nested", nestedHandle]; } };
+    let pickerOptions = null;
+    frame.contentWindow.showDirectoryPicker = async (options) => { pickerOptions = options; return directoryHandle; };
+    app.querySelector("#selectMusicFolderButton").click();
+    await waitFor(() => app.querySelector("#sourceList").textContent.includes("Picker Track"));
+    const indexedLibrary = frame.contentWindow.DeckForgeLocalLibraries.listLocalLibraries()[0];
+    check("picker requests read-only access", pickerOptions?.mode === "read", pickerOptions);
+    check("existing full-library index pipeline receives picker files", indexedLibrary?.fileCount === 1 && app.querySelector("#sourceList").textContent.includes("Picker Artist"), indexedLibrary);
+    check("recursive walker preserves selected root path", indexedLibrary?.displayName === "Picker Music", indexedLibrary?.displayName);
+    check("fallback input remains hidden", folderInput.style.display === "none", folderInput.getAttribute("style"));
+    check("no uncaught errors", errors.length === 0, errors);
+    frame.contentWindow.showDirectoryPicker = nativePicker;
+    document.title = `PASS · ${Object.keys(checks).length} Directory Picker checks`; result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2); restore();
+  } catch (error) { document.title = `FAIL · ${error.message}`; result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks, errors }, null, 2); restore(); }
+})();
+</script>

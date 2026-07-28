@@ -37,3 +37,20 @@ Status values reflect the current audit. Order is the recommended implementation
 ## Immediate sequence
 
 Add a repeatable browser smoke test, introduce a playback registry and visible panic stop, verify two-deck transport with small licensed fixtures, then lock down crossfader behavior. Only after that should Smart Mix or AI application behavior expand.
+
+## Known intentionally unavailable capabilities
+
+Static audit updated July 19, 2026. These are genuine implementation gaps, not ordinary validation failures or context-dependent disabled actions.
+
+| Subsystem | Capability not yet implemented | Current safe behavior |
+| --- | --- | --- |
+| Project Library / Assets | Project consolidation and durable Open Folder / Reveal integration | Reports unavailable in the browser build; metadata and asset references remain inspectable. |
+| Local Library | Durable browser file and folder authorization across reloads | Persists metadata only, marks runtime audio for reauthorization, and requires explicit relinking. |
+| Connected Providers | Account connection, catalog search, and native playback adapters for Apple Music, Spotify, SoundCloud, YouTube, YouTube Music, cloud storage, and record pools | Registers capability-aware foundation cards; unsupported actions remain disabled or external/metadata-only. |
+| DITC discovery | A real audio-fingerprint provider | Falls back to assisted discovery and clearly reports that fingerprinting is not configured. |
+| Arrangement Studio | Auditioning an arrangement transition through the shared live transition controller | Saves the transition plan but marks preview unavailable; it does not simulate success. |
+| Arrangement / Stem processing | High-quality pitch shift, key lock, time stretch, three-band EQ, and destructive region processing | Related controls are disabled or labeled unavailable until a shared processing path exists. |
+| Recording analysis | LUFS, loudness range, and true-peak analysis | Reports measured sample peak only and labels mastering-grade analysis unavailable. |
+| Recording / Export persistence | Durable browser Blob and object-URL outputs after reload | Persists history, marks expired runtime outputs missing, and requires recording again, retrying export, or relinking. |
+
+The generic export-service “not implemented” validation is an extension-point guard. Every output type currently exposed by the Recording & Export UI has a concrete adapter. Recommendation guidance-only states, Creative Mission prerequisites, stale-context rejection, and unsupported-file validation are intentional capability boundaries rather than stubbed success paths.

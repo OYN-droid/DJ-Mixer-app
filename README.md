@@ -39,7 +39,7 @@ python3 -m pip install "demucs==4.0.1" "numpy<2"
 python3 stem_server.py
 ```
 
-Set `PORT` to change the default port of 8000. Set `DECKFORGE_STEM_MODEL` to change the six-stem model, `DECKFORGE_STEM_CONCURRENCY` to change the default two-job processing limit, and `DECKFORGE_STEM_MAX_BYTES` to change the 500 MB upload limit. If Demucs is unavailable, Stem Lab records the failure and offers an explicit rough browser-preview action. Those previews are not true isolated stems.
+Set `PORT` to change the default port of 8000. Set `DECKFORGE_STEM_MODEL` to change the six-stem model, `DECKFORGE_STEM_CONCURRENCY` to change the default two-job processing limit, and `DECKFORGE_STEM_MAX_BYTES` to change the 500 MB upload limit. Set `ANTHROPIC_API_KEY` to enable DITC's server-side Find Similar Tracks research, and optionally set `DECKFORGE_RECOMMEND_MODEL` to override its default `claude-sonnet-5` model. If Demucs is unavailable, Stem Lab records the failure and offers an explicit rough browser-preview action. Those previews are not true isolated stems.
 
 ## Security
 
@@ -48,12 +48,12 @@ Never commit `.env` files, API keys, tokens, credentials or private keys. Curren
 ## Current limitations
 
 - The application has not yet passed a full audio-enabled browser QA cycle.
-- Local files, decoded audio, pads, decks and arrangements are memory-only.
+- Local file handles and decoded audio remain memory-only. Project-scoped arrangement snapshots, undo/redo history during the active session, and named arrangement versions are implemented; browser reload still requires relinking runtime-only audio sources.
 - URL audio loading depends on remote CORS permission.
 - Apple Music, Spotify and other platform detection does not provide SDK playback.
 - AI planning is local heuristic logic. It is not a hosted generation model.
 - Cue monitor buttons do not route headphone audio.
-- There is no undo system or saved arrangement format.
+- Arrangement undo/redo, version duplication/switching, project-scoped save/restore, JSON project export/import, and cue-sheet export are implemented. They have automated coverage in focused areas but still require completion of the full audio-enabled manual QA checklist.
 
 ## Documentation
 

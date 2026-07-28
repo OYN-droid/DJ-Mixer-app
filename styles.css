@@ -1270,6 +1270,8 @@ input[type="range"] {
 
 .project-progress-track { height: 4px; overflow: hidden; border-radius: 999px; background: #07090c; }
 .project-progress-track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--producer-orange), var(--producer-purple)); }
+.progress-bar-track { height: 6px; margin-top: 6px; overflow: hidden; border-radius: 999px; background: #07090c; }
+.progress-bar-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--aqua), var(--purple)); transition: width 180ms ease; }
 
 .prompt-studio {
   border-color: rgba(167, 123, 255, 0.27);
@@ -2596,6 +2598,70 @@ input[type="range"] {
 .ditc-collection-button.is-active {
   background: rgba(38, 214, 199, 0.1);
   color: var(--aqua);
+}
+
+.ditc-collection-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  gap: 4px;
+  align-items: stretch;
+}
+
+.ditc-collection-row .ditc-collection-button { margin-bottom: 4px; }
+.ditc-crate-edit,
+.ditc-crate-delete {
+  min-height: 34px;
+  margin-bottom: 4px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+.ditc-crate-edit:hover,
+.ditc-crate-delete:hover { border-color: var(--line); color: var(--aqua); }
+#newSmartCrateButton { width: 100%; margin-top: 6px; }
+
+.modal-panel {
+  position: fixed;
+  z-index: 60;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  gap: 12px;
+  padding: 18px;
+  overflow: auto;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.045), transparent 30%), #11151b;
+  box-shadow: var(--shadow-lg);
+}
+
+.modal-panel > label { display: grid; gap: 6px; color: var(--muted); }
+.modal-panel input,
+.modal-panel select {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #0c1015;
+  color: var(--ink);
+  padding: 7px 10px;
+}
+.modal-panel > div:last-child { display: flex; justify-content: flex-end; gap: 8px; }
+#smartCrateRuleList { display: grid; gap: 8px; }
+.smart-crate-rule {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr) minmax(180px, 1.4fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.smart-crate-rule-value { display: flex; align-items: center; gap: 6px; }
+.smart-crate-rule-value input { width: 100%; min-width: 0; }
+@media (max-width: 760px) {
+  .smart-crate-rule { grid-template-columns: 1fr; }
 }
 
 .ditc-track-list { padding: 5px; }

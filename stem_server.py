@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from email.parser import BytesParser
@@ -21,6 +22,8 @@ ROOT = Path(__file__).resolve().parent
 STEMS_ROOT = ROOT / "generated_stems"
 MAX_UPLOAD_BYTES = int(os.environ.get("DECKFORGE_STEM_MAX_BYTES", 500 * 1024 * 1024))
 MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("DECKFORGE_STEM_CONCURRENCY", "2")))
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = os.environ.get("DECKFORGE_RECOMMEND_MODEL", "claude-sonnet-5")
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".aif", ".aiff", ".flac", ".m4a", ".ogg", ".opus"}
 MODELS = {
     "two": {"model": "htdemucs", "args": ["--two-stems", "vocals"], "label": "Vocals + Instrumental"},
@@ -83,6 +86,9 @@ class DeckForgeHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/similar-tracks":
+            self.handle_similar_tracks()
+            return
         if path not in {"/api/stem-jobs", "/api/stems"}:
             self.send_error(404)
             return
@@ -139,6 +145,92 @@ class DeckForgeHandler(SimpleHTTPRequestHandler):
             JOBS[job_id] = job
         threading.Thread(target=process_job, args=(job_id,), daemon=True).start()
         self.send_json(202, public_job(job))
+
+    def handle_similar_tracks(self):
+        if not ANTHROPIC_API_KEY:
+            self.send_json(503, {"error": "ANTHROPIC_API_KEY is not configured on the server. Set it as an environment variable before starting stem_server.py."})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 20000:
+                raise ValueError("Request body missing or too large.")
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(body, dict):
+                raise ValueError("Request body must be a JSON object.")
+        except (ValueError, json.JSONDecodeError) as error:
+            self.send_json(400, {"error": f"Invalid request body: {error}"})
+            return
+
+        track = {
+            "title": str(body.get("title", ""))[:200],
+            "artist": str(body.get("artist", ""))[:200],
+            "bpm": body.get("bpm"),
+            "key": str(body.get("key", ""))[:20],
+            "genre": str(body.get("genre", ""))[:100],
+            "energy": str(body.get("energy", ""))[:20],
+            "mood": str(body.get("mood", ""))[:100],
+        }
+        if not track["title"] and not track["artist"]:
+            self.send_json(400, {"error": "At least a title or artist is required."})
+            return
+
+        prompt = (
+            "You are a DJ's music research assistant helping build a live set or mixtape. "
+            "Given a track's analyzed attributes below, search the web and suggest 5 similar "
+            "tracks or artists suited for a set transition or mixtape inclusion. For each, give "
+            "a one-sentence reason grounded in tempo, energy, genre, or era compatibility. "
+            "Do not include citation tags, footnote markers, or any markup other than plain text "
+            "in your response. "
+            "Respond with ONLY a JSON array, no other text, in this exact shape: "
+            '[{"title": "...", "artist": "...", "reason": "..."}]\n\n'
+            f"Track: {json.dumps(track)}"
+        )
+
+        payload = json.dumps({
+            "model": ANTHROPIC_MODEL,
+            "max_tokens": 4096,
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode("utf-8")
+
+        request = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except Exception as error:
+            self.send_json(502, {"error": f"Anthropic API request failed: {error}"})
+            return
+
+        try:
+            text_blocks = [block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"]
+            raw_text = "".join(text_blocks).strip()
+            start = raw_text.index("[")
+            end = raw_text.rindex("]") + 1
+            suggestions = json.loads(raw_text[start:end])
+            if not isinstance(suggestions, list):
+                raise ValueError("Suggestion response is not a list.")
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            self.send_json(502, {"error": "Could not parse a suggestion list from the model response."})
+            return
+
+        cleaned = []
+        for item in suggestions[:5]:
+            if isinstance(item, dict) and item.get("title") and item.get("artist"):
+                cleaned.append({
+                    "title": str(item["title"])[:200],
+                    "artist": str(item["artist"])[:200],
+                    "reason": str(item.get("reason", ""))[:300],
+                })
+        self.send_json(200, {"track": track, "suggestions": cleaned})
 
     def do_DELETE(self):
         job_id = self.job_id_from_path(urlparse(self.path).path)

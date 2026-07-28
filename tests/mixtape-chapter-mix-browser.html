@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RUNNING · DeckForge mixtape chapter mix QA</title>
+<pre id="result">Running…</pre>
+<iframe id="app" title="DeckForge mixtape chapter mix QA" style="width:1280px;height:900px;border:0"></iframe>
+<script>
+(async () => {
+  const checks = {}; const errors = []; const frame = document.querySelector("#app");
+  const backup = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(Boolean).map((key) => [key, localStorage.getItem(key)]);
+  const restore = () => { localStorage.clear(); backup.forEach(([key, value]) => localStorage.setItem(key, value)); };
+  const check = (name, condition, detail = null) => { checks[name] = { pass: Boolean(condition), detail }; if (!condition) throw new Error(name); };
+  const waitFor = async (predicate, timeout = 10000) => { const started = performance.now(); while (performance.now() - started < timeout) { const value = predicate(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 25)); } throw new Error("Timed out waiting for application state"); };
+  try {
+    localStorage.clear();
+    frame.contentWindow.addEventListener("error", (event) => errors.push(event.error?.stack || event.message));
+    frame.src = "../index.html?mixtape-chapter-mix-qa=1";
+    await waitFor(() => frame.contentDocument?.readyState === "complete" && frame.contentWindow.DeckForgeLocalLibraries);
+    const setup = await frame.contentWindow.eval(`(async () => {
+      await AudioEngine.init();
+      const chapterNames = ["Cold Open", "Identity Drop", "First Blend Run", "Energy Lift", "Reset / Skit", "Peak Sequence", "Callback Outro"];
+      const anchors = ["01 Cold Open.mp3", "02 Identity.wav", "03 First Blend.flac", "04 Energy Lift.mp3", "05 Reset Skit.wav", "06 Peak Sequence.aiff", "07 Callback Outro.mp3"];
+      const styles = ["smooth crossfades", "quick cuts", "filter sweeps", "bass swaps", "breakdown resets", "hook drops", "echo outs"];
+      sourceFiles.splice(0);
+      [...anchors].reverse().forEach((name, index) => {
+        const buffer = AudioEngine.context.createBuffer(2, AudioEngine.context.sampleRate * 30, AudioEngine.context.sampleRate);
+        const data = buffer.getChannelData(0);
+        data[index * 100 + 1] = 0.25;
+        sourceFiles.push({
+          id: "chapter-source-" + index,
+          name,
+          title: name.replace(/\\.[^/.]+$/, ""),
+          artist: "QA Artist",
+          buffer,
+          notes: "",
+          analysis: { bpm: 100 + index * 3, key: ["C", "Dm", "Em", "F", "G", "Am", "Bm"][index], energy: ["Low", "Medium", "Medium", "High", "Low", "High", "Medium"][index], genre: "Hip-Hop" }
+        });
+      });
+      aiPlanState = {
+        prompt: "Execute the seven chapter mixtape",
+        tags: { mixtape: true, liveSet: true },
+        steps: chapterNames.map((title, index) => ({
+          title,
+          detail: anchors[index] + " as anchor. Aim for medium energy, " + styles[index] + " into next section."
+        }))
+      };
+      const generatedChapters = buildMixtapeChapters({
+        segments: [{ intensity: "Medium" }],
+        transitionStyles: ["smooth crossfades"],
+        sampleWorld: ["DJ tag"]
+      }, sourceFiles, {});
+      const extracted = extractMixtapeChapterPlan();
+      const started = await startAiMix("club");
+      return {
+        started,
+        extracted,
+        generatedChapterTitles: generatedChapters.map((chapter) => chapter.title),
+        itemNames: autoMixState.items.map((item) => item.name),
+        itemChapters: autoMixState.items.map((item) => item.mixtapeChapter),
+        transitionStyles: autoMixState.plan.map((transition) => transition.style),
+        schedulerArmed: autoMixState.handoffArmed,
+        running: autoMixState.running,
+        sourceMode: autoMixState.sourceMode,
+        genericSourceOrder: sourceFiles.map((source) => source.name),
+        expectedAnchors: anchors,
+        expectedChapters: chapterNames
+      };
+    })()`);
+    check("blueprint builder still creates the seven named chapters", setup.generatedChapterTitles.every((name, index) => name === setup.expectedChapters[index]), setup.generatedChapterTitles);
+    check("all seven chapter details parse", setup.extracted?.length === 7 && setup.extracted.every((chapter, index) => chapter.name === setup.expectedChapters[index] && chapter.anchorFilename === setup.expectedAnchors[index]), setup.extracted);
+    check("Start Mix uses chapter anchor order", setup.itemNames.length === 7 && setup.itemNames.every((name, index) => name === setup.expectedAnchors[index]), { planned: setup.itemNames, generic: setup.genericSourceOrder });
+    check("chapter identities travel with Smart Mix items", setup.itemChapters.every((name, index) => name === setup.expectedChapters[index]), setup.itemChapters);
+    check("chapter transition styles are applied in order", JSON.stringify(setup.transitionStyles) === JSON.stringify(["smooth-crossfade", "quick-blend", "filter-sweep", "bass-swap-phrase", "long-dissolve", "drop-mix", "filter-sweep"]), setup.transitionStyles);
+    check("existing Smart Mix scheduler starts", setup.started && setup.running && setup.schedulerArmed && setup.sourceMode === "crate", setup);
+    frame.contentWindow.eval(`stopAiMix({ stopDecks: true, silent: true })`);
+    check("no uncaught errors", errors.length === 0, errors);
+    document.title = `PASS · ${Object.keys(checks).length} mixtape chapter checks`;
+    result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2);
+    restore();
+  } catch (error) {
+    try { frame.contentWindow.eval(`stopAiMix({ stopDecks: true, silent: true })`); } catch {}
+    document.title = `FAIL · ${error.message}`;
+    result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks, errors }, null, 2);
+    restore();
+  }
+})();
+</script>

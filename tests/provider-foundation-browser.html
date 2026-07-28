@@ -59,7 +59,7 @@
     check("connection transitions", connected.state === "Connected" && tested.success && disconnected.state === "Disconnected", { connected, tested, disconnected });
     check("sanitized diagnostics", !/token|secret|never-store/i.test(JSON.stringify(providers.diagnostics())), providers.diagnostics());
 
-    result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2); restoreStorage();
-  } catch (error) { result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks }, null, 2); restoreStorage(); }
+    document.title = `PASS · ${Object.keys(checks).length} Provider Foundation checks`; result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2); restoreStorage();
+  } catch (error) { document.title = `FAIL · ${error.message}`; result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks }, null, 2); restoreStorage(); }
 })();
 </script>

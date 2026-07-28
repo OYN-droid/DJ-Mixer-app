@@ -60,10 +60,10 @@
     const manifest = assets.exportManifest(alpha.projectId);
     check("manifest sanitized", manifest.includes(audio.assetId) && !manifest.includes("blob:") && !manifest.includes("/Users/"), manifest.length);
     check("diagnostics", assets.diagnostics().totalAssets >= 6, assets.diagnostics());
-    result.textContent = JSON.stringify({ status: "PASS", checks, projectId: alpha.projectId, assetId: audio.assetId, manifestBytes: new Blob([manifest]).size }, null, 2);
+    document.title = `PASS · ${Object.keys(checks).length} Project Assets checks`; result.textContent = JSON.stringify({ status: "PASS", checks, projectId: alpha.projectId, assetId: audio.assetId, manifestBytes: new Blob([manifest]).size }, null, 2);
     restoreStorage();
   } catch (error) {
-    result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks }, null, 2);
+    document.title = `FAIL · ${error.message}`; result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks }, null, 2);
     restoreStorage();
   }
 })();

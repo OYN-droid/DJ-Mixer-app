@@ -1,0 +1,98 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RUNNING · DeckForge stock FX QA</title>
+<pre id="result">Running…</pre>
+<iframe id="app" title="DeckForge stock FX QA" style="width:1280px;height:900px;border:0"></iframe>
+<script>
+(async () => {
+  const checks = {}; const errors = []; const frame = document.querySelector("#app");
+  const backup = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(Boolean).map((key) => [key, localStorage.getItem(key)]);
+  const restore = () => { localStorage.clear(); backup.forEach(([key, value]) => localStorage.setItem(key, value)); };
+  const check = (name, condition, detail = null) => { checks[name] = { pass: Boolean(condition), detail }; if (!condition) throw new Error(name); };
+  const waitFor = async (predicate) => { while (true) { const value = predicate(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 25)); } };
+  try {
+    localStorage.clear();
+    frame.contentWindow.addEventListener("error", (event) => errors.push(event.error?.stack || event.message));
+    frame.src = "../index.html?stock-fx-qa=1";
+    await waitFor(() => frame.contentDocument?.readyState === "complete" && frame.contentWindow.DeckForgeProjectRegistry);
+    const registry = frame.contentWindow.DeckForgeProjectRegistry;
+    const project = registry.createProject({ name: "Stock FX QA", type: "Live Set" });
+    await frame.contentWindow.eval(`restoreProjectRuntime(${JSON.stringify(project.projectId)})`);
+    const initial = frame.contentWindow.eval(`({
+      names: sampler.names.slice(0, 15),
+      durations: sampler.buffers.slice(0, 15).map((buffer) => buffer?.duration || 0),
+      channels: sampler.buffers.slice(0, 15).map((buffer) => buffer?.numberOfChannels || 0),
+      sources: sampler.sources.slice(0, 15),
+      relink: sampler.relink.slice(0, 15),
+      fingerprints: sampler.buffers.slice(0, 15).map((buffer) => {
+        if (!buffer) return "";
+        const data = buffer.getChannelData(0);
+        const stride = Math.max(1, Math.floor(data.length / 4096));
+        let energy = 0;
+        let crossings = 0;
+        let previous = data[0] || 0;
+        for (let index = 0; index < data.length; index += stride) {
+          const value = data[index] || 0;
+          energy += value * value;
+          if ((value < 0 && previous >= 0) || (value >= 0 && previous < 0)) crossings += 1;
+          previous = value;
+        }
+        return [data.length, energy.toFixed(6), crossings].join(":");
+      }),
+      nonSilent: sampler.buffers.slice(0, 15).map((buffer) => {
+        if (!buffer) return false;
+        const data = buffer.getChannelData(0);
+        for (let index = 0; index < data.length; index += Math.max(1, Math.floor(data.length / 2048))) {
+          if (Math.abs(data[index]) > 0.0001) return true;
+        }
+        return false;
+      })
+    })`);
+    const expectedNames = ["Airhorn", "Siren Riser", "Bass Drop", "Vinyl Brake", "Laser Riser", "Reverse Cymbal", "Vocal Chop Stab", "Scratch 1", "Scratch 2", "Scratch 3", "Scratch 4", "Explosion", "Machine Gun", "Gun Shot", "Gun Cock"];
+    check("core FX, scratches, and four additional samples load", initial.names.every((name, index) => name === expectedNames[index]) && initial.durations.every(Boolean), initial);
+    check("all stock buffers are non-silent", initial.nonSilent.every(Boolean), { channels: initial.channels, nonSilent: initial.nonSilent });
+    const newRealFingerprints = [initial.fingerprints[0], initial.fingerprints[1], ...initial.fingerprints.slice(11, 15)];
+    check("six newly referenced samples have distinct waveform content", new Set(newRealFingerprints).size === 6, newRealFingerprints);
+    check("assignments use their correct stock provenance", initial.sources[0] === "Stock FX Pack · Licensed Audio Asset" && initial.sources[1] === "Stock FX Pack · Licensed Audio Asset" && initial.sources.slice(2, 7).every((source) => source === "Stock FX Pack · Procedural Web Audio") && initial.sources.slice(7).every((source) => source === "Stock FX Pack · Licensed Audio Asset"), initial.sources);
+    const playback = frame.contentWindow.eval(`sampler.buffers.slice(0, 15).map((buffer, index) => {
+      triggerPad(index);
+      const started = Boolean(sampler.active[index]?.source && sampler.active[index]?.gain);
+      stopPad(index, { quiet: true });
+      return started;
+    })`);
+    check("all fifteen use the existing pad trigger path", playback.every(Boolean), playback);
+    const savedBefore = JSON.parse(localStorage.getItem(registry.storageKey("pads", project.projectId)));
+    check("stock buffers persist as regenerable defaults", savedBefore.banks.A.relink.slice(0, 15).every((value) => value === false), savedBefore.banks.A.relink.slice(0, 15));
+
+    frame.contentWindow.eval(`
+      setPadBuffer(0, sampler.buffers[0], "User Saved Sound", { source: "Local file: user-saved.wav", sourceType: "Local File" });
+      setPadBuffer(7, sampler.buffers[7], "User Saved Scratch", { source: "Local file: user-scratch.wav", sourceType: "Local File" });
+    `);
+    await frame.contentWindow.eval(`restoreProjectRuntime(${JSON.stringify(project.projectId)})`);
+    const restored = frame.contentWindow.eval(`({
+      firstName: sampler.names[0],
+      firstBuffer: sampler.buffers[0],
+      firstRelink: sampler.relink[0],
+      savedScratchName: sampler.names[7],
+      savedScratchBuffer: sampler.buffers[7],
+      savedScratchRelink: sampler.relink[7],
+      remainingSynthNames: sampler.names.slice(1, 7),
+      remainingSynthLoaded: sampler.buffers.slice(1, 7).every(Boolean),
+      shiftedScratchNames: sampler.names.slice(8, 12),
+      shiftedScratchesLoaded: sampler.buffers.slice(8, 12).every(Boolean),
+      shiftedAdditionalNames: sampler.names.slice(12, 16),
+      shiftedAdditionalLoaded: sampler.buffers.slice(12, 16).every(Boolean)
+    })`);
+    check("saved user assignment is not overwritten", restored.firstName === "User Saved Sound" && restored.firstBuffer === null && restored.firstRelink === true, restored);
+    check("sample groups skip occupied saved pads", restored.savedScratchName === "User Saved Scratch" && restored.savedScratchBuffer === null && restored.savedScratchRelink === true && restored.remainingSynthLoaded && restored.remainingSynthNames.every((name, index) => name === expectedNames[index + 1]) && restored.shiftedScratchesLoaded && restored.shiftedScratchNames.every((name, index) => name === `Scratch ${index + 1}`) && restored.shiftedAdditionalLoaded && restored.shiftedAdditionalNames.every((name, index) => name === expectedNames[index + 11]), restored);
+    check("no uncaught errors", errors.length === 0, errors);
+    document.title = `PASS · ${Object.keys(checks).length} stock FX checks`;
+    result.textContent = JSON.stringify({ status: "PASS", checkCount: Object.keys(checks).length, checks }, null, 2);
+    restore();
+  } catch (error) {
+    document.title = `FAIL · ${error.message}`;
+    result.textContent = JSON.stringify({ status: "FAIL", message: error.message, stack: error.stack, checks, errors }, null, 2);
+    restore();
+  }
+})();
+</script>
