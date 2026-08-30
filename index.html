@@ -470,6 +470,18 @@
               </div>
             </article>
           </div>
+          <div id="decksTrackBrowser" class="decks-track-browser">
+            <div class="decks-track-browser-head">
+              <button id="decksTrackBrowserToggle" class="secondary-button" aria-expanded="true">Hide Track Browser</button>
+              <div id="decksTrackBrowserTabs" class="editor-browser-tabs">
+                <button data-decks-browser="all" class="is-active">Recent</button>
+                <button data-decks-browser="crate">DITC</button>
+                <button data-decks-browser="deck">Decks</button>
+              </div>
+              <input id="decksTrackBrowserSearch" type="search" placeholder="Search tracks...">
+            </div>
+            <div id="decksTrackBrowserList" class="decks-track-browser-list"></div>
+          </div>
         </section>
 
         <section id="sampler" class="view" aria-labelledby="samplerTitle">

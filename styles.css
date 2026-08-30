@@ -2057,6 +2057,70 @@ input[type="range"] {
   color: var(--muted);
 }
 
+.decks-track-browser {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #12161b;
+}
+
+.decks-track-browser-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.decks-track-browser-head .editor-browser-tabs { margin: 0; }
+.decks-track-browser-head input { flex: 1 1 180px; min-width: 140px; }
+
+.decks-track-browser-list {
+  display: flex;
+  flex-direction: column;
+  height: 220px;
+  max-height: 220px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.decks-browser-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0;
+  background: transparent;
+}
+
+.decks-browser-item strong {
+  flex: 1 1 60%;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.decks-browser-item small {
+  flex: 0 1 260px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.77rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.decks-browser-actions { display: flex; flex: 0 0 auto; gap: 6px; margin-left: auto; }
+.decks-browser-actions button { min-height: 28px; padding: 5px 7px; font-size: .72rem; }
+.decks-browser-item.is-unlinked { opacity: .58; }
+
 .editor-arranger {
   overflow: auto;
 }
@@ -4002,6 +4066,7 @@ h4 { margin: 8px 0 0; color: var(--muted-strong); font-size: 0.75rem; text-trans
 .source-item,
 .ditc-track-row,
 .editor-source,
+.decks-browser-item,
 .global-source-row {
   border-bottom-color: rgba(255, 255, 255, 0.055);
   transition: background 130ms ease, box-shadow 130ms ease;
@@ -4009,7 +4074,8 @@ h4 { margin: 8px 0 0; color: var(--muted-strong); font-size: 0.75rem; text-trans
 
 .source-item:hover,
 .ditc-track-row:hover,
-.editor-source:hover { background: rgba(255, 255, 255, 0.035); }
+.editor-source:hover,
+.decks-browser-item:hover { background: rgba(255, 255, 255, 0.035); }
 
 .ditc-collection-button {
   border-color: transparent;

@@ -247,6 +247,7 @@ const deckState = {
   a: createDeckState("a"),
   b: createDeckState("b")
 };
+const decksTrackBrowserState = { filter: "all", search: "", collapsed: false };
 
 const sampler = {
   buffers: Array(16).fill(null),
@@ -2005,6 +2006,7 @@ async function loadFileToDeck(file, id) {
   updateDeckTimeDisplay(id);
   updateSelectionDisplay(id);
   renderEditorSourceBin();
+  renderDecksTrackBrowser();
   renderAiContext();
   setDeckStatus(id, "ready", { smartMixControlled: false, manualOverride: false, error: "" });
   updateSmartMixSourceOptions();
@@ -2032,6 +2034,7 @@ function loadBufferToDeck(buffer, name, id, options = {}) {
   updateDeckTimeDisplay(id);
   updateSelectionDisplay(id);
   renderEditorSourceBin();
+  renderDecksTrackBrowser();
   renderAiContext();
   setDeckStatus(id, "ready", {
     smartMixControlled: Boolean(options.smartMixControlled),
@@ -2063,6 +2066,7 @@ function setPadBuffer(index, buffer, name, options = {}) {
   renderPads();
   renderPadEditor();
   renderEditorSourceBin();
+  renderDecksTrackBrowser();
   savePadWorkspace();
   if (ACTIVE_PROJECT_ID && ProjectRegistry.owns(ACTIVE_PROJECT_ID)) {
     const padAsset = ProjectAssets.register({ projectId: ACTIVE_PROJECT_ID, owningDomain: "Pads", createdBy: options.createdBy || "user", assetType: "Pad Sample", sourceType: options.sourceType || "Runtime AudioBuffer", sourceId: `pad:${sampler.bank}:${index}`, displayName: sampler.names[index], originalFilename: options.originalFilename || null, mimeType: options.mimeType || null, sizeBytes: options.sizeBytes ?? null, duration: sampler.ends[index] - sampler.starts[index], generated: options.generated === true, linked: true, missing: false, relinkRequired: false, references: [assetReference("Pads", `${sampler.bank}:${index}`, `Bank ${sampler.bank}, Pad ${index + 1}`, "Pad assignment", true)], lineage: options.assetId ? [{ assetId: options.assetId, relationship: "Assigned from" }] : [], metadata: { bank: sampler.bank, padIndex: index, mode: sampler.modes[index], category: sampler.categories[index], sourceLabel: sampler.sources[index] } });
@@ -3331,7 +3335,7 @@ function editorSources() {
     sources.push({
       id: source.id,
       type: "song",
-      label: source.name,
+      label: source.title && source.artist ? `${source.artist} - ${source.title}` : (source.title || source.name),
       detail: `${source.analysis ? analysisSummary(source.analysis) : "Local DITC audio"}${duration ? "" : " · Audio Not Linked"}`,
       duration,
       sourceKind: "crate",
@@ -3388,6 +3392,28 @@ function editorSources() {
   return sources;
 }
 
+function renderDecksTrackBrowser() {
+  const browser = document.querySelector("#decksTrackBrowser");
+  const list = document.querySelector("#decksTrackBrowserList");
+  if (!browser || !list) return;
+  const searchLower = decksTrackBrowserState.search.trim().toLowerCase();
+  const sources = editorSources()
+    .filter((source) => decksTrackBrowserState.filter === "all" || source.sourceKind === decksTrackBrowserState.filter)
+    .filter((source) => !searchLower || `${source.label} ${source.detail}`.toLowerCase().includes(searchLower));
+  browser.classList.toggle("is-collapsed", decksTrackBrowserState.collapsed);
+  list.hidden = decksTrackBrowserState.collapsed;
+  list.innerHTML = sources.length ? sources.map((source) => { const deckPlayable = source.playable !== false && source.sourceKind !== "transition"; return `
+    <div class="decks-browser-item${deckPlayable ? "" : " is-unlinked"}">
+      <strong>${escapeHtml(source.label)}</strong>
+      <small>${escapeHtml(source.detail)}</small>
+      <div class="decks-browser-actions">
+        <button data-decks-browser-load="a" data-editor-source='${escapeHtml(JSON.stringify(source))}' ${deckPlayable ? "" : `disabled title="${source.sourceKind === "transition" ? "Transition plans do not contain deck audio" : "Audio Not Linked"}"`}>Deck A</button>
+        <button data-decks-browser-load="b" data-editor-source='${escapeHtml(JSON.stringify(source))}' ${deckPlayable ? "" : `disabled title="${source.sourceKind === "transition" ? "Transition plans do not contain deck audio" : "Audio Not Linked"}"`}>Deck B</button>
+      </div>
+    </div>
+  `; }).join("") : "<p class=\"fine-print\">No tracks match this view.</p>";
+}
+
 function getSmartEditorDrumLabel() {
   const preset = drumPresets.find((item) => item.id === drums.preset);
   return preset ? `${preset.name} drums` : "Drum pattern";
@@ -3408,6 +3434,7 @@ function renderEditorSourceBin() {
 
 function renderEditor() {
   renderEditorSourceBin();
+  renderDecksTrackBrowser();
   const section = document.querySelector("#editor");
   if (section) { section.dataset.editorMode = editorState.workspaceMode; section.classList.toggle("is-empty", !editorState.clips.length); }
   const ruler = document.querySelector("#editorRuler");
@@ -3844,6 +3871,62 @@ async function resolveEditorClipBuffer(clip) {
     return clipAudioBuffer(buffer, region.start, region.end);
   }
   if (clip.sourceKind === "stem") return stemState.stems.find((stem) => stem.id === clip.sourceId)?.buffer || null;
+  if (clip.sourceKind === "drums") {
+    await AudioEngine.init();
+    const model = clip.source?.patternSnapshot || serializeBeatPattern();
+    const bpm = Number(document.querySelector("#globalBpm")?.value) || 124;
+    const stepSeconds = 60 / bpm / 4;
+    const duration = Math.max(stepSeconds, Number(clip.source?.duration) || Number(model.bars || 1) * Number(model.stepsPerBar || 16) * stepSeconds);
+    const sampleRate = AudioEngine.context.sampleRate;
+    const buffer = AudioEngine.context.createBuffer(2, Math.ceil(duration * sampleRate), sampleRate);
+    const channels = [buffer.getChannelData(0), buffer.getChannelData(1)];
+    const rows = model.rows || drums.rows;
+    rows.forEach((name, lane) => (model.pattern?.[lane] || []).forEach((active, step) => {
+      if (!active) return;
+      const timing = Number(model.timingOffsets?.[lane]?.[step] || 0) / 1000;
+      const start = Math.max(0, Math.floor((step * stepSeconds + timing) * sampleRate));
+      const decay = name === "Sub" ? .4 : name === "Kick" ? .22 : .12;
+      const length = Math.min(channels[0].length - start, Math.floor(sampleRate * decay));
+      const frequency = name === "Kick" ? 70 : name === "Sub" ? 45 : name === "Hat" ? 7200 : name === "Clap" ? 1400 : 1800;
+      const amplitude = Number(model.velocities?.[lane]?.[step] || .8) * Number(model.automation?.[lane]?.[step] || 1) * .28;
+      for (let index = 0; index < length; index += 1) {
+        const envelope = 1 - index / length;
+        const sample = name === "Kick" || name === "Sub" ? Math.sin(2 * Math.PI * frequency * index / sampleRate) : seededDrumValue(lane, start + index, Number(model.version || 0) + 9) * 2 - 1;
+        channels.forEach((channel) => { channel[start + index] = Math.max(-1, Math.min(1, channel[start + index] + sample * envelope * amplitude)); });
+      }
+    }));
+    return buffer;
+  }
+  if (clip.sourceKind === "keys") {
+    const snapshot = clip.source?.patternSnapshot;
+    const events = createHarmonyPatternEvents(Number(clip.source?.duration) || editorSecondsPerBar() * Number(snapshot?.bars || 1), snapshot);
+    if (!events.length) return null;
+    const sampleRate = AudioEngine.context?.sampleRate || 44100;
+    const duration = Math.max(Number(clip.source?.duration) || 0, ...events.map((event) => event.time + event.duration + .5));
+    const offline = new OfflineAudioContext(2, Math.ceil(duration * sampleRate), sampleRate);
+    events.forEach((event) => {
+      const preset = instrumentPresets.find((item) => item.id === event.presetId) || getInstrumentPreset();
+      const oscillator = offline.createOscillator();
+      const gain = offline.createGain();
+      const filter = offline.createBiquadFilter();
+      const start = Math.max(0, event.time);
+      const attack = Math.max(.002, Number(preset.attack || .01));
+      const release = Math.max(.08, Number(preset.release || .2));
+      const peak = Math.max(.02, Math.min(.8, Number(preset.gain || .3) * Number(event.velocity || .75)));
+      oscillator.type = event.isBass ? preset.bassWave || "sine" : preset.wave || "sine";
+      oscillator.frequency.setValueAtTime(midiToFrequency(event.midi), start);
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(Number(preset.filter || 8000), start);
+      gain.gain.setValueAtTime(.0001, start);
+      gain.gain.exponentialRampToValueAtTime(peak, start + attack);
+      gain.gain.setValueAtTime(Math.max(.001, peak * Number(preset.sustain || .7)), start + event.duration);
+      gain.gain.exponentialRampToValueAtTime(.0001, start + event.duration + release);
+      oscillator.connect(filter).connect(gain).connect(offline.destination);
+      oscillator.start(start);
+      oscillator.stop(start + event.duration + release + .02);
+    });
+    return offline.startRendering();
+  }
   return null;
 }
 
@@ -8743,6 +8826,7 @@ async function renderFilteredStem(buffer, spec) {
 function renderStemResults() {
   const results = document.querySelector("#stemResults");
   renderEditorSourceBin();
+  renderDecksTrackBrowser();
   if (!stemState.stems.length) { results.innerHTML = `<div class="stem-empty-workspace"><strong>No separated stems</strong><span>Select a source and press Separate.</span></div>`; return; }
   results.innerHTML = stemState.stems.map((stem) => `
     <article class="stem-lane${stemState.selectedStemId === stem.id ? " is-selected" : ""}${stem.muted ? " is-muted" : ""}" data-stem-select="${escapeHtml(stem.id)}" tabindex="0" aria-label="${escapeHtml(stem.name)} stem lane">
@@ -11958,7 +12042,7 @@ async function importDitcFiles(files, libraryType) {
     setSourceStatus(`Local-library indexing failed: ${error.message}`);
   } finally {
     localLibraryState.pendingRelinkLibraryId = null;
-    renderSources(); renderEditorSourceBin(); renderAiContext();
+    renderSources(); renderEditorSourceBin(); renderDecksTrackBrowser(); renderAiContext();
   }
 }
 
@@ -12099,6 +12183,43 @@ function setupEvents() {
     event.currentTarget.textContent = advanced ? "Simple Controls" : "Advanced Controls";
   });
 
+  document.querySelector("#decksTrackBrowserTabs")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-decks-browser]");
+    if (!button) return;
+    decksTrackBrowserState.filter = button.dataset.decksBrowser;
+    document.querySelectorAll("#decksTrackBrowserTabs button").forEach((item) => item.classList.toggle("is-active", item === button));
+    renderDecksTrackBrowser();
+  });
+  document.querySelector("#decksTrackBrowserSearch")?.addEventListener("input", (event) => {
+    decksTrackBrowserState.search = event.target.value;
+    renderDecksTrackBrowser();
+  });
+  document.querySelector("#decksTrackBrowserToggle")?.addEventListener("click", (event) => {
+    decksTrackBrowserState.collapsed = !decksTrackBrowserState.collapsed;
+    event.currentTarget.textContent = decksTrackBrowserState.collapsed ? "Show Track Browser" : "Hide Track Browser";
+    event.currentTarget.setAttribute("aria-expanded", String(!decksTrackBrowserState.collapsed));
+    renderDecksTrackBrowser();
+  });
+  document.querySelector("#decksTrackBrowserList")?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-decks-browser-load]");
+    if (!button || button.disabled) return;
+    const deckId = button.dataset.decksBrowserLoad;
+    const serializedSource = JSON.parse(button.dataset.editorSource);
+    const source = editorSources().find((item) => item.id === serializedSource.id && item.sourceKind === serializedSource.sourceKind) || serializedSource;
+    button.disabled = true;
+    try {
+      await AudioEngine.init();
+      const buffer = await resolveEditorClipBuffer({ source, sourceKind: source.sourceKind, sourceId: source.id });
+      if (!buffer) throw new Error(`${source.label} does not currently provide deck-ready audio.`);
+      loadBufferToDeck(buffer, source.label, deckId, { analysis: source.sourceKind === "crate" ? sourceFiles.find((item) => item.id === source.id)?.analysis : null });
+      setSourceStatus(`${source.label} loaded on Deck ${deckId.toUpperCase()}.`);
+    } catch (error) {
+      setSourceStatus(`Could not load ${source.label}: ${error.message}`);
+    } finally {
+      renderDecksTrackBrowser();
+    }
+  });
+
   document.querySelector("#editorSourceBin").addEventListener("dragstart", (event) => {
     const source = event.target.closest("[data-editor-source]");
     if (!source) return;
@@ -12111,7 +12232,7 @@ function setupEvents() {
   });
 
   document.querySelector("#editorBrowserTabs").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-editor-browser]"); if (!button) return; editorState.browserFilter = button.dataset.editorBrowser; document.querySelectorAll("[data-editor-browser]").forEach((item) => item.classList.toggle("is-active", item === button)); renderEditorSourceBin();
+    const button = event.target.closest("[data-editor-browser]"); if (!button) return; editorState.browserFilter = button.dataset.editorBrowser; document.querySelectorAll("[data-editor-browser]").forEach((item) => item.classList.toggle("is-active", item === button)); renderEditorSourceBin(); renderDecksTrackBrowser();
   });
 
   document.querySelector("#editorTimeline").addEventListener("dragover", (event) => {
@@ -12269,7 +12390,7 @@ function setupEvents() {
   document.querySelector("#editorRelinkInput").addEventListener("change", async (event) => { const file = event.target.files?.[0]; if (file) await relinkSelectedArrangementClip(file, editorState.relinkMode === "replace"); event.target.value = ""; editorState.relinkMode = null; });
   document.querySelector("#editorTimeline").addEventListener("click", (event) => { const action = event.target.closest("[data-editor-lane-action]"); if (action) { event.stopPropagation(); setArrangementLaneAction(action.dataset.editorLaneAction, Number(action.dataset.lane)); } });
   document.querySelector("#editorVersions").addEventListener("click", (event) => { const open = event.target.closest("[data-editor-version]"); if (open) switchArrangementVersion(open.dataset.editorVersion); const rename = event.target.closest("[data-editor-version-rename]"); if (rename) { const version = editorState.versions.find((item) => item.versionId === rename.dataset.editorVersionRename); const name = version && window.prompt("Version name", version.name); if (version && name?.trim()) { version.name = name.trim(); version.updatedAt = new Date().toISOString(); arrangementChanged(`Renamed version to ${version.name}`); renderEditor(); } } const remove = event.target.closest("[data-editor-version-delete]"); if (remove && editorState.versions.length > 1 && window.confirm("Delete this arrangement version?")) { const deletingActive = editorState.activeVersionId === remove.dataset.editorVersionDelete; editorState.versions = editorState.versions.filter((item) => item.versionId !== remove.dataset.editorVersionDelete); if (deletingActive) { editorState.activeVersionId = editorState.versions[0].versionId; applyArrangementModel(editorState.versions[0].model); } arrangementChanged("Deleted arrangement version"); renderEditor(); } });
-  document.querySelector("#editorEmptyActions").addEventListener("click", (event) => { const action = event.target.closest("[data-editor-empty]")?.dataset.editorEmpty; if (action === "sources") { editorState.browserFilter = "crate"; renderEditorSourceBin(); } else if (action === "deck-a" || action === "deck-b") { const source = editorSources().find((item) => item.sourceKind === "deck" && item.id === action.at(-1)); if (source) addEditorClipFromSource(source, 3, editorState.playhead); else editorStatus(`${action === "deck-a" ? "Deck A" : "Deck B"} has no loaded audio.`); } else if (action === "beat") addCurrentArrangementSource("drums"); else if (action === "harmony") addCurrentArrangementSource("keys"); else if (action === "stem") addCurrentArrangementSource("stem"); else if (action === "record") startEditorPerformanceRecording(false); else if (action === "mission") { switchView("ai"); editorStatus("Open Creative Missions and choose Build Mixtape; no mission was started silently."); } });
+  document.querySelector("#editorEmptyActions").addEventListener("click", (event) => { const action = event.target.closest("[data-editor-empty]")?.dataset.editorEmpty; if (action === "sources") { editorState.browserFilter = "crate"; renderEditorSourceBin(); renderDecksTrackBrowser(); } else if (action === "deck-a" || action === "deck-b") { const source = editorSources().find((item) => item.sourceKind === "deck" && item.id === action.at(-1)); if (source) addEditorClipFromSource(source, 3, editorState.playhead); else editorStatus(`${action === "deck-a" ? "Deck A" : "Deck B"} has no loaded audio.`); } else if (action === "beat") addCurrentArrangementSource("drums"); else if (action === "harmony") addCurrentArrangementSource("keys"); else if (action === "stem") addCurrentArrangementSource("stem"); else if (action === "record") startEditorPerformanceRecording(false); else if (action === "mission") { switchView("ai"); editorStatus("Open Creative Missions and choose Build Mixtape; no mission was started silently."); } });
 
   document.querySelector("#smartMixToggle").addEventListener("click", () => {
     startSmartMix(document.querySelector("#smartMixMode").value, document.querySelector("#smartMixSource").value);
@@ -13591,6 +13712,7 @@ function addLocalSourceFile(file, options = {}) {
     setSourceStatus(`Added ${file.name} to DITC.`);
     renderSources();
     renderEditorSourceBin();
+    renderDecksTrackBrowser();
     renderAiContext();
   }
   emitProjectContextChange("ditc", "track-imported", { summary: `Imported ${file.name} into DITC`, decision: { domain: "DITC", action: "Track imported", summary: `Imported ${file.name}`, after: { name: file.name, folderPath }, initiatedBy: "user" } });
@@ -14162,7 +14284,7 @@ async function indexLocalLibrarySelection(files, libraryType = "Selected Files",
   const indexOptions = { files: list, projectId: ACTIVE_PROJECT_ID, contextVersion: ProjectRegistry.getSession()?.contextVersion || null, pathForFile: fileFolderPath, metadataForFile: (file) => embeddedMetadata.get(file) || {} };
   localLibraryState.lastError = null; const result = existingLibraryId ? await LocalLibraries.relinkLibraryRoot(libraryId, indexOptions) : await LocalLibraries.indexLibrary(libraryId, indexOptions); localLibraryState.activeJobId = null;
   if (result.status === "Failed") localLibraryState.lastError = result.error; else setSourceStatus(`Indexed ${result.filesIndexed} file${result.filesIndexed === 1 ? "" : "s"}; ${result.duplicatesFound} duplicate${result.duplicatesFound === 1 ? "" : "s"} found; ${result.filesSkipped} unavailable or skipped.`);
-  renderLocalLibraryPanel(); renderLocalLibrarySettings(); renderSources(); renderEditorSourceBin(); renderAiContext();
+  renderLocalLibraryPanel(); renderLocalLibrarySettings(); renderSources(); renderEditorSourceBin(); renderDecksTrackBrowser(); renderAiContext();
   return result;
 }
 
@@ -14289,6 +14411,7 @@ function renderSources() {
   renderConnectedMusicBrowser();
   renderLocalLibraryPanel();
   updateSmartMixSourceOptions();
+  renderDecksTrackBrowser();
 }
 
 function ditcSearchText(track) {
@@ -14833,5 +14956,6 @@ setupLocalLibraryEvents();
 renderGlobalTransport();
 renderMasterFolderStatus();
 renderSimilarTracksPanel();
+renderDecksTrackBrowser();
 initializeProjectEntryFlow().catch((error) => { updateProjectStorageBindings(null); switchView("projectLibrary", { route: false }); writeProjectRoute("projectLibrary"); renderProjectRegistry(); renderProjectLibrary(); setProjectLibraryStatus(`Project startup recovery: ${error.message}`, "error"); });
 animationLoop();
