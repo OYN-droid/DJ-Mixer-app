@@ -1099,6 +1099,237 @@ const drumPresets = [
       [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
     ]
+  },
+  {
+    id: "premierStyleChop",
+    name: "Premier-Style Chop Loop",
+    bpm: 93,
+    notes: "Hard MPC swing with a bright, cutting snare transient and crisp scratch-forward hats, in the spirit of classic DJ-scratch-hook boom bap.",
+    swing: 0.24,
+    kit: {
+      kick: { start: 112, end: 44, decay: 0.22, gain: 0.9 },
+      sub: { start: 56, end: 34, decay: 0.24, gain: 0.4 },
+      snare: { frequency: 2200, decay: 0.1, gain: 0.66 },
+      hat: { frequency: 9200, decay: 0.035, gain: 0.24 },
+      clap: { frequency: 1600, decay: 0.09, gain: 0.3 }
+    },
+    pattern: [
+      [1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0],
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+      [1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]
+  },
+  {
+    id: "peteRockStyleGroove",
+    name: "Pete Rock-Inspired Warm Horn-Loop Groove",
+    bpm: 90,
+    notes: "Mellow, rounded low-mid warmth with laid-back moderate swing, evoking a warm jazzy horn-loop backbone.",
+    swing: 0.19,
+    kit: {
+      kick: { start: 108, end: 42, decay: 0.28, gain: 0.85 },
+      sub: { start: 54, end: 33, decay: 0.3, gain: 0.5 },
+      snare: { frequency: 1600, decay: 0.16, gain: 0.44 },
+      hat: { frequency: 5800, decay: 0.05, gain: 0.15 },
+      clap: { frequency: 1300, decay: 0.15, gain: 0.4 }
+    },
+    pattern: [
+      [1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+      [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0],
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]
+  },
+  {
+    id: "rzaStyleGrime",
+    name: "RZA-Inspired Dissonant Grime Loop",
+    bpm: 84,
+    notes: "Loose, unswung timing feel with murky low-end decay and gritty, dissonant character, in the spirit of raw lo-fi kung-fu-sample-era boom bap.",
+    swing: 0.04,
+    kit: {
+      kick: { start: 100, end: 38, decay: 0.32, gain: 0.82 },
+      sub: { start: 50, end: 30, decay: 0.4, gain: 0.6 },
+      snare: { frequency: 1350, decay: 0.13, gain: 0.5 },
+      hat: { frequency: 4600, decay: 0.045, gain: 0.1 },
+      clap: { frequency: 1050, decay: 0.11, gain: 0.22 }
+    },
+    pattern: [
+      [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0],
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+      [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
+    ]
+  },
+  {
+    id: "dillaStyleDrunk",
+    name: "Dilla-Inspired Off-Grid Swing Loop",
+    bpm: 94,
+    notes: "Deliberately asymmetric, 'drunk' timing feel with hits placed slightly off the strict grid rather than a uniform swing percentage, evoking loose MPC-quantization-quirk drumming.",
+    swing: 0.08,
+    kit: {
+      kick: { start: 110, end: 43, decay: 0.24, gain: 0.88 },
+      sub: { start: 55, end: 34, decay: 0.26, gain: 0.46 },
+      snare: { frequency: 1700, decay: 0.14, gain: 0.5 },
+      hat: { frequency: 6600, decay: 0.045, gain: 0.16 },
+      clap: { frequency: 1450, decay: 0.12, gain: 0.34 }
+    },
+    pattern: [
+      [1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1],
+      [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0],
+      [0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]
+  },
+  {
+    id: "alchemistStyleMinimal",
+    name: "Alchemist-Inspired Minimal Atmosphere Loop",
+    bpm: 88,
+    notes: "Sparse, minimal pattern density with a muted kick and lots of negative space, evoking a dusty, atmospheric loop-driven backdrop.",
+    swing: 0.15,
+    kit: {
+      kick: { start: 106, end: 41, decay: 0.26, gain: 0.7 },
+      sub: { start: 53, end: 32, decay: 0.28, gain: 0.42 },
+      snare: { frequency: 1500, decay: 0.15, gain: 0.4 },
+      hat: { frequency: 5200, decay: 0.05, gain: 0.09 },
+      clap: { frequency: 1200, decay: 0.13, gain: 0.24 }
+    },
+    pattern: [
+      [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]
+  },
+  {
+    id: "ninthWonderStyleSoul",
+    name: "9th Wonder-Inspired Chipmunk Soul Loop",
+    bpm: 91,
+    notes: "Clean, tight, polished boom-bap drums built to sit under a bright, pitched-up soul-sample melodic layer.",
+    swing: 0.17,
+    kit: {
+      kick: { start: 115, end: 45, decay: 0.2, gain: 0.9 },
+      sub: { start: 58, end: 35, decay: 0.22, gain: 0.4 },
+      snare: { frequency: 1950, decay: 0.11, gain: 0.55 },
+      hat: { frequency: 7400, decay: 0.04, gain: 0.19 },
+      clap: { frequency: 1650, decay: 0.11, gain: 0.42 }
+    },
+    pattern: [
+      [1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0],
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+      [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]
+  },
+  {
+    id: "havocStyleQb",
+    name: "Havoc-Inspired Dark QB Street Loop",
+    bpm: 89,
+    notes: "Dark minor-tonal-center loop with heavy sub weight, a hard cracking snare, and sparse eerie atmosphere.",
+    swing: 0.13,
+    kit: {
+      kick: { start: 103, end: 39, decay: 0.26, gain: 0.85 },
+      sub: { start: 52, end: 29, decay: 0.36, gain: 0.62 },
+      snare: { frequency: 1400, decay: 0.1, gain: 0.58 },
+      hat: { frequency: 4800, decay: 0.04, gain: 0.1 },
+      clap: { frequency: 1050, decay: 0.09, gain: 0.2 }
+    },
+    pattern: [
+      [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0],
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+      [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+    ]
+  },
+  {
+    id: "madlibStyleDusty",
+    name: "Madlib-Inspired Dusty Loose Chop Loop",
+    bpm: 87,
+    notes: "Loose, slightly unpredictable syncopation with dusty, lo-fi decay character, evoking experimental crate-dug sample-flip production.",
+    swing: 0.21,
+    kit: {
+      kick: { start: 104, end: 40, decay: 0.3, gain: 0.78 },
+      sub: { start: 52, end: 31, decay: 0.32, gain: 0.44 },
+      snare: { frequency: 1550, decay: 0.17, gain: 0.42 },
+      hat: { frequency: 5000, decay: 0.055, gain: 0.12 },
+      clap: { frequency: 1150, decay: 0.14, gain: 0.28 }
+    },
+    pattern: [
+      [1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1],
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+      [0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]
+  },
+  {
+    id: "princePaulStylePlayful",
+    name: "Prince Paul-Inspired Playful Skit Groove",
+    bpm: 95,
+    notes: "Bright, quirky syncopation with a bouncy moderate swing, evoking playful, eclectic De La-era sampling energy.",
+    swing: 0.18,
+    kit: {
+      kick: { start: 113, end: 44, decay: 0.21, gain: 0.86 },
+      sub: { start: 57, end: 35, decay: 0.22, gain: 0.36 },
+      snare: { frequency: 2000, decay: 0.1, gain: 0.5 },
+      hat: { frequency: 8000, decay: 0.038, gain: 0.2 },
+      clap: { frequency: 1750, decay: 0.1, gain: 0.44 }
+    },
+    pattern: [
+      [1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0],
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+      [0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]
+  },
+  {
+    id: "reggaetonDembow",
+    name: "Reggaeton Dembow",
+    bpm: 95,
+    notes: "Classic dembow riddim: syncopated tresillo kick pattern with a sharp rimshot/clap on the backbeat and steady open-hat drive, the foundational reggaeton groove.",
+    swing: 0.05,
+    kit: {
+      kick: { start: 128, end: 45, decay: 0.18, gain: 0.95 },
+      sub: { start: 62, end: 38, decay: 0.2, gain: 0.5 },
+      snare: { frequency: 2000, decay: 0.09, gain: 0.4 },
+      hat: { frequency: 9000, decay: 0.04, gain: 0.22 },
+      clap: { frequency: 1900, decay: 0.1, gain: 0.6 }
+    },
+    pattern: [
+      [1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0],
+      [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0],
+      [1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1],
+      [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0]
+    ]
+  },
+  {
+    id: "dancehallRiddim",
+    name: "Dancehall Riddim Step",
+    bpm: 90,
+    notes: "One-drop dancehall skeleton: kick and rimshot land together to leave space for toasting/vocals, with rolling percussive hats for bounce.",
+    swing: 0.12,
+    kit: {
+      kick: { start: 115, end: 42, decay: 0.24, gain: 0.9 },
+      sub: { start: 55, end: 34, decay: 0.26, gain: 0.44 },
+      snare: { frequency: 1700, decay: 0.14, gain: 0.5 },
+      hat: { frequency: 7200, decay: 0.05, gain: 0.2 },
+      clap: { frequency: 1500, decay: 0.13, gain: 0.4 }
+    },
+    pattern: [
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+      [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+      [1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]
   }
 ];
 
@@ -1267,6 +1498,171 @@ const instrumentPresets = [
     gain: 0.38,
     detune: 18,
     root: 41
+  },
+  {
+    id: "premierStyleStab",
+    name: "Premier-Style Filtered Stab",
+    notes: "Hard-filtered, percussive stab evoking a chopped loop hook.",
+    wave: "square",
+    bassWave: "sine",
+    filter: 1400,
+    attack: 0.006,
+    decay: 0.1,
+    sustain: 0.15,
+    release: 0.08,
+    gain: 0.34,
+    detune: 4,
+    root: 52
+  },
+  {
+    id: "peteRockStyleHorn",
+    name: "Pete Rock-Inspired Warm Horn-Style Pad",
+    notes: "Warm, sustained mid-range tone evoking a mellow horn loop.",
+    wave: "triangle",
+    bassWave: "sine",
+    filter: 1100,
+    attack: 0.03,
+    decay: 0.3,
+    sustain: 0.6,
+    release: 0.5,
+    gain: 0.3,
+    detune: 2,
+    root: 57
+  },
+  {
+    id: "rzaStylePiano",
+    name: "RZA-Inspired Dissonant Piano-Style Loop",
+    notes: "Dark, slightly detuned dissonant tone evoking a murky piano loop.",
+    wave: "sawtooth",
+    bassWave: "square",
+    filter: 900,
+    attack: 0.01,
+    decay: 0.35,
+    sustain: 0.3,
+    release: 0.4,
+    gain: 0.28,
+    detune: 14,
+    root: 50
+  },
+  {
+    id: "dillaStyleChord",
+    name: "Dilla-Inspired Off-Grid Soul Chord",
+    notes: "Warm soulful chord tone meant to sit against the off-grid drum feel.",
+    wave: "triangle",
+    bassWave: "sine",
+    filter: 1300,
+    attack: 0.02,
+    decay: 0.25,
+    sustain: 0.5,
+    release: 0.35,
+    gain: 0.32,
+    detune: 3,
+    root: 55
+  },
+  {
+    id: "alchemistStylePad",
+    name: "Alchemist-Inspired Minimal Atmosphere Pad",
+    notes: "Sparse, slow-moving atmospheric pad tone.",
+    wave: "sine",
+    bassWave: "sine",
+    filter: 800,
+    attack: 0.08,
+    decay: 0.4,
+    sustain: 0.7,
+    release: 0.9,
+    gain: 0.24,
+    detune: 1,
+    root: 48
+  },
+  {
+    id: "ninthWonderStyleSample",
+    name: "9th Wonder-Inspired Chipmunk Soul Sample Tone",
+    notes: "Bright, pitched-up detuned tone evoking a sped-up soul sample.",
+    wave: "triangle",
+    bassWave: "sine",
+    filter: 1900,
+    attack: 0.005,
+    decay: 0.15,
+    sustain: 0.2,
+    release: 0.15,
+    gain: 0.3,
+    detune: 22,
+    root: 64
+  },
+  {
+    id: "havocStylePiano",
+    name: "Havoc-Inspired Dark QB Piano Loop",
+    notes: "Dark minor-key piano-style tone with a hard, eerie edge.",
+    wave: "sawtooth",
+    bassWave: "square",
+    filter: 1000,
+    attack: 0.008,
+    decay: 0.3,
+    sustain: 0.25,
+    release: 0.3,
+    gain: 0.3,
+    detune: 6,
+    root: 46
+  },
+  {
+    id: "madlibStyleLoop",
+    name: "Madlib-Inspired Dusty Loose Sample Tone",
+    notes: "Slightly detuned, dusty-feeling loop tone with a lo-fi character.",
+    wave: "square",
+    bassWave: "sine",
+    filter: 1050,
+    attack: 0.015,
+    decay: 0.28,
+    sustain: 0.35,
+    release: 0.3,
+    gain: 0.28,
+    detune: 9,
+    root: 53
+  },
+  {
+    id: "princePaulStyleChord",
+    name: "Prince Paul-Inspired Playful Skit Chord",
+    notes: "Bright, bouncy chord tone with a quirky, playful character.",
+    wave: "triangle",
+    bassWave: "square",
+    filter: 1700,
+    attack: 0.01,
+    decay: 0.18,
+    sustain: 0.4,
+    release: 0.2,
+    gain: 0.32,
+    detune: 5,
+    root: 60
+  },
+  {
+    id: "dancehallOrgan",
+    name: "Dancehall Skank Organ",
+    notes: "Short, percussive upstroke organ chops characteristic of dancehall/reggae skank rhythm guitar and organ parts.",
+    wave: "square",
+    bassWave: "sine",
+    filter: 1600,
+    attack: 0.005,
+    decay: 0.08,
+    sustain: 0.1,
+    release: 0.06,
+    gain: 0.32,
+    detune: 3,
+    root: 55
+  },
+  {
+    id: "reggaetonHornStab",
+    name: "Reggaeton Horn Stab",
+    notes: "Bright, punchy synth horn stab used for reggaeton hooks and ad-lib accents.",
+    wave: "sawtooth",
+    bassWave: "square",
+    filter: 2400,
+    attack: 0.008,
+    decay: 0.15,
+    sustain: 0.2,
+    release: 0.12,
+    gain: 0.38,
+    detune: 8,
+    root: 60
   }
 ];
 
@@ -5350,9 +5746,22 @@ function buildLocalAiPlan(prompt, context) {
   const memoryValue = (category, key) => memoryPreferences.find((item) => item.category === category && item.key === key)?.value;
   const tags = {
     jungle: /jungle|breakbeat|drum.?and.?bass|dnb|goldie|everything but the girl/.test(text),
-    house: /house|garage|club|dance|four on the floor|909/.test(text),
+    house: /house|garage|club|\bdance\b|four on the floor|909/.test(text),
     trap: /trap|808|metro|zay|dark/.test(text),
     boomBap: /boom.?bap|premier|dusty|sample|break/.test(text),
+    dancehall: /dancehall|riddim|bashment|dutty|shatta|soca|bogle|bubbling/.test(text),
+    reggaeton: /reggaeton|dembow|perreo|latin trap|reguetón/.test(text),
+    drill: /drill|chicago drill|uk drill|sliding 808|dark trap/.test(text),
+    afrobeats: /afrobeat|afrobeats|amapiano|log drum|naija/.test(text),
+    djPremier: /premier|preemo|gang starr/.test(text),
+    peteRock: /pete rock|soul brother/.test(text),
+    rza: /rza|wu-?tang|wu tang/.test(text),
+    jDilla: /j dilla|dilla|jay dee|slum village/.test(text),
+    alchemist: /alchemist|alc\b/.test(text),
+    ninthWonder: /9th wonder|ninth wonder|little brother/.test(text),
+    havoc: /havoc|mobb deep|qb\b|queensbridge/.test(text),
+    madlib: /madlib|quasimoto|loop digga/.test(text),
+    princePaul: /prince paul|de la soul|stetsasonic/.test(text),
     newWave: /new wave|post.?punk|depeche|pet shop|new order|synth.?pop/.test(text),
     soul: /soul|r&b|warm|smooth|gospel/.test(text),
     funk: /funk|clav|groove|slap/.test(text),
@@ -5368,7 +5777,8 @@ function buildLocalAiPlan(prompt, context) {
   tags.beatmatch = /beat.?match|sync|tempo match|matched/.test(text);
   tags.interpolate = /interpolate|mash.?up|blend these|vocal drop|instrumental fade/.test(text);
   const rememberedGroove = memoryValue("Beat Forge Preferences", "preferred-groove");
-  const explicitDrumDirection = /jungle|breakbeat|house|garage|trap|808|boom.?bap|dusty|soul|funk|new wave/.test(text);
+  const explicitDrumDirection = /jungle|breakbeat|house|garage|trap|808|boom.?bap|dusty|dancehall|riddim|reggaeton|dembow|drill|afrobeat|afrobeats|amapiano|soul|funk|new wave/.test(text)
+    || PRODUCER_STYLE_POOL_TAGS.some((tag) => tags[tag]);
   if (!explicitDrumDirection && /boom|bap|dusty|loose/i.test(rememberedGroove || "")) tags.boomBap = true;
   if (!explicitDrumDirection && /house|four/i.test(rememberedGroove || "")) tags.house = true;
   const bpmRangeMemory = memoryValue("Project Identity", "bpm-range");
@@ -5418,6 +5828,10 @@ function inferPromptBpm(text, tags, fallback) {
   const explicit = text.match(/\b([6-9]\d|1[0-8]\d)\s*bpm\b/);
   if (explicit) return Number(explicit[1]);
   if (tags.jungle) return 164;
+  if (tags.dancehall) return 90;
+  if (tags.reggaeton) return 95;
+  if (tags.drill) return 140;
+  if (tags.afrobeats) return 110;
   if (tags.house) return 124;
   if (tags.trap) return 140;
   if (tags.newWave) return 112;
@@ -5427,42 +5841,122 @@ function inferPromptBpm(text, tags, fallback) {
   return fallback;
 }
 
+const PRODUCER_STYLE_POOL_TAGS = ["djPremier", "peteRock", "rza", "jDilla", "alchemist", "ninthWonder", "havoc", "madlib", "princePaul"];
+
 function pickDrumPreset(tags) {
-  if (tags.jungle) return drumPresets.find((preset) => preset.id === "jungleBreakbeat");
-  if (tags.house) return drumPresets.find((preset) => preset.id === "stadiumSoul");
-  if (tags.trap) return drumPresets.find((preset) => preset.id === "atlantaDark808");
-  if (tags.soul) return drumPresets.find((preset) => preset.id === "soulFlip");
-  if (tags.funk) return drumPresets.find((preset) => preset.id === "virginiaBounce");
-  if (tags.newWave) return drumPresets.find((preset) => preset.id === "timbaBounce");
-  return drumPresets.find((preset) => preset.id === "boomBapCuts");
+  const pools = {
+    jungle: ["jungleBreakbeat"],
+    house: ["stadiumSoul", "newOrleansClub"],
+    trap: ["atlantaDark808", "churchKeysTrap"],
+    dancehall: ["dancehallRiddim"],
+    reggaeton: ["reggaetonDembow"],
+    drill: ["atlantaDark808", "darkQueensbridge"],
+    afrobeats: ["virginiaBounce", "timbaBounce", "dancehallRiddim"],
+    boomBap: ["boomBapCuts", "darkQueensbridge", "harlemSoul"],
+    soul: ["soulFlip", "harlemSoul", "stadiumSoul"],
+    funk: ["virginiaBounce", "timbaBounce"],
+    newWave: ["timbaBounce"],
+    djPremier: ["premierStyleChop"],
+    peteRock: ["peteRockStyleGroove"],
+    rza: ["rzaStyleGrime"],
+    jDilla: ["dillaStyleDrunk"],
+    alchemist: ["alchemistStyleMinimal"],
+    ninthWonder: ["ninthWonderStyleSoul"],
+    havoc: ["havocStyleQb"],
+    madlib: ["madlibStyleDusty"],
+    princePaul: ["princePaulStylePlayful"]
+  };
+  return pickFromGenrePools(tags, pools, drumPresets, "boomBapCuts", PRODUCER_STYLE_POOL_TAGS);
 }
 
 function pickDrumMachine(tags) {
-  if (tags.jungle) return drumMachines.find((machine) => machine.id === "jungleBreaks");
-  if (tags.house) return drumMachines.find((machine) => machine.id === "house909");
-  if (tags.trap) return drumMachines.find((machine) => machine.id === "analog808");
-  if (tags.newWave) return drumMachines.find((machine) => machine.id === "digital707");
-  if (tags.funk) return drumMachines.find((machine) => machine.id === "linnPop");
-  return drumMachines.find((machine) => machine.id === "spBoomBap");
+  const pools = {
+    jungle: ["jungleBreaks"],
+    house: ["house909", "performance8s"],
+    trap: ["analog808", "performance8s"],
+    dancehall: ["linnPop"],
+    reggaeton: ["performance8s"],
+    drill: ["analog808", "performance8s"],
+    afrobeats: ["linnPop", "performance8s"],
+    boomBap: ["spBoomBap", "analog808"],
+    soul: ["spBoomBap", "linnPop"],
+    funk: ["linnPop", "digital707"],
+    newWave: ["digital707", "electro606"],
+    djPremier: ["spBoomBap"],
+    peteRock: ["spBoomBap"],
+    rza: ["spBoomBap"],
+    jDilla: ["spBoomBap"],
+    alchemist: ["spBoomBap"],
+    ninthWonder: ["spBoomBap"],
+    havoc: ["analog808"],
+    madlib: ["spBoomBap"],
+    princePaul: ["linnPop"]
+  };
+  return pickFromGenrePools(tags, pools, drumMachines, "spBoomBap", PRODUCER_STYLE_POOL_TAGS);
 }
 
 function pickSynthPreset(tags) {
-  if (tags.jungle && tags.dark) return instrumentPresets.find((preset) => preset.id === "jungleSub");
-  if (tags.jungle) return instrumentPresets.find((preset) => preset.id === "jungleAtmos");
-  if (tags.house) return instrumentPresets.find((preset) => preset.id === "houseStabs");
-  if (tags.trap) return instrumentPresets.find((preset) => preset.id === "rapKeys");
-  if (tags.newWave) return instrumentPresets.find((preset) => preset.id === "newWave");
-  if (tags.soul) return instrumentPresets.find((preset) => preset.id === "rnbElectric");
-  if (tags.funk) return instrumentPresets.find((preset) => preset.id === "funkClav");
-  return instrumentPresets.find((preset) => preset.id === "rapKeys");
+  const pools = {
+    jungle: ["jungleAtmos", "jungleSub"],
+    house: ["houseStabs", "technoPluck", "electroBass"],
+    trap: ["rapKeys", "electroBass"],
+    dancehall: ["dancehallOrgan"],
+    reggaeton: ["reggaetonHornStab"],
+    drill: ["rapKeys", "electroBass"],
+    afrobeats: ["dancehallOrgan", "reggaetonHornStab", "funkClav"],
+    boomBap: ["rapKeys", "soulOrgan"],
+    soul: ["rnbElectric", "soulOrgan"],
+    funk: ["funkClav", "electroBass"],
+    newWave: ["newWave", "postPunk", "technoPluck"],
+    djPremier: ["premierStyleStab"],
+    peteRock: ["peteRockStyleHorn"],
+    rza: ["rzaStylePiano"],
+    jDilla: ["dillaStyleChord"],
+    alchemist: ["alchemistStylePad"],
+    ninthWonder: ["ninthWonderStyleSample"],
+    havoc: ["havocStylePiano"],
+    madlib: ["madlibStyleLoop"],
+    princePaul: ["princePaulStyleChord"]
+  };
+  return pickFromGenrePools(tags, pools, instrumentPresets, "rapKeys", PRODUCER_STYLE_POOL_TAGS);
 }
 
 function pickSynthMachine(tags) {
-  if (tags.jungle) return synthMachines.find((machine) => machine.id === "reesePad");
-  if (tags.house) return synthMachines.find((machine) => machine.id === "houseOrgan");
-  if (tags.newWave) return synthMachines.find((machine) => machine.id === "stringMachine");
-  if (tags.trap) return synthMachines.find((machine) => machine.id === "subBass");
-  return synthMachines.find((machine) => machine.id === "polyAnalog");
+  const pools = {
+    jungle: ["reesePad", "subBass"],
+    house: ["houseOrgan", "polyAnalog", "acidMono", "fmDigital"],
+    trap: ["subBass", "polyAnalog"],
+    dancehall: ["houseOrgan"],
+    reggaeton: ["subBass"],
+    drill: ["subBass", "acidMono"],
+    afrobeats: ["houseOrgan", "fmDigital", "polyAnalog"],
+    boomBap: ["polyAnalog", "fmDigital"],
+    soul: ["fmDigital", "houseOrgan", "polyAnalog"],
+    funk: ["acidMono", "fmDigital", "polyAnalog"],
+    newWave: ["stringMachine", "fmDigital", "polyAnalog"],
+    djPremier: ["acidMono"],
+    peteRock: ["polyAnalog"],
+    rza: ["acidMono"],
+    jDilla: ["polyAnalog"],
+    alchemist: ["reesePad"],
+    ninthWonder: ["fmDigital"],
+    havoc: ["reesePad"],
+    madlib: ["polyAnalog"],
+    princePaul: ["fmDigital"]
+  };
+  return pickFromGenrePools(tags, pools, synthMachines, "polyAnalog", PRODUCER_STYLE_POOL_TAGS);
+}
+
+function pickFromGenrePools(tags, pools, collection, fallbackId, priorityTags = []) {
+  const hasPriorityMatch = priorityTags.some((tag) => tags[tag] && pools[tag]);
+  const matchedIds = new Set();
+  for (const [tag, ids] of Object.entries(pools)) {
+    if (tags[tag] && (!hasPriorityMatch || priorityTags.includes(tag))) ids.forEach((id) => matchedIds.add(id));
+  }
+  const candidates = matchedIds.size
+    ? collection.filter((item) => matchedIds.has(item.id))
+    : [collection.find((item) => item.id === fallbackId)];
+  return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
 function planStemUsage(context, tags) {
@@ -8002,16 +8496,16 @@ function scheduleHarmonyPattern(pattern = instrument.pattern, preview = false) {
 
 async function playHarmonyPattern() {
   if (instrument.patternPlaying || instrument.patternTimer) return; await AudioEngine.init(); if (!instrument.pattern.notes.length) { document.querySelector("#harmonyAiMessage").textContent = "Add or generate notes before playing the Harmony pattern."; return; }
-  instrument.patternPlaying = true; instrument.patternPaused = false; instrument.patternStartedAt = AudioEngine.context.currentTime; const duration = scheduleHarmonyPattern(); document.querySelector("#harmonyPlay").textContent = "Playing";
+  instrument.patternPlaying = true; instrument.patternPaused = false; instrument.patternStartedAt = AudioEngine.context.currentTime; const duration = scheduleHarmonyPattern(); document.querySelector("#harmonyPlay").textContent = "Playing"; syncFloatingTransportState("harmony");
   instrument.patternTimer = setTimeout(() => { instrument.patternTimer = null; if (instrument.patternLoop && instrument.patternPlaying) { instrument.patternPlaying = false; playHarmonyPattern(); } else stopHarmonyPattern(); }, duration * 1000);
   renderHarmonyDiagnostics();
   emitProjectContextChange("harmonyLab", "playback-started", { summary: `Playing Harmony pattern ${instrument.pattern.name}` });
 }
 
-function stopHarmonyPattern() { const wasActive = instrument.patternPlaying || instrument.patternPaused || instrument.previewing || instrument.recording; clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = false; instrument.previewing = false; instrument.recording = false; stopAllInstrumentVoices(); const play = document.querySelector("#harmonyPlay"); if (play) play.textContent = "Play Pattern"; const record = document.querySelector("#harmonyRecord"); if (record) { record.textContent = "Record"; record.classList.remove("is-active"); } renderHarmonyDiagnostics(); if (wasActive) emitProjectContextChange("harmonyLab", "playback-stopped", { summary: "Stopped Harmony playback" }); }
-function pauseHarmonyPattern() { const wasPlaying = instrument.patternPlaying; clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = true; stopAllInstrumentVoices(); document.querySelector("#harmonyPlay").textContent = "Resume"; if (wasPlaying) emitProjectContextChange("harmonyLab", "playback-paused", { summary: "Paused Harmony playback" }); }
+function stopHarmonyPattern() { const wasActive = instrument.patternPlaying || instrument.patternPaused || instrument.previewing || instrument.recording; clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = false; instrument.previewing = false; instrument.recording = false; stopAllInstrumentVoices(); const play = document.querySelector("#harmonyPlay"); if (play) play.textContent = "Play Pattern"; syncFloatingTransportState("harmony"); const record = document.querySelector("#harmonyRecord"); if (record) { record.textContent = "Record"; record.classList.remove("is-active"); } renderHarmonyDiagnostics(); if (wasActive) emitProjectContextChange("harmonyLab", "playback-stopped", { summary: "Stopped Harmony playback" }); }
+function pauseHarmonyPattern() { const wasPlaying = instrument.patternPlaying; clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = true; stopAllInstrumentVoices(); document.querySelector("#harmonyPlay").textContent = "Resume"; syncFloatingTransportState("harmony"); if (wasPlaying) emitProjectContextChange("harmonyLab", "playback-paused", { summary: "Paused Harmony playback" }); }
 
-function updateHarmonyPosition() { if (!instrument.patternPlaying || !AudioEngine.context) return; const elapsed = AudioEngine.context.currentTime - instrument.patternStartedAt; const step = Math.floor(elapsed / harmonyStepSeconds()) % (instrument.pattern.bars * 16); instrument.patternPlayhead = step * harmonyStepSeconds(); const display = document.querySelector("#harmonyPosition"); if (display) display.textContent = `Bar ${Math.floor(step / 16) + 1} · Beat ${Math.floor((step % 16) / 4) + 1}`; }
+function updateHarmonyPosition() { if (!instrument.patternPlaying || !AudioEngine.context) return; const elapsed = AudioEngine.context.currentTime - instrument.patternStartedAt; const step = Math.floor(elapsed / harmonyStepSeconds()) % (instrument.pattern.bars * 16); instrument.patternPlayhead = step * harmonyStepSeconds(); const display = document.querySelector("#harmonyPosition"); if (display) display.textContent = `Bar ${Math.floor(step / 16) + 1} · Beat ${Math.floor((step % 16) / 4) + 1}`; const harmonyPositionFloating = document.querySelector("#harmonyPositionFloating"); if (harmonyPositionFloating && display) harmonyPositionFloating.textContent = display.textContent; }
 
 function generateHarmonyNotes(kind = "composer", variation = false) {
   const prompt = document.querySelector("#harmonyPrompt")?.value.trim() || "Create soulful minor chords"; const lower = prompt.toLowerCase(); const root = getInstrumentPreset().root + harmonyRoots.indexOf(instrument.key); const bars = 4; const seed = (Date.now() % 100000) + (variation ? 37 : 0); const random = createSeededGenerator(seed); const notes = [];
@@ -8841,6 +9335,7 @@ function startDrums() {
   drums.schedulerLoadedVersion = drums.version;
   if (DECKFORGE_DEVELOPMENT) console.debug("[DeckForge][Groove] scheduler loaded pattern version", drums.schedulerLoadedVersion);
   document.querySelector("#drumPlay").textContent = "Playing";
+  syncFloatingTransportState("drum");
   tickDrums(drums.schedulerVersion);
   renderBeatDiagnostics();
   emitProjectContextChange("beatForge", "playback-started", { summary: `Playing Beat Forge pattern ${drums.name}` });
@@ -8860,6 +9355,7 @@ function stopDrums() {
   drums.overdub = false;
   drums.voices.splice(0).forEach((voice) => { try { voice.stop(); } catch { /* Voice already ended. */ } });
   document.querySelector("#drumPlay").textContent = "Play";
+  syncFloatingTransportState("drum");
   document.querySelector("#beatRecord")?.classList.remove("is-active");
   document.querySelector("#beatOverdub")?.classList.remove("is-active");
   document.querySelectorAll(".step").forEach((step) => step.classList.remove("is-current"));
@@ -8875,6 +9371,7 @@ function pauseDrums() {
   drums.timer = null;
   drums.schedulerVersion += 1;
   document.querySelector("#drumPlay").textContent = "Resume";
+  syncFloatingTransportState("drum");
   document.querySelectorAll(".step").forEach((step) => step.classList.remove("is-current"));
   emitProjectContextChange("beatForge", "playback-paused", { summary: "Paused Beat Forge playback" });
 }
@@ -8907,6 +9404,8 @@ function tickDrums(schedulerVersion = drums.schedulerVersion) {
   });
   if (drums.metronome && localStep % 4 === 0) playDrumVoice("Hat", AudioEngine.context.currentTime, localStep === 0 ? 0.35 : 0.2, { laneIndex: 2, filter: 12000 });
   document.querySelector("#beatPosition").textContent = `Bar ${bar + 1} · Beat ${Math.floor(localStep / 4) + 1}`;
+  const drumPositionFloating = document.querySelector("#drumPositionFloating");
+  if (drumPositionFloating) drumPositionFloating.textContent = document.querySelector("#beatPosition").textContent;
   if (localStep === 0) renderSequencer();
   drums.step = (step + 1) % totalSteps;
   if (drums.step === 0) drums.cycle += 1;
@@ -11476,7 +11975,64 @@ async function triggerMusicFolderSelection() {
   }
 }
 
+function syncFloatingTransportState(scope) {
+  ["Play", "Pause", "Stop"].forEach((action) => {
+    const prefix = scope === "drum" ? "drum" : "harmony";
+    const realButton = document.querySelector(`#${prefix}${action}`);
+    const floatingButton = document.querySelector(`#${prefix}${action}Floating`);
+    if (!realButton || !floatingButton) return;
+    floatingButton.disabled = realButton.disabled;
+    floatingButton.classList.toggle("is-active", realButton.classList.contains("is-active"));
+    if (realButton.hasAttribute("aria-pressed")) floatingButton.setAttribute("aria-pressed", realButton.getAttribute("aria-pressed"));
+    else floatingButton.removeAttribute("aria-pressed");
+  });
+}
+
+function syncFloatingTransportOffset() {
+  const topbar = document.querySelector(".topbar");
+  const rail = document.querySelector(".rail");
+  if (!topbar) return;
+  const topbarPosition = getComputedStyle(topbar).position;
+  const persistentHeader = topbarPosition === "sticky" || topbarPosition === "fixed";
+  const obstruction = persistentHeader ? topbar : rail;
+  const offset = obstruction ? Math.max(0, obstruction.getBoundingClientRect().bottom) : 0;
+  document.documentElement.style.setProperty("--floating-transport-top", `${offset}px`);
+}
+
+function setupFloatingTransportOffset() {
+  let resizeFrame = null;
+  const scheduleSync = () => {
+    if (resizeFrame) cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = null;
+      syncFloatingTransportOffset();
+    });
+  };
+  window.addEventListener("resize", scheduleSync);
+  if (window.ResizeObserver) {
+    const observer = new ResizeObserver(scheduleSync);
+    const topbar = document.querySelector(".topbar");
+    const rail = document.querySelector(".rail");
+    if (topbar) observer.observe(topbar);
+    if (rail) observer.observe(rail);
+  }
+  scheduleSync();
+}
+
 function setupEvents() {
+  const floatingTransportPairs = [
+    ["drumPlayFloating", "drumPlay"], ["drumPauseFloating", "drumPause"], ["drumStopFloating", "drumStop"],
+    ["harmonyPlayFloating", "harmonyPlay"], ["harmonyPauseFloating", "harmonyPause"], ["harmonyStopFloating", "harmonyStop"]
+  ];
+  floatingTransportPairs.forEach(([floatingId, realId]) => {
+    const floatingButton = document.querySelector(`#${floatingId}`);
+    const realButton = document.querySelector(`#${realId}`);
+    if (floatingButton && realButton) {
+      floatingButton.addEventListener("click", () => realButton.click());
+    }
+  });
+  syncFloatingTransportState("drum");
+  syncFloatingTransportState("harmony");
   const suggestionImportInput = document.createElement("input");
   suggestionImportInput.id = "similarTrackImportInput";
   suggestionImportInput.type = "file";
@@ -14269,6 +14825,7 @@ LocalLibraries.resetAllLocalLibraries();
 initializePlaybackRegistry();
 setupProjectRegistryEvents();
 setupEvents();
+setupFloatingTransportOffset();
 setupProducerStudioEvents();
 setupAssetManagerEvents();
 setupProviderEvents();

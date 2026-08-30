@@ -588,6 +588,12 @@
             </div>
             <label>Workspace <select id="beatForgeMode"><option value="simple">Simple</option><option value="advanced">Advanced</option></select></label>
           </div>
+          <div id="drumsFloatingTransport" class="floating-transport" aria-label="Beat Forge quick transport">
+            <button id="drumPlayFloating" class="primary-button">Play</button>
+            <button id="drumPauseFloating" class="secondary-button">Pause</button>
+            <button id="drumStopFloating" class="secondary-button">Stop</button>
+            <span id="drumPositionFloating">Bar 1 · Beat 1</span>
+          </div>
           <div class="beat-transport" aria-label="Beat Forge local transport">
             <button id="drumPlay" class="primary-button">Play</button>
             <button id="drumPause" class="secondary-button">Pause</button>
@@ -674,6 +680,12 @@
               <p>Play manually, shape chords and basslines, or preview project-aware composition ideas.</p>
             </div>
             <label>Workspace <select id="harmonyMode"><option value="simple">Simple</option><option value="advanced">Advanced</option></select></label>
+          </div>
+          <div id="harmonyFloatingTransport" class="floating-transport" aria-label="Harmony Lab quick transport">
+            <button id="harmonyPlayFloating" class="primary-button">Play</button>
+            <button id="harmonyPauseFloating" class="secondary-button">Pause</button>
+            <button id="harmonyStopFloating" class="secondary-button">Stop</button>
+            <span id="harmonyPositionFloating">Bar 1 · Beat 1</span>
           </div>
           <div class="harmony-transport" aria-label="Harmony Lab transport">
             <button id="harmonyPlay" class="primary-button">Play Pattern</button><button id="harmonyPause" class="secondary-button">Pause</button><button id="harmonyStop" class="secondary-button">Stop</button><button id="harmonyRestart" class="secondary-button">Restart</button><button id="harmonyRecord" class="secondary-button">Record</button><button id="harmonySustain" class="secondary-button" aria-pressed="false">Sustain</button><button id="harmonyLoop" class="secondary-button is-active" aria-pressed="true">Loop</button><strong id="harmonyPatternName">Harmony A1</strong><span id="harmonyPosition">Bar 1 · Beat 1</span>
