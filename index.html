@@ -265,6 +265,14 @@
             </details>
           </section>
 
+          <div class="decks-quick-pads-panel">
+            <div class="decks-quick-pads-head">
+              <strong>Quick Pads</strong>
+              <small>Bank <b id="decksQuickPadBank">A</b> · drag to reorder</small>
+            </div>
+            <div id="decksQuickPads" class="decks-quick-pads" aria-label="Configurable quick pad triggers"></div>
+          </div>
+
           <div class="deck-grid">
             <article class="deck" data-deck="a">
               <div class="deck-top">
@@ -477,6 +485,15 @@
                 <button data-decks-browser="all" class="is-active">Recent</button>
                 <button data-decks-browser="crate">DITC</button>
                 <button data-decks-browser="deck">Decks</button>
+              </div>
+              <div id="decksTrackBrowserSort" class="decks-track-browser-sort" hidden>
+                <label>Sort <select id="decksTrackBrowserSortSelect">
+                  <option value="default">Recently Added</option>
+                  <option value="title">Title (A-Z)</option>
+                  <option value="bpm-asc">BPM (Low-High)</option>
+                  <option value="bpm-desc">BPM (High-Low)</option>
+                  <option value="key">Key</option>
+                </select></label>
               </div>
               <input id="decksTrackBrowserSearch" type="search" placeholder="Search tracks...">
             </div>

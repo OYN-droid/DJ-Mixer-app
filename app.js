@@ -247,7 +247,24 @@ const deckState = {
   a: createDeckState("a"),
   b: createDeckState("b")
 };
-const decksTrackBrowserState = { filter: "all", search: "", collapsed: false };
+const decksTrackBrowserState = { filter: "all", search: "", collapsed: false, sort: "default" };
+const QUICK_PAD_ORDER_KEY = "deckforge-quick-pad-order";
+
+function readQuickPadOrder() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(QUICK_PAD_ORDER_KEY) || "null");
+    if (Array.isArray(stored) && stored.length === 8 && stored.every((index) => Number.isInteger(index) && index >= 0 && index < 16)) return stored;
+  } catch {
+    /* Fall through to the default mapping when stored data is unavailable or invalid. */
+  }
+  return [0, 1, 2, 3, 4, 5, 6, 7];
+}
+
+function writeQuickPadOrder(order) {
+  localStorage.setItem(QUICK_PAD_ORDER_KEY, JSON.stringify(order));
+}
+
+const decksQuickPadState = { order: readQuickPadOrder(), editingSlot: null };
 
 const sampler = {
   buffers: Array(16).fill(null),
@@ -2064,6 +2081,7 @@ function setPadBuffer(index, buffer, name, options = {}) {
   sampler.assetIds[index] = options.assetId || null;
   sampler.selected = index;
   renderPads();
+  renderDecksQuickPads();
   renderPadEditor();
   renderEditorSourceBin();
   renderDecksTrackBrowser();
@@ -2735,6 +2753,45 @@ function renderPads() {
   renderPadDiagnostics();
 }
 
+function renderDecksQuickPads() {
+  const container = document.querySelector("#decksQuickPads");
+  if (!container) return;
+  const categoryColors = {
+    "DJ Drops": "var(--aqua)",
+    Vocals: "#a871ff",
+    "Movie Quotes": "#ff8f3f",
+    Sports: "#5fd15f",
+    Loops: "#ffd23f",
+    FX: "#ff3f6e",
+    Scratches: "#3fb8ff",
+    "User-created": "#c9c9c9",
+    Drums: "#ff7866"
+  };
+  document.querySelector("#decksQuickPadBank")?.replaceChildren(document.createTextNode(sampler.bank));
+  container.innerHTML = decksQuickPadState.order.map((padIndex, slot) => {
+    const hasSound = Boolean(sampler.buffers[padIndex]);
+    const isActive = Boolean(sampler.active[padIndex]);
+    const category = hasSound ? sampler.categories[padIndex] : null;
+    const accentColor = category ? categoryColors[category] : null;
+    const picker = decksQuickPadState.editingSlot === slot ? `
+      <select class="decks-quick-pad-select" data-quick-pad-select="${slot}" aria-label="Pad for quick slot ${slot + 1}">
+        ${sampler.names.map((name, index) => `<option value="${index}"${index === padIndex ? " selected" : ""}>${index + 1}. ${escapeHtml(name)}${sampler.buffers[index] ? "" : " (Empty)"}</option>`).join("")}
+      </select>
+    ` : `<button type="button" class="decks-quick-pad-reassign" data-quick-pad-reassign="${slot}" title="Change this slot's pad" aria-label="Change quick slot ${slot + 1} pad">⋯</button>`;
+    return `
+      <div class="decks-quick-pad-slot" draggable="true" data-quick-pad-slot="${slot}"${accentColor ? ` style="--pad-accent: ${accentColor};"` : ""}>
+        <span class="decks-quick-pad-drag" aria-hidden="true">⠿</span>
+        <button type="button" class="decks-quick-pad${isActive ? " is-active" : ""}" data-decks-quick-pad="${padIndex}"
+          ${hasSound ? "" : "disabled"} title="${hasSound ? escapeHtml(`${sampler.names[padIndex]} · ${category}`) : "Empty pad"}">
+          <span class="decks-quick-pad-index">${padIndex + 1}</span>
+          <span class="decks-quick-pad-name">${hasSound ? escapeHtml(sampler.names[padIndex]) : "Empty"}</span>
+        </button>
+        ${picker}
+      </div>
+    `;
+  }).join("");
+}
+
 function triggerPad(index, options = {}) {
   const buffer = sampler.buffers[index];
   if (!buffer || !AudioEngine.context) return;
@@ -2785,6 +2842,7 @@ function triggerPad(index, options = {}) {
   source.onended = () => {
     sampler.active[index] = null;
     renderPads();
+    renderDecksQuickPads();
   };
   if (source.loop) {
     source.start(startAt, region.start);
@@ -2792,6 +2850,7 @@ function triggerPad(index, options = {}) {
     source.start(startAt, region.start, region.end - region.start);
   }
   renderPads();
+  renderDecksQuickPads();
   renderAiContext();
   emitProjectContextChange("pads", "pad-triggered", { summary: `Triggered Pad ${index + 1}: ${sampler.names[index]}` });
 }
@@ -2814,7 +2873,10 @@ function stopPad(index, options = {}) {
     /* Pad may already have ended. */
   }
   sampler.lastStop = `${index + 1}. ${sampler.names[index]}`;
-  if (!options.quiet) renderPads();
+  if (!options.quiet) {
+    renderPads();
+    renderDecksQuickPads();
+  }
   if (!options.quiet) emitProjectContextChange("pads", "pad-stopped", { summary: `Stopped Pad ${index + 1}: ${sampler.names[index]}` });
 }
 
@@ -2907,7 +2969,7 @@ function switchPadBank(name) {
   sampler.banks[name] ||= emptyPadBank();
   applyPadBank(sampler.banks[name]);
   savePadWorkspace();
-  renderPads(); renderPadEditor();
+  renderPads(); renderDecksQuickPads(); renderPadEditor();
   setPadEditorStatus(`Switched to Bank ${name}. Pad audio was stopped; decks were not affected.`);
   emitProjectContextChange("pads", "pad-bank-changed", { summary: `Switched from Pad Bank ${previousBank} to ${name}`, decision: { domain: "Pads", action: "Pad bank selected", summary: `Selected Pad Bank ${name}`, before: { bank: previousBank }, after: { bank: name }, initiatedBy: "user" } });
 }
@@ -2970,7 +3032,7 @@ function loadStarterPadBank() {
   starter.categories = ["Drums", "Drums", "Drums", "Drums", "DJ Drops", "Vocals", "Sports", "Movie Quotes", "FX", "FX", "Loops", "Loops", "Scratches", "Scratches", "User-created", "User-created"];
   starter.relink = starter.names.map(() => true);
   applyPadBank(starter); sampler.banks[sampler.bank] = starter;
-  savePadWorkspace(); renderPads(); renderPadEditor();
+  savePadWorkspace(); renderPads(); renderDecksQuickPads(); renderPadEditor();
   setPadEditorStatus("Starter layout loaded as honest Relink Required slots. Add your own audio to make each pad playable.");
 }
 
@@ -3042,6 +3104,7 @@ function deletePad(index) {
   sampler.sources[index] = "Unassigned";
   sampler.relink[index] = false;
   renderPads();
+  renderDecksQuickPads();
   renderPadEditor();
   renderAiContext();
   savePadWorkspace();
@@ -3050,6 +3113,7 @@ function deletePad(index) {
 function selectPad(index) {
   sampler.selected = index;
   renderPads();
+  renderDecksQuickPads();
   renderPadEditor();
 }
 
@@ -3104,12 +3168,14 @@ function updateSelectedPadRange(which, value) {
   }
   renderPadEditor();
   renderPads();
+  renderDecksQuickPads();
 }
 
 function updateSelectedPadMode(value) {
   sampler.modes[sampler.selected] = value;
   renderPadEditor();
   renderPads();
+  renderDecksQuickPads();
   savePadWorkspace();
 }
 
@@ -3121,7 +3187,7 @@ function updateSelectedPadSetting(key, value) {
   if (active && key === "pans" && active.pan) active.pan.pan.value = Number(value);
   if (active && key === "filters") active.filter.frequency.value = Number(value);
   if (active && key === "pitches") active.source.playbackRate.value = 2 ** (Number(value) / 12);
-  renderPads(); savePadWorkspace();
+  renderPads(); renderDecksQuickPads(); savePadWorkspace();
 }
 
 function updatePadQuantize(value) {
@@ -3167,6 +3233,7 @@ function sliceSelectedPadToPads() {
   }
   sampler.selected = index;
   renderPads();
+  renderDecksQuickPads();
   renderPadEditor();
   setPadEditorStatus(`Sliced ${baseName} into ${count} playable pads.`);
 }
@@ -3397,9 +3464,24 @@ function renderDecksTrackBrowser() {
   const list = document.querySelector("#decksTrackBrowserList");
   if (!browser || !list) return;
   const searchLower = decksTrackBrowserState.search.trim().toLowerCase();
-  const sources = editorSources()
+  let sources = editorSources()
     .filter((source) => decksTrackBrowserState.filter === "all" || source.sourceKind === decksTrackBrowserState.filter)
     .filter((source) => !searchLower || `${source.label} ${source.detail}`.toLowerCase().includes(searchLower));
+
+  const sortControl = document.querySelector("#decksTrackBrowserSort");
+  const isDitcTab = decksTrackBrowserState.filter === "crate";
+  if (sortControl) sortControl.hidden = !isDitcTab;
+
+  if (isDitcTab && decksTrackBrowserState.sort !== "default") {
+    sources = [...sources].sort((a, b) => {
+      if (decksTrackBrowserState.sort === "title") return a.label.localeCompare(b.label);
+      if (decksTrackBrowserState.sort === "bpm-asc") return (Number(a.metadata?.bpm) || 0) - (Number(b.metadata?.bpm) || 0);
+      if (decksTrackBrowserState.sort === "bpm-desc") return (Number(b.metadata?.bpm) || 0) - (Number(a.metadata?.bpm) || 0);
+      if (decksTrackBrowserState.sort === "key") return String(a.metadata?.key || "").localeCompare(String(b.metadata?.key || ""));
+      return 0;
+    });
+  }
+
   browser.classList.toggle("is-collapsed", decksTrackBrowserState.collapsed);
   list.hidden = decksTrackBrowserState.collapsed;
   list.innerHTML = sources.length ? sources.map((source) => { const deckPlayable = source.playable !== false && source.sourceKind !== "transition"; return `
@@ -11509,7 +11591,7 @@ async function restoreProjectRuntime(projectId) {
   editorState.projectId = projectId; editorState.name = producerStudioState.projectName ? `${producerStudioState.projectName} Arrangement` : editorState.name; restoreArrangementProject();
   readSmartPromptStorage();
   initializeProducerMemory(); initializeFinishingServices(); initializeProjectIntelligence(); initializeRecommendationEngine(); initializeMissionEngine(); initializeStemCapabilities(); applyStemMemoryPreferences(); resumeOwnedStemJobs();
-  renderPads(); renderPadEditor(); renderPadWorkspaceControls(); renderInstrumentOptions(); renderHarmonyLab(); renderPresetOptions(); if (drums.restored) renderBeatForge(); else applyDrumPreset(drums.preset); renderSources(); renderAiContext(); renderStemLab(); renderProducerStudio(); renderEditor(); drawWaveform("a"); drawWaveform("b"); setDeckStatus("a", "empty"); setDeckStatus("b", "empty"); restoreDeckProjectState(); renderSmartMixPanel(); renderSmartPromptPlan(); renderSmartPromptLibrary(); renderTempoSafetyPreferences(); renderBpmRecovery(); renderGlobalTransport(); renderProjectRegistry(); renderProjectLibrary();
+  renderPads(); renderDecksQuickPads(); renderPadEditor(); renderPadWorkspaceControls(); renderInstrumentOptions(); renderHarmonyLab(); renderPresetOptions(); if (drums.restored) renderBeatForge(); else applyDrumPreset(drums.preset); renderSources(); renderAiContext(); renderStemLab(); renderProducerStudio(); renderEditor(); drawWaveform("a"); drawWaveform("b"); setDeckStatus("a", "empty"); setDeckStatus("b", "empty"); restoreDeckProjectState(); renderSmartMixPanel(); renderSmartPromptPlan(); renderSmartPromptLibrary(); renderTempoSafetyPreferences(); renderBpmRecovery(); renderGlobalTransport(); renderProjectRegistry(); renderProjectLibrary();
 }
 
 function saveDeckProjectState() {
@@ -12104,6 +12186,63 @@ function setupFloatingTransportOffset() {
 }
 
 function setupEvents() {
+  let quickPadDragSlot = null;
+  const quickPads = document.querySelector("#decksQuickPads");
+  quickPads?.addEventListener("click", (event) => {
+    const reassignButton = event.target.closest("[data-quick-pad-reassign]");
+    if (reassignButton) {
+      decksQuickPadState.editingSlot = Number(reassignButton.dataset.quickPadReassign);
+      renderDecksQuickPads();
+      document.querySelector(`[data-quick-pad-select="${decksQuickPadState.editingSlot}"]`)?.focus();
+      return;
+    }
+    const button = event.target.closest("[data-decks-quick-pad]");
+    if (!button || button.disabled) return;
+    triggerPad(Number(button.dataset.decksQuickPad));
+  });
+  quickPads?.addEventListener("change", (event) => {
+    const select = event.target.closest("[data-quick-pad-select]");
+    if (!select) return;
+    const slot = Number(select.dataset.quickPadSelect);
+    const padIndex = Number(select.value);
+    if (!Number.isInteger(slot) || !Number.isInteger(padIndex) || padIndex < 0 || padIndex >= sampler.buffers.length) return;
+    decksQuickPadState.order[slot] = padIndex;
+    decksQuickPadState.editingSlot = null;
+    writeQuickPadOrder(decksQuickPadState.order);
+    renderDecksQuickPads();
+  });
+  quickPads?.addEventListener("dragstart", (event) => {
+    const slot = event.target.closest("[data-quick-pad-slot]");
+    if (!slot) return;
+    quickPadDragSlot = Number(slot.dataset.quickPadSlot);
+    slot.classList.add("is-dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(quickPadDragSlot));
+  });
+  quickPads?.addEventListener("dragover", (event) => {
+    const slot = event.target.closest("[data-quick-pad-slot]");
+    if (!slot) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  });
+  quickPads?.addEventListener("drop", (event) => {
+    const target = event.target.closest("[data-quick-pad-slot]");
+    if (!target || quickPadDragSlot === null) return;
+    event.preventDefault();
+    const targetSlot = Number(target.dataset.quickPadSlot);
+    const order = [...decksQuickPadState.order];
+    const [moved] = order.splice(quickPadDragSlot, 1);
+    order.splice(targetSlot, 0, moved);
+    decksQuickPadState.order = order;
+    decksQuickPadState.editingSlot = null;
+    writeQuickPadOrder(order);
+    quickPadDragSlot = null;
+    renderDecksQuickPads();
+  });
+  quickPads?.addEventListener("dragend", () => {
+    quickPadDragSlot = null;
+    quickPads.querySelectorAll(".is-dragging").forEach((slot) => slot.classList.remove("is-dragging"));
+  });
   const floatingTransportPairs = [
     ["drumPlayFloating", "drumPlay"], ["drumPauseFloating", "drumPause"], ["drumStopFloating", "drumStop"],
     ["harmonyPlayFloating", "harmonyPlay"], ["harmonyPauseFloating", "harmonyPause"], ["harmonyStopFloating", "harmonyStop"]
@@ -12187,7 +12326,16 @@ function setupEvents() {
     const button = event.target.closest("[data-decks-browser]");
     if (!button) return;
     decksTrackBrowserState.filter = button.dataset.decksBrowser;
+    if (decksTrackBrowserState.filter !== "crate") {
+      decksTrackBrowserState.sort = "default";
+      const sortSelect = document.querySelector("#decksTrackBrowserSortSelect");
+      if (sortSelect) sortSelect.value = "default";
+    }
     document.querySelectorAll("#decksTrackBrowserTabs button").forEach((item) => item.classList.toggle("is-active", item === button));
+    renderDecksTrackBrowser();
+  });
+  document.querySelector("#decksTrackBrowserSortSelect")?.addEventListener("change", (event) => {
+    decksTrackBrowserState.sort = event.target.value;
     renderDecksTrackBrowser();
   });
   document.querySelector("#decksTrackBrowserSearch")?.addEventListener("input", (event) => {
@@ -13434,6 +13582,11 @@ function moveScratch(event, id) {
   deck.offset = Math.max(0, Math.min(deck.buffer.duration - 0.05, deck.offset + delta * 0.012));
   playScratchSlice(deck);
   drawPlayhead(id, deck.offset / deck.buffer.duration);
+  const platter = document.querySelector(`.platter[data-deck="${id}"]`);
+  if (platter) {
+    const currentAngle = parseFloat(getComputedStyle(platter).getPropertyValue("--platter-angle")) || 0;
+    platter.style.setProperty("--platter-angle", `${currentAngle + delta * 1.4}deg`);
+  }
 }
 
 function endScratch(event, id) {
