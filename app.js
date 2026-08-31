@@ -13127,6 +13127,23 @@ function setupEvents() {
       await connectMasterFolder();
       return;
     }
+    const bpmAdjust = event.target.closest("[data-bpm-adjust]");
+    if (bpmAdjust) {
+      const trackId = bpmAdjust.dataset.sourceId;
+      const track = sourceFiles.find((source) => source.id === trackId);
+      if (track?.analysis?.bpm) {
+        const factor = bpmAdjust.dataset.bpmAdjust === "half" ? 0.5 : 2;
+        track.analysis.bpm = Math.round(Math.max(40, Math.min(220, track.analysis.bpm * factor)));
+        // Recompute BPM-derived fields so they do not stay stale after correcting the original tempo.
+        track.analysis.genre = inferGenreFromNameAndTempo(track.name, track.analysis.bpm, track.analysis.zcr);
+        track.analysis.mood = inferMoodFromAnalysis(track.name, { energy: track.analysis.energy });
+        track.analysis.vocalDensity = estimateVocalDensityFromName(track.name, track.analysis.genre);
+        track.analysis.percussionIntensity = estimatePercussionIntensity(track.analysis.bpm, track.analysis.genre, track.analysis.energy);
+        renderDitcInspector();
+        renderSources();
+      }
+      return;
+    }
     const suggestionDeck = event.target.closest("[data-suggestion-load-deck]");
     if (suggestionDeck) {
       handleSourceFileAction(`deck-${suggestionDeck.dataset.suggestionLoadDeck}`, suggestionDeck.dataset.sourceId);
@@ -13808,10 +13825,12 @@ function analyzeAudioBuffer(buffer, name) {
   const bpm = estimateBpmFromEnvelope(envelope);
   const zcr = zeroCrossings / data.length;
   const duration = buffer.duration;
-  const key = estimateKeyFromName(name);
+  // Filename parsing is only a last-resort fallback for audio that is too short or silent for chroma analysis.
+  const key = estimateKeyFromAudio(buffer) || estimateKeyFromName(name);
   return {
     bpm,
     key,
+    zcr,
     energy: energy > 0.18 ? "High" : energy > 0.09 ? "Medium" : "Low",
     loudness: energy,
     genre: inferGenreFromNameAndTempo(name, bpm, zcr),
@@ -13825,25 +13844,126 @@ function analyzeAudioBuffer(buffer, name) {
 }
 
 function estimateBpmFromEnvelope(envelope) {
-  const peaks = [];
-  const avg = envelope.reduce((sum, value) => sum + value, 0) / envelope.length;
-  for (let i = 1; i < envelope.length - 1; i += 1) {
-    if (envelope[i] > avg * 1.35 && envelope[i] > envelope[i - 1] && envelope[i] > envelope[i + 1]) {
-      peaks.push(i / 100);
+  const envelopeRate = 100;
+  const minBpm = 60;
+  const maxBpm = 200;
+  const minLag = Math.floor((60 / maxBpm) * envelopeRate);
+  const maxLag = Math.ceil((60 / minBpm) * envelopeRate);
+  if (envelope.length < maxLag * 2) return 120;
+  const mean = envelope.reduce((sum, value) => sum + value, 0) / envelope.length;
+  const centered = envelope.map((value) => value - mean);
+  let bestLag = minLag;
+  let bestScore = -Infinity;
+  for (let lag = minLag; lag <= maxLag; lag += 1) {
+    let score = 0;
+    for (let index = 0; index + lag < centered.length; index += 1) {
+      score += centered[index] * centered[index + lag];
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestLag = lag;
     }
   }
-  if (peaks.length < 4) return 120;
-  const intervals = [];
-  for (let i = 1; i < Math.min(peaks.length, 80); i += 1) {
-    const diff = peaks[i] - peaks[i - 1];
-    if (diff > 0.22 && diff < 1.25) intervals.push(diff);
-  }
-  if (!intervals.length) return 120;
-  const median = intervals.sort((a, b) => a - b)[Math.floor(intervals.length / 2)];
-  let bpm = Math.round(60 / median);
+  let bpm = Math.round(60 / (bestLag / envelopeRate));
   while (bpm < 70) bpm *= 2;
   while (bpm > 180) bpm = Math.round(bpm / 2);
   return bpm;
+}
+
+const FFT_TWIDDLE_CACHE = new Map();
+
+function fft(real, imag) {
+  const n = real.length;
+  if (n <= 1) return;
+  for (let index = 1, reversed = 0; index < n; index += 1) {
+    let bit = n >> 1;
+    while (reversed & bit) {
+      reversed ^= bit;
+      bit >>= 1;
+    }
+    reversed ^= bit;
+    if (index < reversed) {
+      [real[index], real[reversed]] = [real[reversed], real[index]];
+      [imag[index], imag[reversed]] = [imag[reversed], imag[index]];
+    }
+  }
+  for (let size = 2; size <= n; size <<= 1) {
+    const halfSize = size >> 1;
+    let twiddles = FFT_TWIDDLE_CACHE.get(size);
+    if (!twiddles) {
+      const angleStep = (-2 * Math.PI) / size;
+      twiddles = Array.from({ length: halfSize }, (_, offset) => ({
+        cos: Math.cos(angleStep * offset),
+        sin: Math.sin(angleStep * offset)
+      }));
+      FFT_TWIDDLE_CACHE.set(size, twiddles);
+    }
+    for (let start = 0; start < n; start += size) {
+      for (let offset = 0; offset < halfSize; offset += 1) {
+        const { cos, sin } = twiddles[offset];
+        const evenIndex = start + offset;
+        const oddIndex = evenIndex + halfSize;
+        const tReal = cos * real[oddIndex] - sin * imag[oddIndex];
+        const tImag = sin * real[oddIndex] + cos * imag[oddIndex];
+        const evenReal = real[evenIndex];
+        const evenImag = imag[evenIndex];
+        real[evenIndex] = evenReal + tReal;
+        imag[evenIndex] = evenImag + tImag;
+        real[oddIndex] = evenReal - tReal;
+        imag[oddIndex] = evenImag - tImag;
+      }
+    }
+  }
+}
+
+const KEY_PROFILES = {
+  major: [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
+  minor: [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
+};
+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+function estimateKeyFromAudio(buffer) {
+  const sampleRate = buffer.sampleRate;
+  const data = buffer.getChannelData(0);
+  const fftSize = 8192;
+  const numWindows = Math.min(200, Math.floor(data.length / fftSize));
+  if (numWindows < 4) return null;
+  const step = Math.floor(data.length / numWindows);
+  const chroma = new Array(12).fill(0);
+  for (let windowIndex = 0; windowIndex < numWindows; windowIndex += 1) {
+    const start = windowIndex * step;
+    const real = new Array(fftSize).fill(0);
+    const imag = new Array(fftSize).fill(0);
+    for (let index = 0; index < fftSize && start + index < data.length; index += 1) {
+      const window = 0.5 - 0.5 * Math.cos((2 * Math.PI * index) / (fftSize - 1));
+      real[index] = data[start + index] * window;
+    }
+    fft(real, imag);
+    for (let bin = 1; bin < fftSize / 2; bin += 1) {
+      const frequency = (bin * sampleRate) / fftSize;
+      if (frequency < 110 || frequency > 5000) continue; // Exclude sub-bass below reliable semitone resolution at this FFT size.
+      const magnitude = Math.sqrt(real[bin] * real[bin] + imag[bin] * imag[bin]);
+      const midi = 69 + 12 * Math.log2(frequency / 440);
+      const pitchClass = ((Math.round(midi) % 12) + 12) % 12;
+      chroma[pitchClass] += magnitude;
+    }
+  }
+  const total = chroma.reduce((sum, value) => sum + value, 0);
+  if (total === 0) return null;
+  const normalized = chroma.map((value) => value / total);
+  let bestKey = null;
+  let bestScore = -Infinity;
+  Object.entries(KEY_PROFILES).forEach(([mode, profile]) => {
+    for (let root = 0; root < 12; root += 1) {
+      let score = 0;
+      for (let index = 0; index < 12; index += 1) score += normalized[index] * profile[(index - root + 12) % 12];
+      if (score > bestScore) {
+        bestScore = score;
+        bestKey = `${NOTE_NAMES[root]} ${mode}`;
+      }
+    }
+  });
+  return bestKey;
 }
 
 function estimateKeyFromName(name) {
@@ -14392,10 +14512,11 @@ function renderSources() {
   const list = document.querySelector("#sourceList");
   const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
   const visible = sortedDitcTracks(sourceFiles.filter(matchesDitcFilter));
+  const hasAnyTracks = Boolean(sourceFiles.length || sources.length);
+  const dropMessage = document.querySelector("#sourceDropMessage");
+  if (dropMessage) dropMessage.hidden = hasAnyTracks;
   list.innerHTML = "";
-  if (!sourceFiles.length && !sources.length) {
-    list.innerHTML = `<div class="ditc-empty"><strong>Drop music here, then load a song onto Deck A or Deck B.</strong><p>Import files or a folder to start digging.</p></div>`;
-  } else if (!visible.length && sourceFiles.length) {
+  if (!visible.length && sourceFiles.length) {
     list.innerHTML = `<div class="ditc-empty"><strong>No tracks match this view.</strong><p>Clear search or choose All Tracks.</p></div>`;
   }
   visible.forEach((source) => list.appendChild(renderDitcTrackRow(source)));
@@ -14614,7 +14735,7 @@ function renderDitcInspector() {
     <div class="ditc-inspector-artwork">${escapeHtml(track.title.slice(0, 2).toUpperCase())}</div>
     <h3>${escapeHtml(track.title)}</h3><p class="fine-print">${escapeHtml(track.artist)} · ${escapeHtml(track.album)}</p>
     <div class="ditc-inspector-actions"><button data-source-action="${ditcState.previewTrackId === track.id ? "stop-preview" : "preview"}" data-source-id="${track.id}">${ditcState.previewTrackId === track.id ? "Stop Preview" : "Preview"}</button><button data-source-action="deck-a" data-source-id="${track.id}">Deck A</button><button data-source-action="deck-b" data-source-id="${track.id}">Deck B</button><button data-source-action="pad" data-source-id="${track.id}">Pads</button><button data-source-action="stems" data-source-id="${track.id}">Stems</button><button data-source-action="arrangement" data-source-id="${track.id}">Arrangement</button></div>
-    <dl><dt>Duration</dt><dd>${duration ? formatTime(duration) : "Unknown"}</dd><dt>File</dt><dd>${escapeHtml(track.file.type || track.name.split(".").pop().toUpperCase())}, ${formatFileSize(track.file.size)}</dd><dt>BPM</dt><dd>${track.analysis?.bpm || "Unknown"}</dd><dt>Key</dt><dd>${escapeHtml(track.analysis?.key || "Unknown")} · ${ditcCamelot(track.analysis?.key)}</dd><dt>Genre</dt><dd>${escapeHtml(track.genre || track.analysis?.genre || "Unknown")}</dd><dt>Mood</dt><dd>${escapeHtml(track.mood || track.analysis?.mood || "Unknown")}</dd><dt>Energy</dt><dd>${escapeHtml(track.analysis?.energy || "Unknown")}</dd><dt>Source</dt><dd>Local file</dd><dt>Folder</dt><dd>${escapeHtml(track.folderPath || "Local import")}</dd><dt>Analysis</dt><dd>${track.analysis ? "Analyzed" : "Not analyzed"}</dd><dt>Stem state</dt><dd>${track.stemReady ? "Prepared" : "Not prepared"}</dd><dt>Pad state</dt><dd>${track.padReady ? "Prepared" : "Not prepared"}</dd><dt>Project match</dt><dd>Not Scored</dd><dt>Transition</dt><dd>${transition?.label || "Not Scored"}</dd></dl>
+    <dl><dt>Duration</dt><dd>${duration ? formatTime(duration) : "Unknown"}</dd><dt>File</dt><dd>${escapeHtml(track.file.type || track.name.split(".").pop().toUpperCase())}, ${formatFileSize(track.file.size)}</dd><dt>BPM</dt><dd>${track.analysis?.bpm || "Unknown"}${track.analysis?.bpm ? ` <button data-bpm-adjust="half" data-source-id="${escapeHtml(track.id)}" class="text-button" title="Halve BPM">½x</button><button data-bpm-adjust="double" data-source-id="${escapeHtml(track.id)}" class="text-button" title="Double BPM">2x</button>` : ""}</dd><dt>Key</dt><dd>${escapeHtml(track.analysis?.key || "Unknown")} · ${ditcCamelot(track.analysis?.key)}</dd><dt>Genre</dt><dd>${escapeHtml(track.genre || track.analysis?.genre || "Unknown")}</dd><dt>Mood</dt><dd>${escapeHtml(track.mood || track.analysis?.mood || "Unknown")}</dd><dt>Energy</dt><dd>${escapeHtml(track.analysis?.energy || "Unknown")}</dd><dt>Source</dt><dd>Local file</dd><dt>Folder</dt><dd>${escapeHtml(track.folderPath || "Local import")}</dd><dt>Analysis</dt><dd>${track.analysis ? "Analyzed" : "Not analyzed"}</dd><dt>Stem state</dt><dd>${track.stemReady ? "Prepared" : "Not prepared"}</dd><dt>Pad state</dt><dd>${track.padReady ? "Prepared" : "Not prepared"}</dd><dt>Project match</dt><dd>Not Scored</dd><dt>Transition</dt><dd>${transition?.label || "Not Scored"}</dd></dl>
     <div class="ditc-tag-list">${(track.tags || []).map((tag) => `<button class="ditc-tag" data-ditc-remove-tag="${escapeHtml(tag)}" data-source-id="${track.id}" title="Remove tag">${escapeHtml(tag)} ×</button>`).join("") || "<span class=\"fine-print\">No tags</span>"}</div>
     <label>Add tag <input id="ditcInspectorTag" type="text" placeholder="Intro, House, NYC"></label><button data-ditc-add-tag="${track.id}" class="secondary-button">Add Tag</button>
     <label>Cue notes<textarea data-crate-note-kind="local" data-crate-note-id="${track.id}" rows="4">${escapeHtml(track.notes || "")}</textarea></label>

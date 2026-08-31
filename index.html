@@ -1235,10 +1235,6 @@
             <div id="providerSearchResults" class="provider-results" aria-live="polite"><div class="provider-empty"><strong>No provider search yet.</strong><span>Import local files, then search the Local Files provider.</span></div></div>
             <details id="providerDiagnostics" class="ditc-advanced-only"><summary>Provider diagnostics</summary><pre id="providerDiagnosticsOutput"></pre></details>
           </section>
-          <div id="sourceDrop" class="drop-zone ditc-drop-zone">
-            <strong>Drop music or a folder here</strong>
-            <span>Then preview it, or load it onto Deck A or Deck B. Browser support is checked for MP3, WAV, AIFF, FLAC, M4A, AAC, ALAC, OGG, Opus, and WebM; real decode is verified on first use.</span>
-          </div>
           <p id="sourceStatus" class="fine-print" role="status">DITC is ready for local music.</p>
           <div class="ditc-layout">
             <aside class="ditc-collections" aria-label="DITC collections">
@@ -1263,9 +1259,15 @@
                 <button id="ditcDeleteSelected" class="secondary-button">Delete Selected</button>
               </div>
             </aside>
-            <section class="ditc-library" aria-label="Track library">
-              <div id="sourceList" class="source-list ditc-track-list"></div>
-            </section>
+            <div id="sourceDrop" class="drop-zone ditc-drop-zone ditc-drop-wrap">
+              <div id="sourceDropMessage" class="ditc-drop-message">
+                <strong>Drop music or a folder here</strong>
+                <span>Then preview it, or load it onto Deck A or Deck B. Browser support is checked for MP3, WAV, AIFF, FLAC, M4A, AAC, ALAC, OGG, Opus, and WebM; real decode is verified on first use.</span>
+              </div>
+              <section class="ditc-library" aria-label="Track library">
+                <div id="sourceList" class="source-list ditc-track-list"></div>
+              </section>
+            </div>
             <aside id="ditcInspector" class="ditc-inspector" aria-label="Selected track inspector">
               <p class="fine-print">Select a track to inspect its metadata and destinations.</p>
               <button id="connectMasterFolderButton" class="secondary-button" type="button">Connect Master Folder</button>
