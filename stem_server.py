@@ -395,7 +395,7 @@ if __name__ == "__main__":
     os.chdir(ROOT)
     STEMS_ROOT.mkdir(exist_ok=True)
     port = int(os.environ.get("PORT", "8000"))
-    server = ThreadingHTTPServer(("127.0.0.1", port), DeckForgeHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", port), DeckForgeHandler)
     print(f"DeckForge server running at http://localhost:{port}/")
     print(f"Stem jobs: concurrency {MAX_CONCURRENT_JOBS}, upload limit {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
     try:
