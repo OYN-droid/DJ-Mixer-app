@@ -33,6 +33,7 @@ const AudioEngine = {
   chunks: [],
   mixUrl: null,
   masterAnalyser: null,
+  masterFrequencyData: null,
   masterGain: null,
 
   async init(options = {}) {
@@ -41,6 +42,7 @@ const AudioEngine = {
       this.destination = this.context.createMediaStreamDestination();
       this.masterAnalyser = this.context.createAnalyser();
       this.masterAnalyser.fftSize = 256;
+      this.masterFrequencyData = new Uint8Array(this.masterAnalyser.frequencyBinCount);
       this.masterGain = this.context.createGain();
       this.masterGain.gain.value = Number(document.querySelector("#masterVolume")?.value || 0.9);
       this.masterAnalyser.connect(this.masterGain);
@@ -247,6 +249,34 @@ const deckState = {
   a: createDeckState("a"),
   b: createDeckState("b")
 };
+const deckElementCache = { a: null, b: null };
+const padElementCache = { progress: [], labels: [] };
+const harmonyElementCache = { bpm: null, position: null, floatingPosition: null };
+let masterMeterElements = [];
+
+function cacheAnimationElements() {
+  for (const id of ["a", "b"]) {
+    deckElementCache[id] = {
+      waveform: document.querySelector(`#wave-${id}`),
+      time: document.querySelector(`#time-${id}`),
+      duration: document.querySelector(`#duration-${id}`),
+      seek: document.querySelector(`#seek-${id}`),
+      loopStatus: document.querySelector(`#loop-status-${id}`),
+      loopButton: document.querySelector(`[data-action="loop"][data-deck="${id}"]`),
+      pitch: document.querySelector(`#pitch-${id}`),
+      platter: document.querySelector(`.platter[data-deck="${id}"]`),
+      meterLeft: document.querySelector(`[data-meter="${id}-left"]`),
+      meterRight: document.querySelector(`[data-meter="${id}-right"]`),
+      peakLeft: document.querySelector(`[data-peak="${id}-left"]`),
+      peakRight: document.querySelector(`[data-peak="${id}-right"]`),
+      clip: document.querySelector(`[data-clip="${id}"]`)
+    };
+  }
+  masterMeterElements = [...document.querySelectorAll(".master-meter span")];
+  harmonyElementCache.bpm = document.querySelector("#globalBpm");
+  harmonyElementCache.position = document.querySelector("#harmonyPosition");
+  harmonyElementCache.floatingPosition = document.querySelector("#harmonyPositionFloating");
+}
 const decksTrackBrowserState = { filter: "all", search: "", collapsed: false, sort: "default" };
 const QUICK_PAD_ORDER_KEY = "deckforge-quick-pad-order";
 
@@ -1877,6 +1907,7 @@ function createDeckState(id) {
     filter: null,
     crossGain: null,
     analyser: null,
+    meterSamples: null,
     meterPeak: 0,
     waveformPeaks: null,
     loopBeats: 8,
@@ -1956,6 +1987,7 @@ function connectDeck(deck) {
   deck.analyser = ctx.createAnalyser();
   deck.analyser.fftSize = 256;
   deck.analyser.smoothingTimeConstant = 0.76;
+  deck.meterSamples = new Uint8Array(deck.analyser.fftSize);
   deck.crossGain = ctx.createGain();
   deck.crossGain.gain.value = 0.5;
   deck.filter.connect(deck.gain);
@@ -2201,8 +2233,7 @@ function updateDeckLoop(id, enabled = deckState[id].loop) {
 
 function renderDeckLoopStatus(id) {
   const deck = deckState[id];
-  const status = document.querySelector(`#loop-status-${id}`);
-  const button = document.querySelector(`[data-action="loop"][data-deck="${id}"]`);
+  const { loopStatus: status, loopButton: button } = deckElementCache[id];
   if (button) {
     button.classList.toggle("is-active", deck.loop);
     button.setAttribute("aria-pressed", deck.loop ? "true" : "false");
@@ -2358,7 +2389,7 @@ function buildWaveformPeaks(deck, width) {
 
 function drawWaveform(id, playheadRatio = null) {
   const deck = deckState[id];
-  const canvas = document.querySelector(`#wave-${id}`);
+  const canvas = deckElementCache[id].waveform;
   const ctx = canvas.getContext("2d");
   const width = canvas.width;
   const height = canvas.height;
@@ -2416,7 +2447,7 @@ function drawWaveform(id, playheadRatio = null) {
 }
 
 function drawPlayhead(id, ratio) {
-  const canvas = document.querySelector(`#wave-${id}`);
+  const canvas = deckElementCache[id].waveform;
   const ctx = canvas.getContext("2d");
   drawWaveform(id, ratio);
   ctx.strokeStyle = "#f7b44b";
@@ -2442,12 +2473,12 @@ function drawSelectionOverlay(id, ctx, width, height) {
 
 function updateDeckTimeDisplay(id) {
   const deck = deckState[id];
+  const elements = deckElementCache[id];
   const current = currentDeckTime(id);
   const duration = deck.buffer ? deck.buffer.duration : 0;
-  document.querySelector(`#time-${id}`).textContent = formatTime(current);
-  document.querySelector(`#duration-${id}`).textContent = formatTime(duration);
-  const seek = document.querySelector(`#seek-${id}`);
-  seek.value = duration ? Math.round((current / duration) * 1000) : 0;
+  elements.time.textContent = formatTime(current);
+  elements.duration.textContent = formatTime(duration);
+  elements.seek.value = duration ? Math.round((current / duration) * 1000) : 0;
 }
 
 function formatTime(seconds) {
@@ -2642,9 +2673,10 @@ function animationLoop() {
       drawPlayhead(id, ratio);
       updateDeckTimeDisplay(id);
       renderDeckLoopStatus(id);
-      const pitch = Number(document.querySelector(`#pitch-${id}`)?.value || 1);
+      const elements = deckElementCache[id];
+      const pitch = Number(elements.pitch?.value || 1);
       const angle = (AudioEngine.context.currentTime - deck.startedAt) * 200 * pitch;
-      document.querySelector(`.platter[data-deck="${id}"]`)?.style.setProperty("--platter-angle", `${angle}deg`);
+      elements.platter?.style.setProperty("--platter-angle", `${angle}deg`);
     }
   }
   animateMeters();
@@ -2661,20 +2693,25 @@ function animationLoop() {
 
 function animateMeters() {
   if (!AudioEngine.masterAnalyser) return;
-  const data = new Uint8Array(AudioEngine.masterAnalyser.frequencyBinCount);
+  const data = AudioEngine.masterFrequencyData;
   AudioEngine.masterAnalyser.getByteFrequencyData(data);
-  const low = data.slice(0, 36).reduce((sum, value) => sum + value, 0) / (36 * 255);
-  const high = data.slice(36).reduce((sum, value) => sum + value, 0) / ((data.length - 36) * 255);
-  const meters = document.querySelectorAll(".master-meter span");
-  meters[0].style.transform = `scaleY(${Math.max(0.08, low)})`;
-  meters[1].style.transform = `scaleY(${Math.max(0.08, high)})`;
+  let lowTotal = 0;
+  let highTotal = 0;
+  for (let index = 0; index < data.length; index += 1) {
+    if (index < 36) lowTotal += data[index];
+    else highTotal += data[index];
+  }
+  const low = lowTotal / (36 * 255);
+  const high = highTotal / ((data.length - 36) * 255);
+  masterMeterElements[0].style.transform = `scaleY(${Math.max(0.08, low)})`;
+  masterMeterElements[1].style.transform = `scaleY(${Math.max(0.08, high)})`;
   for (const id of ["a", "b"]) animateDeckMeter(id);
 }
 
 function animateDeckMeter(id) {
   const deck = deckState[id];
   if (!deck.analyser) return;
-  const samples = new Uint8Array(deck.analyser.fftSize);
+  const samples = deck.meterSamples;
   deck.analyser.getByteTimeDomainData(samples);
   let squareSum = 0;
   let instantaneousPeak = 0;
@@ -2688,15 +2725,12 @@ function animateDeckMeter(id) {
   const left = Math.round(level * 100);
   const right = Math.round(level * 96);
   const peak = Math.min(99, Math.round(deck.meterPeak * 100));
-  const leftBar = document.querySelector(`[data-meter="${id}-left"]`);
-  const rightBar = document.querySelector(`[data-meter="${id}-right"]`);
-  const leftPeak = document.querySelector(`[data-peak="${id}-left"]`);
-  const rightPeak = document.querySelector(`[data-peak="${id}-right"]`);
+  const { meterLeft: leftBar, meterRight: rightBar, peakLeft: leftPeak, peakRight: rightPeak, clip } = deckElementCache[id];
   if (leftBar) leftBar.style.width = `${left}%`;
   if (rightBar) rightBar.style.width = `${right}%`;
   if (leftPeak) leftPeak.style.left = `${peak}%`;
   if (rightPeak) rightPeak.style.left = `${Math.max(0, peak - 2)}%`;
-  document.querySelector(`[data-clip="${id}"]`)?.classList.toggle("is-clipping", instantaneousPeak >= 0.98);
+  clip?.classList.toggle("is-clipping", instantaneousPeak >= 0.98);
 }
 
 function padModeLabel(mode) {
@@ -2749,6 +2783,8 @@ function renderPads() {
     }
     pads.appendChild(slot);
   });
+  padElementCache.progress = [...pads.querySelectorAll(".pad-progress")];
+  padElementCache.labels = [...pads.querySelectorAll(".pad small")];
   document.querySelector("#padEmptyState")?.toggleAttribute("hidden", sampler.buffers.some(Boolean));
   renderPadDiagnostics();
 }
@@ -3064,9 +3100,9 @@ function updatePadProgress() {
     if (!active) return;
     const elapsed = Math.max(0, AudioEngine.context.currentTime - active.startedAt);
     const ratio = active.source.loop ? (elapsed % active.duration) / active.duration : Math.min(1, elapsed / active.duration);
-    const progress = document.querySelectorAll("#pads .pad-progress")[index];
+    const progress = padElementCache.progress[index];
     if (progress) progress.style.transform = `scaleX(${ratio})`;
-    const small = document.querySelectorAll("#pads .pad small")[index];
+    const small = padElementCache.labels[index];
     if (small) small.textContent = `${active.source.loop ? "Looping" : "Playing"} · ${formatTime(Math.max(0, active.duration - (active.source.loop ? elapsed % active.duration : elapsed)))} left`;
   });
 }
@@ -7314,7 +7350,8 @@ async function collectAutoMixItems(mode = "club", sourceMode = "both") {
           id: `deck-${id}`,
           source: `Deck ${id.toUpperCase()}`,
           name: document.querySelector(`#title-${id}`).textContent,
-          buffer: deck.buffer
+          buffer: deck.buffer,
+          analysis: deck.analysis || null
         });
       }
     }
@@ -7355,6 +7392,8 @@ function prepareSmartMixItem(item, mode) {
   };
 }
 
+const SMART_ANALYSIS_SECTION_CACHE = new WeakMap();
+
 function enrichSmartAnalysis(analysis, buffer, name, mode) {
   const profile = getSmartMixProfile(mode);
   const duration = buffer.duration;
@@ -7362,8 +7401,21 @@ function enrichSmartAnalysis(analysis, buffer, name, mode) {
   const phraseSeconds = phraseLengthSeconds(bpm, profile.phraseBars);
   const introEnd = Math.min(duration * 0.22, Math.max(8, phraseSeconds));
   const outroStart = Math.max(introEnd + 4, duration - Math.max(12, phraseSeconds));
-  const cueIn = duration > 18 ? findSectionCue(buffer, 0, introEnd, "intro") : 0;
-  const breakdown = findQuietSection(buffer, Math.min(duration * 0.2, 24), Math.max(duration * 0.78, duration - 12));
+  let sectionCache = SMART_ANALYSIS_SECTION_CACHE.get(buffer);
+  if (!sectionCache) {
+    sectionCache = new Map();
+    SMART_ANALYSIS_SECTION_CACHE.set(buffer, sectionCache);
+  }
+  const sectionCacheKey = `${profile.id}:${bpm}`;
+  let sections = sectionCache.get(sectionCacheKey);
+  if (!sections) {
+    sections = {
+      cueIn: duration > 18 ? findSectionCue(buffer, 0, introEnd, "intro") : 0,
+      breakdown: findQuietSection(buffer, Math.min(duration * 0.2, 24), Math.max(duration * 0.78, duration - 12))
+    };
+    sectionCache.set(sectionCacheKey, sections);
+  }
+  const { cueIn, breakdown } = sections;
   const drop = Math.min(duration - 1, breakdown ? breakdown + Math.min(16, phraseSeconds / 2) : introEnd + phraseSeconds);
   const mixOut = duration > 35 ? Math.max(introEnd + 6, outroStart - profile.overlapSeconds * 0.35) : Math.max(0, duration - Math.min(8, duration * 0.35));
   const density = estimateVocalDensityFromName(name, analysis.genre);
@@ -8355,8 +8407,6 @@ async function stopAllAudio() {
   emitProjectContextChange("playback", "global-stop", { summary: "Stopped all active audio", decision: { domain: "Playback", action: "Global stop", summary: "Stopped all active audio", initiatedBy: "user" } });
 }
 
-function panicStopAllAudio() { stopAllAudio(); }
-
 async function pauseGlobalAudio() {
   if (!AudioEngine.context || AudioEngine.context.state !== "running") return;
   try { await AudioEngine.context.suspend(); globalTransportState.paused = true; renderGlobalTransport(); emitProjectContextChange("playback", "global-paused", { summary: "Paused the global audio context" }); }
@@ -8637,7 +8687,7 @@ function loadHarmonyInstrument() {
   const preset = instrument.filteredPresets?.[instrument.selectedInstrumentIndex]; if (!preset) return; instrument.preset = preset.id; document.querySelector("#instrumentPreset").value = preset.id; updateInstrumentNotes(); saveHarmonyState(); renderHarmonyInstrumentBrowser();
 }
 
-function harmonyStepSeconds() { return 60 / (Number(document.querySelector("#globalBpm")?.value) || 124) / 4; }
+function harmonyStepSeconds() { return 60 / (Number(harmonyElementCache.bpm?.value) || 124) / 4; }
 
 function recordHarmonyNote(midi, velocity, isBass, durationSeconds) {
   if (!instrument.recording || !AudioEngine.context) return;
@@ -8670,7 +8720,7 @@ async function playHarmonyPattern() {
 function stopHarmonyPattern() { const wasActive = instrument.patternPlaying || instrument.patternPaused || instrument.previewing || instrument.recording; clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = false; instrument.previewing = false; instrument.recording = false; stopAllInstrumentVoices(); const play = document.querySelector("#harmonyPlay"); if (play) play.textContent = "Play Pattern"; syncFloatingTransportState("harmony"); const record = document.querySelector("#harmonyRecord"); if (record) { record.textContent = "Record"; record.classList.remove("is-active"); } renderHarmonyDiagnostics(); if (wasActive) emitProjectContextChange("harmonyLab", "playback-stopped", { summary: "Stopped Harmony playback" }); }
 function pauseHarmonyPattern() { const wasPlaying = instrument.patternPlaying; clearTimeout(instrument.patternTimer); instrument.patternTimer = null; instrument.patternPlaying = false; instrument.patternPaused = true; stopAllInstrumentVoices(); document.querySelector("#harmonyPlay").textContent = "Resume"; syncFloatingTransportState("harmony"); if (wasPlaying) emitProjectContextChange("harmonyLab", "playback-paused", { summary: "Paused Harmony playback" }); }
 
-function updateHarmonyPosition() { if (!instrument.patternPlaying || !AudioEngine.context) return; const elapsed = AudioEngine.context.currentTime - instrument.patternStartedAt; const step = Math.floor(elapsed / harmonyStepSeconds()) % (instrument.pattern.bars * 16); instrument.patternPlayhead = step * harmonyStepSeconds(); const display = document.querySelector("#harmonyPosition"); if (display) display.textContent = `Bar ${Math.floor(step / 16) + 1} · Beat ${Math.floor((step % 16) / 4) + 1}`; const harmonyPositionFloating = document.querySelector("#harmonyPositionFloating"); if (harmonyPositionFloating && display) harmonyPositionFloating.textContent = display.textContent; }
+function updateHarmonyPosition() { if (!instrument.patternPlaying || !AudioEngine.context) return; const elapsed = AudioEngine.context.currentTime - instrument.patternStartedAt; const step = Math.floor(elapsed / harmonyStepSeconds()) % (instrument.pattern.bars * 16); instrument.patternPlayhead = step * harmonyStepSeconds(); const display = harmonyElementCache.position; if (display) display.textContent = `Bar ${Math.floor(step / 16) + 1} · Beat ${Math.floor((step % 16) / 4) + 1}`; const harmonyPositionFloating = harmonyElementCache.floatingPosition; if (harmonyPositionFloating && display) harmonyPositionFloating.textContent = display.textContent; }
 
 function generateHarmonyNotes(kind = "composer", variation = false) {
   const prompt = document.querySelector("#harmonyPrompt")?.value.trim() || "Create soulful minor chords"; const lower = prompt.toLowerCase(); const root = getInstrumentPreset().root + harmonyRoots.indexOf(instrument.key); const bars = 4; const seed = (Date.now() % 100000) + (variation ? 37 : 0); const random = createSeededGenerator(seed); const notes = [];
@@ -11240,14 +11290,6 @@ function renderProducerStudio(options = {}) {
   if (sync) sync.textContent = context.timestamps.lastMeaningfulUpdate ? `Project context updated · v${context.contextVersion} · ${new Date(context.timestamps.lastMeaningfulUpdate).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : `Context v${context.contextVersion} · No meaningful updates yet`;
 }
 
-function previewProducerPrompt(prompt, sourceLabel) {
-  const input = document.querySelector("#aiPrompt");
-  input.value = prompt;
-  generateAiPlan();
-  recordProducerEvent(`Previewed ${sourceLabel}`);
-  document.querySelector("#aiPlanOutput")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
 function showStaleRecommendationDialog(action) {
   producerStudioState.pendingStaleAction = action;
   const dialog = document.querySelector("#staleRecommendationDialog");
@@ -11984,10 +12026,6 @@ function setDroppedFilePath(file, path) {
 
 function firstAudioFile(dataTransfer) {
   return [...dataTransfer.files].find(isSupportedAudioFile);
-}
-
-function audioFilesFromDrop(dataTransfer) {
-  return [...dataTransfer.files].filter(isSupportedAudioFile);
 }
 
 async function collectSupportedDropFiles(dataTransfer, options = {}) {
@@ -14266,7 +14304,7 @@ async function handleSavedSourceAction(action, index) {
     if (action === "deck-a") { loadBufferToDeck(buffer, item.name, "a"); switchView("decks"); }
     if (action === "deck-b") { loadBufferToDeck(buffer, item.name, "b"); switchView("decks"); }
     if (action === "pad") addBufferToPad(buffer, item.name);
-    if (action === "stems") { stemState.file = null; stemState.sourceTrackId = item.resultId || `reference-${index}`; stemState.sourceBuffer = buffer; stemState.sourceName = item.name; stemState.sourceAnalysis = analyzeAudioBuffer(buffer, item.name); stemState.stems = []; document.querySelector("#splitStems").disabled = false; setStemStatus(`Loaded linked local audio for ${item.name}. Ready to separate.`); renderStemLab(); switchView("stems"); }
+    if (action === "stems") { stemState.file = null; stemState.sourceTrackId = item.resultId || `reference-${index}`; stemState.sourceBuffer = buffer; stemState.sourceName = item.name; stemState.sourceAnalysis = item.analysis || analyzeAudioBuffer(buffer, item.name); stemState.stems = []; document.querySelector("#splitStems").disabled = false; setStemStatus(`Loaded linked local audio for ${item.name}. Ready to separate.`); renderStemLab(); switchView("stems"); }
     setSourceStatus(`${item.name} loaded from its linked local asset.`);
   } catch (error) { setSourceStatus(`${item.name} cannot play: ${error.message} Relink it through Asset Manager.`); }
 }
@@ -14664,7 +14702,8 @@ async function handleProviderResultAction(action, groupId) {
 function renderSources() {
   const list = document.querySelector("#sourceList");
   const sources = JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]");
-  const visible = sortedDitcTracks(sourceFiles.filter(matchesDitcFilter));
+  const smartCrates = readSmartCrates();
+  const visible = sortedDitcTracks(sourceFiles.filter((track) => matchesDitcFilter(track, smartCrates)));
   const hasAnyTracks = Boolean(sourceFiles.length || sources.length);
   const dropMessage = document.querySelector("#sourceDropMessage");
   if (dropMessage) dropMessage.hidden = hasAnyTracks;
@@ -14679,9 +14718,9 @@ function renderSources() {
   document.querySelector("#ditcTrackCount").textContent = `${sourceFiles.length + sources.length} track${sourceFiles.length + sources.length === 1 ? "" : "s"}`;
   document.querySelector("#ditcPlayableCount").textContent = `${sourceFiles.length} playable`;
   document.querySelector("#ditcResultCount").textContent = `${visible.length} result${visible.length === 1 ? "" : "s"}`;
-  renderDitcCollections();
+  renderDitcCollections(smartCrates);
   renderDitcInspector();
-  renderDitcDiagnostics();
+  renderDitcDiagnostics(sources);
   renderConnectedMusicBrowser();
   renderLocalLibraryPanel();
   updateSmartMixSourceOptions();
@@ -14692,7 +14731,7 @@ function ditcSearchText(track) {
   return [track.title, track.artist, track.album, track.name, track.genre || track.analysis?.genre, track.mood || track.analysis?.mood, track.notes, track.folderPath, ...(track.tags || [])].join(" ").toLowerCase();
 }
 
-function matchesDitcFilter(track) {
+function matchesDitcFilter(track, smartCrates = []) {
   if (ditcState.search && !ditcSearchText(track).includes(ditcState.search.toLowerCase())) return false;
   const filter = ditcState.filter;
   if (filter === "favorites") return track.favorite;
@@ -14707,7 +14746,7 @@ function matchesDitcFilter(track) {
   if (filter === "outro") return (track.tags || []).some((tag) => tag.toLowerCase() === "outro") || Boolean(track.analysis?.outro);
   if (filter === "transition") return (track.tags || []).some((tag) => tag.toLowerCase() === "transition") || Boolean(ditcTransitionMatch(track));
   if (filter.startsWith("crate:")) {
-    const crate = readSmartCrates().find((item) => item.id === filter.slice("crate:".length));
+    const crate = smartCrates.find((item) => item.id === filter.slice("crate:".length));
     return crate ? evaluateSmartCrate(track, crate) : false;
   }
   return true;
@@ -14725,19 +14764,25 @@ function sortedDitcTracks(tracks) {
     if (key === "transition") return ditcTransitionMatch(track)?.rank || 0;
     return track.addedAt || 0;
   };
+  const prioritizeMemory = ditcState.prioritizeMemory && producerMemoryReady;
+  const scoreCache = new Map();
+  if (prioritizeMemory) {
+    tracks.forEach((track) => {
+      const memories = MemoryEngine.getRelevantMemories({}, { limit: 100 });
+      const haystack = ditcSearchText(track);
+      let total = 0;
+      memories.forEach((memory) => {
+        const valueText = memoryValueLabel(memory.value).toLowerCase();
+        if (["Project Identity", "DJ Preferences"].includes(memory.category) && haystack.includes(valueText)) total += memory.userConfirmed ? 5 : 2;
+        if (memory.key === "bpm-range" && track.analysis?.bpm >= memory.value.min && track.analysis?.bpm <= memory.value.max) total += 5;
+        if (memory.category === "Avoidances" && haystack.includes(valueText)) total -= 8;
+      });
+      scoreCache.set(track.id, total);
+    });
+  }
   return [...tracks].sort((a, b) => {
-    if (ditcState.prioritizeMemory && producerMemoryReady) {
-      const score = (track) => {
-        const memories = MemoryEngine.getRelevantMemories({}, { limit: 100 }); let total = 0;
-        memories.forEach((memory) => {
-          const valueText = memoryValueLabel(memory.value).toLowerCase(); const haystack = ditcSearchText(track);
-          if (["Project Identity", "DJ Preferences"].includes(memory.category) && haystack.includes(valueText)) total += memory.userConfirmed ? 5 : 2;
-          if (memory.key === "bpm-range" && track.analysis?.bpm >= memory.value.min && track.analysis?.bpm <= memory.value.max) total += 5;
-          if (memory.category === "Avoidances" && haystack.includes(valueText)) total -= 8;
-        });
-        return total;
-      };
-      const memoryDifference = score(b) - score(a);
+    if (prioritizeMemory) {
+      const memoryDifference = scoreCache.get(b.id) - scoreCache.get(a.id);
       if (memoryDifference) return memoryDifference;
     }
     const left = value(a, ditcState.sort);
@@ -14843,7 +14888,7 @@ function openSmartCrateEditor(crateId = null) {
   document.querySelector("#smartCrateName").focus();
 }
 
-function renderDitcCollections() {
+function renderDitcCollections(smartCrates = readSmartCrates()) {
   const container = document.querySelector("#ditcCollectionList");
   const definitions = [
     ["all", "All Tracks"], ["recent", "Recently Added"], ["favorites", "Favorites"], ["smartmix", "Smart Mix Candidates"],
@@ -14854,14 +14899,13 @@ function renderDitcCollections() {
     const count = sourceFiles.filter((track) => {
       const previous = ditcState.filter;
       ditcState.filter = id;
-      const matches = matchesDitcFilter(track);
+      const matches = matchesDitcFilter(track, smartCrates);
       ditcState.filter = previous;
       return matches;
     }).length;
     return `<button class="ditc-collection-button${ditcState.filter === id ? " is-active" : ""}" data-ditc-filter="${id}"><span>${label}</span><span>${count}</span></button>`;
   }).join("");
-  const customCrates = readSmartCrates();
-  const customHtml = customCrates.map((crate) => {
+  const customHtml = smartCrates.map((crate) => {
     const count = sourceFiles.filter((track) => evaluateSmartCrate(track, crate)).length;
     const filterId = `crate:${crate.id}`;
     return `<div class="ditc-collection-row">
@@ -15103,11 +15147,11 @@ function exportDitcTrackList() {
   setSourceStatus(`Exported ${rows.length} DITC track${rows.length === 1 ? "" : "s"}.`);
 }
 
-function renderDitcDiagnostics() {
+function renderDitcDiagnostics(sources) {
   const details = document.querySelector("#ditcDiagnostics");
   if (details) details.hidden = !DECKFORGE_DEVELOPMENT;
   const output = document.querySelector("#ditcDiagnosticsOutput");
-  if (output && DECKFORGE_DEVELOPMENT) output.textContent = JSON.stringify({ projectId: ACTIVE_PROJECT_ID, totalTrackCount: sourceFiles.length + JSON.parse(localStorage.getItem(DITC_SOURCES_KEY) || "[]").length, playableTrackCount: sourceFiles.length, selectedTrack: ditcState.selectedTrackId, activePreview: ditcState.previewTrackId, objectUrlCount: 0, currentFilter: ditcState.filter, currentSort: ditcState.sort, currentSearch: ditcState.search, dragTarget: ditcState.dragTarget, lastImportResult: ditcState.lastImportResult, lastError: ditcState.lastError }, null, 2);
+  if (output && DECKFORGE_DEVELOPMENT) output.textContent = JSON.stringify({ projectId: ACTIVE_PROJECT_ID, totalTrackCount: sourceFiles.length + sources.length, playableTrackCount: sourceFiles.length, selectedTrack: ditcState.selectedTrackId, activePreview: ditcState.previewTrackId, objectUrlCount: 0, currentFilter: ditcState.filter, currentSort: ditcState.sort, currentSearch: ditcState.search, dragTarget: ditcState.dragTarget, lastImportResult: ditcState.lastImportResult, lastError: ditcState.lastError }, null, 2);
 }
 
 function updateSmartMixSourceOptions() {
@@ -15219,6 +15263,7 @@ ProviderFoundation.configureRuntimeBridge({
   isOffline: () => navigator.onLine === false
 });
 LocalLibraries.resetAllLocalLibraries();
+cacheAnimationElements();
 initializePlaybackRegistry();
 setupProjectRegistryEvents();
 setupEvents();

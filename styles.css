@@ -28,11 +28,6 @@ body {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-button,
-input {
-  font: inherit;
-}
-
 button {
   cursor: pointer;
 }
@@ -75,9 +70,7 @@ button {
   color: #071014;
 }
 
-.brand small,
-.eyebrow,
-.fine-print {
+.brand small {
   color: var(--muted);
 }
 
@@ -126,8 +119,7 @@ button {
 .icon-button:active,
 .transport-button:active,
 .primary-button:active,
-.secondary-button:active,
-.file-button:active {
+.secondary-button:active {
   transform: translateY(1px);
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.4) inset,
@@ -203,8 +195,7 @@ main {
 .deck-top,
 .sampler-actions,
 .source-form,
-.preset-panel,
-.ai-actions {
+.preset-panel {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -224,28 +215,12 @@ p {
   margin: 0;
 }
 
-h1 {
-  font-size: clamp(2rem, 6vw, 5.8rem);
-  line-height: 0.9;
-  letter-spacing: 0;
-}
-
-h2 {
-  font-size: 1.4rem;
-}
-
 h3 {
   font-size: 1rem;
   max-width: 36ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.topbar p,
-.section-heading p {
-  margin-top: 8px;
-  color: var(--muted);
 }
 
 .tempo-box {
@@ -663,21 +638,12 @@ h3 {
   background: rgba(24, 27, 32, 0.7);
 }
 
-.preset-panel > div {
-  display: grid;
-  gap: 6px;
-}
-
 .preset-panel label {
   color: var(--muted);
   font-size: 0.82rem;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-}
-
-.preset-panel select {
-  min-width: min(72vw, 330px);
 }
 
 .preset-panel p {
@@ -726,7 +692,6 @@ h3 {
 .harmony-instrument-browser, .harmony-tools, .harmony-ai, .harmony-match { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: rgba(15,18,23,.92); box-shadow: var(--shadow); }
 .harmony-instrument-browser, .harmony-tools { display: grid; gap: 10px; }
 #harmonyInstrumentCategories, #harmonyInstrumentResults { display: grid; gap: 7px; max-height: 360px; overflow: auto; }
-.harmony-category.is-active, .harmony-instrument-result.is-active { border-color: var(--aqua); background: rgba(38,214,199,.14); }
 .harmony-performance-controls, .harmony-actions, .harmony-view-tabs { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin: 10px 0; }
 .harmony-performance-controls label, .harmony-tools label { display: grid; gap: 5px; color: var(--muted); font-size: .82rem; }
 .harmony-ai, .harmony-match { display: grid; gap: 12px; margin-top: 14px; }
@@ -734,7 +699,6 @@ h3 {
 .harmony-editor { min-height: 220px; padding: 12px; overflow: auto; border: 1px solid var(--line); border-radius: 9px; background: #0b0e12; }
 .harmony-note-grid { display: grid; grid-template-columns: 70px repeat(16,minmax(32px,1fr)); gap: 5px; min-width: 680px; margin-bottom: 6px; align-items: center; }
 .harmony-note-cell { min-height: 34px; border: 1px solid var(--line); border-radius: 5px; background: #12161b; }
-.harmony-note-cell.is-on { background: linear-gradient(90deg,var(--aqua),#7be276); }
 .harmony-velocity-cell { height: 85px; writing-mode: vertical-lr; direction: rtl; }
 .key-button.is-root { box-shadow: inset 0 -8px 0 var(--amber); }
 .key-button.is-scale { border-color: var(--aqua); }
@@ -946,10 +910,6 @@ h3 {
 .mixer-strip {
   display: grid;
   gap: 10px;
-}
-
-.deck-controls {
-  grid-template-columns: repeat(6, 1fr);
 }
 
 .seek-strip {
@@ -1222,7 +1182,6 @@ input[type="range"] {
 .pad-badge { font-size: 0.66rem; color: rgba(255,255,255,.82); text-transform: uppercase; }
 .pad.is-drop-target { outline: 3px solid var(--aqua); outline-offset: 2px; }
 .pad-builder-dialog { width: min(680px, calc(100vw - 32px)); color: var(--ink); }
-.pad-builder-dialog::backdrop { background: rgba(0,0,0,.76); }
 .pad-builder-dialog textarea { width: 100%; }
 .dialog-close { float: right; }
 
@@ -1911,7 +1870,6 @@ input[type="range"] {
 .step::after { content: attr(data-velocity); position: absolute; inset: auto 2px 2px; color: rgba(255,255,255,.7); font-size: .58rem; }
 .velocity-cell, .automation-cell { height: 96px; padding: 0; accent-color: var(--aqua); writing-mode: vertical-lr; direction: rtl; }
 .piano-note { min-height: 32px; border-radius: 5px; background: #11151a; }
-.piano-note.is-on { background: linear-gradient(90deg, var(--aqua), #78e06c); }
 .beat-step-meta { box-shadow: inset 0 -4px 0 rgba(247,180,75,var(--step-probability, 1)); }
 #drums[data-beat-mode="simple"] .advanced-beat-control { display: none; }
 
@@ -1949,11 +1907,6 @@ input[type="range"] {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #11151a;
-}
-
-.step.is-on {
-  background: var(--aqua);
-  border-color: var(--aqua);
 }
 
 .step.is-current {
@@ -2677,7 +2630,6 @@ input[type="range"] {
 
 .ai-search-panel,
 .ai-search-results,
-.mixtape-inspiration-panel,
 .mixtape-analysis-output {
   display: grid;
   gap: 10px;
@@ -3016,7 +2968,6 @@ input[type="range"] {
   background: transparent;
 }
 
-.ditc-track-row:hover,
 .ditc-track-row.is-selected { background: rgba(38, 214, 199, 0.07); }
 .ditc-track-row.is-previewing { box-shadow: inset 3px 0 var(--aqua); }
 
@@ -3327,8 +3278,6 @@ input[type="range"] {
 .bpm-recovery-values strong { color: var(--ink); }
 .bpm-recovery-track { height: 7px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.08); }
 .bpm-recovery-track span { display: block; width: 0; height: 100%; background: linear-gradient(90deg, #a871ff, var(--aqua), var(--green)); transition: width 100ms linear; }
-.bpm-recovery-actions button { border-radius: 5px; }
-
 @media (max-width: 900px) {
   .smart-prompt-bar { grid-template-columns: 1fr 1fr; }
   .smart-prompt-bar input { grid-column: 1 / -1; }
