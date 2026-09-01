@@ -7303,9 +7303,11 @@ async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = nu
   if (promptPlan?.forceTrackSelection) items = items.filter((item) => !item.id.startsWith("deck-") && (promptPlan.preferredIncomingId ? item.id === promptPlan.preferredIncomingId : promptCandidateMatches(item, promptPlan)));
   if (activeDeck) {
     const activeItem = deckAsSmartMixItem(activeDeck, mode);
-    const incomingItem = promptPlan?.forceTrackSelection ? null : deckAsSmartMixItem(oppositeDeck, mode);
+    const keepLoadedIncoming = !promptPlan || (promptPlan.planSource === "Deck Quick Action" && promptPlan.forceTrackSelection === false);
+    const incomingItem = keepLoadedIncoming ? deckAsSmartMixItem(oppositeDeck, mode) : null;
     items = [activeItem, incomingItem, ...items]
       .filter(Boolean)
+      .filter((item) => keepLoadedIncoming || item === activeItem || item.buffer !== deckState[oppositeDeck]?.buffer)
       .filter((item, index, array) => array.findIndex((candidate) => candidate.buffer === item.buffer) === index);
   }
   if (!items.length) {
