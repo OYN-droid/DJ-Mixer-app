@@ -250,6 +250,14 @@ const deckState = {
   b: createDeckState("b")
 };
 const deckElementCache = { a: null, b: null };
+/**
+ * Offscreen, per-deck waveform layers implement a canvas double-buffering strategy. Peaks,
+ * beat markers, and state overlays previously produced more than 1,000 draw calls per frame
+ * across two decks even though they rarely change. Caching that stable work makes the 60 fps
+ * path a cheap image blit plus the moving playhead. The tradeoff is manual invalidation:
+ * callers must invoke drawWaveform() whenever track, loop, selection, or transition state
+ * changes so the cached picture cannot become stale.
+ */
 const waveformStaticCache = { a: null, b: null };
 const padElementCache = { progress: [], labels: [] };
 const harmonyElementCache = { bpm: null, position: null, floatingPosition: null };
@@ -2389,6 +2397,11 @@ function buildWaveformPeaks(deck, width) {
   });
 }
 
+/**
+ * Regenerates the expensive, state-dependent portion of one deck's waveform offscreen.
+ * Keeping this separate from the visible canvas lets normal playback reuse the result until
+ * an explicit state change makes recomputation necessary.
+ */
 function renderStaticWaveformLayer(id) {
   const deck = deckState[id];
   const visibleCanvas = deckElementCache[id].waveform;
@@ -2462,6 +2475,11 @@ function drawWaveform(id, playheadRatio = null) {
   }
 }
 
+/**
+ * Draws the latency-sensitive waveform frame by blitting the prepared static layer, then
+ * adding only progress shading and the moving playhead. This avoids repeating peak and marker
+ * rendering inside requestAnimationFrame while preserving a complete visible frame each tick.
+ */
 function drawPlayhead(id, ratio) {
   const deck = deckState[id];
   const canvas = deckElementCache[id].waveform;
@@ -2873,6 +2891,12 @@ function triggerPad(index, options = {}) {
     return;
   }
   stopPad(index, { quiet: true });
+  /**
+   * Choke groups are the classic sampler behavior where triggering one pad cuts off another
+   * in the same group, such as closed hats silencing open hats or a DJ drop restarting cleanly.
+   * Existing voices are stopped before the new source starts so competing samples never
+   * overlap for even part of the first playback quantum.
+   */
   const choke = Number(sampler.chokes[index]) || (mode === "dj-drop" ? 4 : 0);
   if (choke) sampler.active.forEach((active, other) => { if (active && other !== index && (Number(sampler.chokes[other]) === choke || (mode === "dj-drop" && sampler.modes[other] === "dj-drop"))) stopPad(other, { quiet: true }); });
   const ctx = AudioEngine.context;
@@ -14079,6 +14103,15 @@ function analyzeAudioBuffer(buffer, name) {
   };
 }
 
+/**
+ * Estimates tempo by autocorrelating the track's downsampled energy envelope across candidate
+ * beat intervals. This replaced a median-gap peak detector, where one loud non-beat transient
+ * such as a snare or vocal hit could distort the estimate. Autocorrelation instead asks which
+ * periodicity best explains the entire recurring energy pattern, making isolated outliers far
+ * less influential. Beat tracking still has an inherent octave ambiguity and may identify
+ * exactly half or double the musical tempo; the DITC inspector therefore exposes manual 1/2x
+ * and 2x correction controls rather than pretending that ambiguity can be eliminated here.
+ */
 function estimateBpmFromEnvelope(envelope) {
   const envelopeRate = 100;
   const minBpm = 60;
@@ -14108,6 +14141,12 @@ function estimateBpmFromEnvelope(envelope) {
 
 const FFT_TWIDDLE_CACHE = new Map();
 
+/**
+ * Converts one window of time-domain samples into complex frequency-domain bins using an
+ * in-place radix-2 FFT. Key detection needs this representation so spectral energy can be
+ * assigned to musical pitch classes; cached twiddle factors avoid rebuilding the same
+ * trigonometric coefficients for every analysis window.
+ */
 function fft(real, imag) {
   const n = real.length;
   if (n <= 1) return;
@@ -14152,12 +14191,26 @@ function fft(real, imag) {
   }
 }
 
+/**
+ * Krumhansl-Schmuckler major/minor profiles: empirically derived templates describing the
+ * typical relative prominence of all 12 pitch classes in music centered on a given key.
+ * Rotating and correlating these templates against a track's chroma vector provides a compact
+ * statistical key estimate rather than relying on a single dominant note.
+ */
 const KEY_PROFILES = {
   major: [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
   minor: [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
 };
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
+/**
+ * Estimates musical key with a chroma pipeline. Windowed FFTs expose frequency energy, each
+ * usable frequency is mapped to its nearest pitch class while octave is discarded, and those
+ * observations accumulate into a 12-value track-wide chroma vector. Correlating that vector
+ * with rotated Krumhansl-Schmuckler profiles selects the best-fitting major or minor key.
+ * Relative pairs such as C major and A minor contain nearly identical pitch classes, so
+ * confusing them is an expected limitation of this representation rather than a code defect.
+ */
 function estimateKeyFromAudio(buffer) {
   const sampleRate = buffer.sampleRate;
   const data = buffer.getChannelData(0);
@@ -14177,6 +14230,11 @@ function estimateKeyFromAudio(buffer) {
     fft(real, imag);
     for (let bin = 1; bin < fftSize / 2; bin += 1) {
       const frequency = (bin * sampleRate) / fftSize;
+      /**
+       * Frequency resolution is fixed by sample rate and FFT window length. Below 110 Hz,
+       * adjacent semitones are too close for these bins to distinguish reliably, so sub-bass
+       * is excluded instead of allowing ambiguous energy to bias the chroma vector.
+       */
       if (frequency < 110 || frequency > 5000) continue; // Exclude sub-bass below reliable semitone resolution at this FFT size.
       const magnitude = Math.sqrt(real[bin] * real[bin] + imag[bin] * imag[bin]);
       const midi = 69 + 12 * Math.log2(frequency / 440);

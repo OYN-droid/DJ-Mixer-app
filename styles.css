@@ -1,3 +1,9 @@
+/**
+ * This stylesheet once accumulated duplicate and conflicting selectors when a Phase 3A design
+ * language refresh added component rules without consolidating earlier passes, leaving cascade
+ * order to decide intent. Confirmed-dead duplicates were removed, but some remain; check for an
+ * existing selector before adding new component styles here.
+ */
 :root {
   color-scheme: dark;
   --bg: #101114;
