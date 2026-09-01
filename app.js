@@ -250,6 +250,7 @@ const deckState = {
   b: createDeckState("b")
 };
 const deckElementCache = { a: null, b: null };
+const waveformStaticCache = { a: null, b: null };
 const padElementCache = { progress: [], labels: [] };
 const harmonyElementCache = { bpm: null, position: null, floatingPosition: null };
 let masterMeterElements = [];
@@ -2228,6 +2229,7 @@ function updateDeckLoop(id, enabled = deckState[id].loop) {
     button.setAttribute("aria-pressed", deck.loop ? "true" : "false");
   }
   renderDeckLoopStatus(id);
+  invalidateStaticWaveformLayer(id);
   drawPlayhead(id, deck.buffer.duration ? currentDeckTime(id) / deck.buffer.duration : 0);
 }
 
@@ -2387,12 +2389,17 @@ function buildWaveformPeaks(deck, width) {
   });
 }
 
-function drawWaveform(id, playheadRatio = null) {
+function renderStaticWaveformLayer(id) {
   const deck = deckState[id];
-  const canvas = deckElementCache[id].waveform;
-  const ctx = canvas.getContext("2d");
-  const width = canvas.width;
-  const height = canvas.height;
+  const visibleCanvas = deckElementCache[id].waveform;
+  const width = visibleCanvas.width;
+  const height = visibleCanvas.height;
+  if (!waveformStaticCache[id] || waveformStaticCache[id].width !== width || waveformStaticCache[id].height !== height) {
+    waveformStaticCache[id] = document.createElement("canvas");
+    waveformStaticCache[id].width = width;
+    waveformStaticCache[id].height = height;
+  }
+  const ctx = waveformStaticCache[id].getContext("2d");
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#0d1014";
   ctx.fillRect(0, 0, width, height);
@@ -2411,10 +2418,6 @@ function drawWaveform(id, playheadRatio = null) {
       ctx.lineTo(x, height);
       ctx.stroke();
     }
-  }
-  if (playheadRatio !== null) {
-    ctx.fillStyle = id === "a" ? "rgba(38,214,199,.1)" : "rgba(255,63,110,.1)";
-    ctx.fillRect(0, 0, Math.max(0, Math.min(1, playheadRatio)) * width, height);
   }
   deck.waveformPeaks.forEach((peak, x) => {
     const intensity = Math.min(1, peak.energy * 5);
@@ -2446,16 +2449,48 @@ function drawWaveform(id, playheadRatio = null) {
   drawSelectionOverlay(id, ctx, width, height);
 }
 
+function drawWaveform(id, playheadRatio = null) {
+  const deck = deckState[id];
+  renderStaticWaveformLayer(id);
+  const visibleCanvas = deckElementCache[id].waveform;
+  const ctx = visibleCanvas.getContext("2d");
+  ctx.drawImage(waveformStaticCache[id], 0, 0);
+  if (!deck.buffer) return;
+  if (playheadRatio !== null) {
+    ctx.fillStyle = id === "a" ? "rgba(38,214,199,.1)" : "rgba(255,63,110,.1)";
+    ctx.fillRect(0, 0, Math.max(0, Math.min(1, playheadRatio)) * visibleCanvas.width, visibleCanvas.height);
+  }
+}
+
 function drawPlayhead(id, ratio) {
+  const deck = deckState[id];
   const canvas = deckElementCache[id].waveform;
   const ctx = canvas.getContext("2d");
-  drawWaveform(id, ratio);
+  if (!waveformStaticCache[id]) renderStaticWaveformLayer(id);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(waveformStaticCache[id], 0, 0);
+  if (deck.buffer) {
+    ctx.fillStyle = id === "a" ? "rgba(38,214,199,.1)" : "rgba(255,63,110,.1)";
+    ctx.fillRect(0, 0, Math.max(0, Math.min(1, ratio)) * canvas.width, canvas.height);
+  }
   ctx.strokeStyle = "#f7b44b";
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(ratio * canvas.width, 0);
   ctx.lineTo(ratio * canvas.width, canvas.height);
   ctx.stroke();
+}
+
+function invalidateStaticWaveformLayer(id) {
+  waveformStaticCache[id] = null;
+}
+
+function redrawStaticWaveformLayers() {
+  for (const id of ["a", "b"]) {
+    const deck = deckState[id];
+    drawWaveform(id);
+    if (deck.buffer && deck.playing) drawPlayhead(id, currentDeckTime(id) / deck.buffer.duration);
+  }
 }
 
 function drawSelectionOverlay(id, ctx, width, height) {
@@ -2530,6 +2565,7 @@ function markSelection(id, point) {
     }
   }
   updateSelectionDisplay(id);
+  invalidateStaticWaveformLayer(id);
   drawPlayhead(id, currentDeckTime(id) / deck.buffer.duration);
 }
 
@@ -7250,6 +7286,7 @@ async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = nu
   }
   if (!items.length) {
     autoMixState.items = [];
+    redrawStaticWaveformLayers();
     autoMixState.plan = [];
     autoMixState.state = "No Eligible Track Found";
     autoMixState.lastError = "No playable track matched the current Smart Mix source.";
@@ -7259,6 +7296,7 @@ async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = nu
   }
   if (activeDeck && items.length < 2) {
     autoMixState.items = items;
+    redrawStaticWaveformLayers();
     autoMixState.plan = [];
     autoMixState.state = "No Eligible Track Found";
     autoMixState.lastError = promptPlan?.forceTrackSelection ? "No eligible incoming DITC track matched the prompt constraints." : "No eligible incoming track found.";
@@ -7309,6 +7347,7 @@ async function startSmartMix(mode = "club", sourceMode = "both", promptPlan = nu
   autoMixState.index = 0;
   autoMixState.activeDeck = activeDeck || "a";
   autoMixState.incomingDeck = autoMixState.activeDeck === "a" ? "b" : "a";
+  redrawStaticWaveformLayers();
   autoMixState.lastManualOverride = "None";
   autoMixState.lastError = "None";
   autoMixState.promptPlan = promptPlan;
@@ -8097,6 +8136,7 @@ function completeTransition(planId = transitionController.activePlan?.id) {
     autoMixState.index = autoMixState.preparedIndex ?? (autoMixState.index + 1) % autoMixState.items.length;
     autoMixState.activeDeck = plan.incomingDeck || autoMixState.incomingDeck;
     autoMixState.incomingDeck = autoMixState.activeDeck === "a" ? "b" : "a";
+    redrawStaticWaveformLayers();
     autoMixState.preparedDeck = null;
     autoMixState.preparedIndex = null;
     if (autoMixState.running) scheduleNextAutoMix();
@@ -8182,6 +8222,7 @@ function prepareNextSmartMixDeck() {
     deckState[nextDeck].analysis = next.analysis;
     setDeckStatus(nextDeck, "ready", { smartMixControlled: true, manualOverride: false });
   }
+  redrawStaticWaveformLayers();
   seekDeck(nextDeck, transition.nextCue);
   setDeckPitchRatio(nextDeck, transition.tempoAssistRatio);
   const channel = document.querySelector(`#channel-${nextDeck}`);
@@ -8232,6 +8273,7 @@ function transitionToNextAutoMixItem() {
     autoMixState.index = nextIndex;
     autoMixState.activeDeck = nextDeck;
     autoMixState.incomingDeck = fromDeck;
+    redrawStaticWaveformLayers();
     autoMixState.preparedDeck = null;
     autoMixState.preparedIndex = null;
     autoMixState.transition = null;
@@ -8338,6 +8380,7 @@ function stopAiMix(options = {}) {
   autoMixState.preparedIndex = null;
   autoMixState.estimatedTransitionAt = null;
   autoMixState.incomingDeck = null;
+  redrawStaticWaveformLayers();
   autoMixState.promptPlan = null;
   if (options.stopDecks) {
     stopDeck("a");
@@ -12894,6 +12937,7 @@ function setupEvents() {
       deck.selectionStart = deck.dragSelectStart;
       deck.selectionEnd = current;
       updateSelectionDisplay(id);
+      invalidateStaticWaveformLayer(id);
       drawPlayhead(id, currentDeckTime(id) / deck.buffer.duration);
     });
     canvas.addEventListener("pointerup", (event) => {
@@ -12909,6 +12953,7 @@ function setupEvents() {
       if (deck.dragSelectMoved) {
         deck.selectionEnd = current;
         updateSelectionDisplay(id);
+        invalidateStaticWaveformLayer(id);
         drawPlayhead(id, currentDeckTime(id) / deck.buffer.duration);
       } else {
         seekDeck(id, current);
