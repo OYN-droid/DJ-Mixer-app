@@ -21,14 +21,15 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent
 STEMS_ROOT = ROOT / "generated_stems"
 MAX_UPLOAD_BYTES = int(os.environ.get("DECKFORGE_STEM_MAX_BYTES", 500 * 1024 * 1024))
-MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("DECKFORGE_STEM_CONCURRENCY", "2")))
+MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("DECKFORGE_STEM_CONCURRENCY", "1")))
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.environ.get("DECKFORGE_RECOMMEND_MODEL", "claude-sonnet-5")
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".aif", ".aiff", ".flac", ".m4a", ".ogg", ".opus"}
+DEMUCS_SEGMENT = os.environ.get("DECKFORGE_STEM_SEGMENT", "7")
 MODELS = {
-    "two": {"model": "htdemucs", "args": ["--two-stems", "vocals"], "label": "Vocals + Instrumental"},
-    "four": {"model": "htdemucs", "args": [], "label": "Vocals, Drums, Bass + Other"},
-    "six": {"model": os.environ.get("DECKFORGE_STEM_MODEL", "htdemucs_6s"), "args": [], "label": "Vocals, Drums, Bass, Guitar, Piano + Other"},
+    "two": {"model": "htdemucs", "args": ["--two-stems", "vocals", "--segment", DEMUCS_SEGMENT], "label": "Vocals + Instrumental"},
+    "four": {"model": "htdemucs", "args": ["--segment", DEMUCS_SEGMENT], "label": "Vocals, Drums, Bass + Other"},
+    "six": {"model": os.environ.get("DECKFORGE_STEM_MODEL", "htdemucs_6s"), "args": ["--segment", DEMUCS_SEGMENT], "label": "Vocals, Drums, Bass, Guitar, Piano + Other"},
 }
 
 JOBS = {}
@@ -324,7 +325,8 @@ def process_job(job_id):
         config = MODELS[mode]
         output_root = temp_dir / "out"
         update_job(job_id, status="Preparing", progress=12, currentStage="Preparing model", startedAt=timestamp())
-        cmd = [demucs_command(), "--name", config["model"], "--out", str(output_root), *config["args"], str(input_path)]
+        # Keep Demucs in-process and serial; JOB_SLOTS separately limits concurrent processes.
+        cmd = [demucs_command(), "--name", config["model"], "--out", str(output_root), "-j", "0", *config["args"], str(input_path)]
         try:
             update_job(job_id, status="Separating", progress=35, currentStage="Separating audio")
             process = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
