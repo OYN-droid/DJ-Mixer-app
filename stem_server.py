@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent
 STEMS_ROOT = ROOT / "generated_stems"
 MAX_UPLOAD_BYTES = int(os.environ.get("DECKFORGE_STEM_MAX_BYTES", 500 * 1024 * 1024))
+MAX_STEM_DURATION_SECONDS = int(os.environ.get("DECKFORGE_STEM_MAX_DURATION", "240"))
 MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("DECKFORGE_STEM_CONCURRENCY", "1")))
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.environ.get("DECKFORGE_RECOMMEND_MODEL", "claude-sonnet-5")
@@ -117,6 +118,13 @@ class DeckForgeHandler(SimpleHTTPRequestHandler):
         temp_dir = Path(tempfile.mkdtemp(prefix="deckforge-stems-"))
         input_path = temp_dir / safe_name(upload["filename"])
         input_path.write_bytes(upload["content"])
+        duration = probe_duration_seconds(input_path)
+        if duration is not None and duration > MAX_STEM_DURATION_SECONDS:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            self.send_json(413, {
+                "error": f"This track is {duration / 60:.1f} minutes long. To keep stem separation reliable on this server, tracks over {MAX_STEM_DURATION_SECONDS / 60:.0f} minutes aren't supported in this deployment. Try a shorter clip, or run DeckForge locally for full-length separation."
+            })
+            return
         job = {
             "jobId": job_id,
             "projectId": fields.get("projectId") or "local-project",
@@ -377,6 +385,18 @@ def process_job(job_id):
 def safe_name(name):
     keep = [char for char in name if char.isalnum() or char in "._- "]
     return "".join(keep).strip() or "upload.wav"
+
+
+def probe_duration_seconds(path):
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=10
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        return None
 
 
 def demucs_command():

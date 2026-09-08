@@ -8888,12 +8888,16 @@ async function splitCurrentStemFile() {
 async function pollStemJob(jobId, projectId = ACTIVE_PROJECT_ID, contextVersion = ProjectRegistry.getSession()?.contextVersion) {
   if (!ProjectRegistry.owns(projectId, contextVersion)) return;
   clearTimeout(stemState.pollTimers.get(jobId));
+  const existing = stemState.workspace.jobs.find((item) => item.jobId === jobId);
   try {
     const response = await fetch(`/api/stem-jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || "Stem job status is unavailable.");
+    if (!response.ok) {
+      const error = new Error(payload.error || "Stem job status is unavailable.");
+      error.jobDisappeared = response.status === 404 && existing && !window.StemLabEngine.TERMINAL.has(existing.status);
+      throw error;
+    }
     if (!ProjectRegistry.owns(projectId, contextVersion)) return;
-    const existing = stemState.workspace.jobs.find((item) => item.jobId === jobId);
     const job = window.StemLabEngine.upsertJob(stemState.workspace, { ...payload, projectId, contextVersion, originContextVersion: existing?.originContextVersion ?? payload.contextVersion ?? contextVersion });
     if (!job) return;
     setStemStatus(`${job.status}: ${job.currentStage}${job.progressEstimated ? " (estimated)" : ""} · ${job.progress}%`);
@@ -8907,8 +8911,11 @@ async function pollStemJob(jobId, projectId = ACTIVE_PROJECT_ID, contextVersion 
     if (job.status === "Cancelled") return;
     stemState.pollTimers.set(jobId, setTimeout(() => pollStemJob(jobId, projectId, contextVersion), 750));
   } catch (error) {
-    stemState.lastBackendError = error.message;
-    setStemStatus(`Job status failed: ${error.message}. Retry status when the server returns.`, true);
+    const message = error.jobDisappeared
+      ? "This track may have been too demanding for the current server resources and the process had to restart. Try a shorter track, or a lower stem count (Two Stem instead of Six Stem)."
+      : `Job status failed: ${error.message}. Retry status when the server returns.`;
+    stemState.lastBackendError = message;
+    setStemStatus(message, true);
     renderStemLab();
   }
 }
